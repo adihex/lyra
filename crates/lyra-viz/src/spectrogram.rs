@@ -1,6 +1,6 @@
 //! Waterfall spectrogram: bounded ring of spectrum frames, newest at front.
 
-use crate::spectrum::{SpectrumAnalyzer, SpectrumFrame};
+use crate::spectrum::SpectrumAnalyzer;
 use std::collections::VecDeque;
 
 pub struct Spectrogram {
