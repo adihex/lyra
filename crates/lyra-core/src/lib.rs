@@ -94,4 +94,6 @@ pub enum LyraError {
     Tag(String),
     #[error("remote: {0}")]
     Remote(String),
+    #[error("audio: {0}")]
+    Audio(String),
 }

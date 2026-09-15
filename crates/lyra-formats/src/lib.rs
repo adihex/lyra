@@ -110,6 +110,167 @@ pub fn stream_info(path: &Path) -> Result<StreamInfo, LyraError> {
     })
 }
 
+/// Live decoder: wraps a `MediaSource` (local file, SSH stream, torrent
+/// stream — anything) into "give me interleaved f32 blocks". The engine
+/// drives this; Symphonia owns the demux/decode.
+pub struct TrackDecoder {
+    reader: Box<dyn symphonia::core::formats::FormatReader + 'static>,
+    decoder: Box<dyn symphonia::core::codecs::audio::AudioDecoder>,
+    track_id: u32,
+    pub sample_rate: u32,
+    pub channels: usize,
+}
+
+impl TrackDecoder {
+    /// Probe + build a decoder for the default audio track.
+    pub fn open(
+        source: impl symphonia::core::io::MediaSource + 'static,
+        extension_hint: Option<&str>,
+    ) -> Result<Self, LyraError> {
+        use symphonia::core::formats::probe::Hint;
+        use symphonia::core::io::MediaSourceStream;
+
+        let mss = MediaSourceStream::new(Box::new(source), Default::default());
+        let mut hint = Hint::new();
+        if let Some(ext) = extension_hint {
+            hint.with_extension(ext);
+        }
+        let reader = symphonia::default::get_probe()
+            .probe(
+                &hint,
+                mss,
+                symphonia::core::formats::FormatOptions::default(),
+                symphonia::core::meta::MetadataOptions::default(),
+            )
+            .map_err(|e| LyraError::Decode(e.to_string()))?;
+
+        let track = reader
+            .default_track(symphonia::core::formats::TrackType::Audio)
+            .ok_or_else(|| LyraError::Decode("no audio track".into()))?;
+        let track_id = track.id;
+        let params = match track.codec_params.as_ref() {
+            Some(symphonia::core::codecs::CodecParameters::Audio(a)) => a,
+            _ => return Err(LyraError::Decode("no audio codec params".into())),
+        };
+        let sample_rate = params
+            .sample_rate
+            .ok_or_else(|| LyraError::Decode("no sample rate".into()))?;
+        let channels = params
+            .channels
+            .as_ref()
+            .map(|c| c.count())
+            .unwrap_or(2);
+
+        let decoder = symphonia::default::get_codecs()
+            .make_audio_decoder(
+                params,
+                &symphonia::core::codecs::audio::AudioDecoderOptions::default(),
+            )
+            .map_err(|e| LyraError::Decode(e.to_string()))?;
+
+        Ok(Self { reader, decoder, track_id, sample_rate, channels })
+    }
+
+    /// Next decoded block as interleaved f32 (native channel count).
+    /// `Ok(None)` = clean EOF. Corrupt packets are skipped, not fatal.
+    pub fn next_block(&mut self) -> Result<Option<Vec<f32>>, LyraError> {
+        loop {
+            let packet = match self.reader.next_packet() {
+                Ok(Some(p)) => p,
+                Ok(None) => return Ok(None),
+                Err(e) => return Err(LyraError::Decode(e.to_string())),
+            };
+            if packet.track_id != self.track_id {
+                continue;
+            }
+            match self.decoder.decode(&packet) {
+                Ok(buf) => {
+                    let frames = buf.frames();
+                    let ch = buf.spec().channels().count();
+                    let mut out = vec![0f32; frames * ch];
+                    buf.copy_to_slice_interleaved(&mut out);
+                    return Ok(Some(out));
+                }
+                Err(_) => continue, // skip corrupt packets — never fatal to playback
+            }
+        }
+    }
+
+    /// Seek to seconds. Resets the decoder state machine.
+    pub fn seek(&mut self, seconds: f64) -> Result<(), LyraError> {
+        let time = symphonia::core::units::Time::try_from_secs_f64(seconds)
+            .ok_or_else(|| LyraError::Decode("bad seek time".into()))?;
+        self.reader
+            .seek(
+                symphonia::core::formats::SeekMode::Accurate,
+                symphonia::core::formats::SeekTo::Time {
+                    time,
+                    track_id: Some(self.track_id),
+                },
+            )
+            .map_err(|e| LyraError::Decode(e.to_string()))?;
+        self.decoder.reset();
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    /// Minimal PCM16 WAV bytes: mono, `rate` Hz, `dur_s` seconds of a sine.
+    fn wav_bytes(rate: u32, dur_s: f32, freq: f32) -> Vec<u8> {
+        let n = (rate as f32 * dur_s) as u32;
+        let data_len = n * 2;
+        let mut b = Vec::with_capacity(44 + data_len as usize);
+        b.extend_from_slice(b"RIFF");
+        b.extend_from_slice(&(36 + data_len).to_le_bytes());
+        b.extend_from_slice(b"WAVEfmt ");
+        b.extend_from_slice(&16u32.to_le_bytes());
+        b.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        b.extend_from_slice(&1u16.to_le_bytes()); // mono
+        b.extend_from_slice(&rate.to_le_bytes());
+        b.extend_from_slice(&(rate * 2).to_le_bytes());
+        b.extend_from_slice(&2u16.to_le_bytes());
+        b.extend_from_slice(&16u16.to_le_bytes());
+        b.extend_from_slice(b"data");
+        b.extend_from_slice(&data_len.to_le_bytes());
+        for i in 0..n {
+            let s = (2.0 * std::f32::consts::PI * freq * i as f32 / rate as f32).sin();
+            b.extend_from_slice(&((s * 32767.0) as i16).to_le_bytes());
+        }
+        b
+    }
+
+    #[test]
+    fn decodes_wav_end_to_end() {
+        let rate = 44_100u32;
+        let path = std::env::temp_dir().join("lyra_test_tone.wav");
+        std::fs::File::create(&path)
+            .unwrap()
+            .write_all(&wav_bytes(rate, 1.0, 440.0))
+            .unwrap();
+
+        let mut d = TrackDecoder::open(std::fs::File::open(&path).unwrap(), Some("wav")).unwrap();
+        assert_eq!(d.sample_rate, rate);
+        assert_eq!(d.channels, 1);
+
+        let mut total = 0usize;
+        let mut peak = 0f32;
+        while let Some(block) = d.next_block().unwrap() {
+            peak = peak.max(block.iter().fold(0f32, |a, s| a.max(s.abs())));
+            total += block.len();
+        }
+        assert_eq!(total, rate as usize); // exactly 1s of mono frames
+        assert!(peak > 0.9, "sine should decode near full scale, got {peak}");
+
+        // seek back to 0 and confirm re-decode works
+        d.seek(0.0).unwrap();
+        assert!(d.next_block().unwrap().is_some());
+    }
+}
+
 /// Read tags via lofty — the Rust-native TagLib replacement.
 pub fn read_tags(path: &Path) -> Result<TagMap, LyraError> {
     use lofty::prelude::{Accessor, TaggedFileExt};

@@ -124,6 +124,25 @@ AppleScript, no Finder restarts).
   notarytool → stapler → DMG → EdDSA `sign_update`.
 - Dev loop: this Makefile — works on CLT alone, produces sandboxed .app.
 
+## § Playback engine (lyra-engine)
+
+```text
+ByteSource → TrackDecoder ──[worker]──▶ HeapRb ──[RT callback]──▶ device
+   (any)      symphonia       adapt→SRC→EQ→limiter   SPSC f32    memcpy+gain
+```
+
+- **Working today** (verified by `tests/pipeline.rs` — real device output,
+  position advancing at realtime, pause/resume/stop): cpal compat path,
+  channel adapt (mono→dup, >2→L/R), rubato FFT SRC when track≠device rate,
+  EQ bands + safety limiter in the decode worker, viz tap post-DSP.
+- **RT discipline**: callback does clear/pop/gain only — no alloc, no locks.
+  EQ bands rebuild on the worker via commands, not shared-mutated on RT.
+- **EOF semantics**: decoder-end ≠ playback-end — `ended` flag lets the
+  callback drain the full ring before idling (found by the smoke test).
+- **Audiophile path (next)**: same ring → CoreAudio IOProc driver with hog
+  mode + per-track rate switching. The ring contract is the seam — engine
+  and workers don't change.
+
 ## § Remote libraries — SSH (lyra-fs)
 
 Files live on remote boxes (adi-linux, jiopc — tailnet sshd, no extra daemons).

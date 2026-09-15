@@ -14,6 +14,7 @@ crates/
   lyra-torrent  librqbit engine — download→import + stream-while-downloading
   lyra-dsp      render-thread-safe DSP — biquad EQ, limiter (alloc-free)
   lyra-viz      spectrum/spectrogram/waveform/meters — draw-ready data
+  lyra-engine   decode→DSP→ring→cpal output — plays any ByteSource
   lyra-remote   axum HTTP+WS LAN remote — pairing auth, hashed tokens
   lyra-net      last.fm / musicbrainz / lrclib / cover-art clients
   lyra-ffi      staticlib C ABI → Swift (uniffi migration path in blueprint)

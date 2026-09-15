@@ -116,6 +116,12 @@ impl SpectrumAnalyzer {
         SpectrumFrame { bands, db_floor: self.db_floor }
     }
 
+    /// Current smoothed bands without feeding new audio — for UI polls
+    /// between FFT completions.
+    pub fn peek(&self) -> SpectrumFrame {
+        SpectrumFrame { bands: self.smoothed.clone(), db_floor: self.db_floor }
+    }
+
     /// Normalized 0..1 band values for direct drawing.
     pub fn normalized(frame: &SpectrumFrame) -> Vec<f32> {
         frame

@@ -1,0 +1,21 @@
+[package]
+name = "lyra-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+lyra-core = { path = "../lyra-core" }
+lyra-formats = { path = "../lyra-formats" }
+lyra-fs = { path = "../lyra-fs" }
+lyra-dsp = { path = "../lyra-dsp" }
+lyra-viz = { path = "../lyra-viz" }
+thiserror.workspace = true
+tracing.workspace = true
+cpal = "0.18"           # compat-path output; audiophile IOProc driver is next
+ringbuf = "0.5"         # SPSC ring — decode thread → RT callback
+rubato = "3"            # SRC when track rate ≠ device rate (compat path)
+atomic_float = "1"      # volume: latest-wins scalar, zero locks
+
+[dev-dependencies]
+tracing-subscriber.workspace = true

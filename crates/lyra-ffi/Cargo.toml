@@ -11,6 +11,8 @@ crate-type = ["staticlib", "cdylib"]
 lyra-core = { path = "../lyra-core" }
 lyra-formats = { path = "../lyra-formats" }
 lyra-remote = { path = "../lyra-remote" }
+lyra-fs = { path = "../lyra-fs" }
+lyra-engine = { path = "../lyra-engine" }
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true

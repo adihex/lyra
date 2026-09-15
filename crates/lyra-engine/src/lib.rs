@@ -1,0 +1,421 @@
+//! lyra-engine: the playback pipeline.
+//!
+//! ```text
+//! ByteSource → TrackDecoder ──[decode+DSP worker]──▶ HeapRb ──[RT callback]──▶ device
+//!              (any source)    eq → viz tap          (SPSC f32)   memcpy+gain
+//! ```
+//!
+//! Shape per blueprint §audio: decode worker feeds a bounded ring; the
+//! output callback does copy+volume only — no alloc, no locks on the RT
+//! thread. cpal = compatibility path; the hog-mode/IOProc driver lands
+//! behind the same `ring → callback` contract.
+//!
+//! Works on every ByteSource equally: local file, SSH block-cached stream,
+//! torrent-in-flight — the engine can't tell the difference.
+
+use atomic_float::AtomicF32;
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use lyra_core::LyraError;
+use lyra_dsp::{Biquad, EqBand, ParametricEq, SafetyLimiter};
+use lyra_formats::TrackDecoder;
+use lyra_fs::ByteSource;
+use lyra_viz::{Levels, SpectrumAnalyzer};
+use ringbuf::traits::{Consumer, Producer, Split};
+use ringbuf::{HeapProd, HeapRb};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
+use tracing::warn;
+
+/// Ring depth: ~1s of stereo f32 at 192k worst case — covers decode jitter
+/// and remote-read latency without pre-buffer stalls.
+const RING_SAMPLES: usize = 192_000 * 2;
+const EQ_BANDS: usize = 10;
+
+pub enum Command {
+    Play {
+        source: Arc<dyn ByteSource>,
+        extension: Option<String>,
+    },
+    Pause,
+    Resume,
+    Stop,
+    Seek(f64),
+    SetBand(usize, BandSpec),
+    Shutdown,
+}
+
+/// One EQ band's parameters — what the UI sends.
+#[derive(Debug, Clone, Copy)]
+pub struct BandSpec {
+    pub freq_hz: f32,
+    pub q: f32,
+    pub gain_db: f32,
+    /// false = low shelf, true = peaking (extend as lyra-dsp grows shapes).
+    pub peaking: bool,
+}
+
+/// Shared viz state — worker writes, UI polls (FFI reads it as a snapshot).
+pub struct VizTap {
+    pub levels: Levels,
+    pub spectrum: SpectrumAnalyzer,
+    pub fft_accum: Vec<f32>,
+}
+
+pub struct Engine {
+    cmd: Sender<Command>,
+    volume: Arc<AtomicF32>,
+    playing: Arc<AtomicBool>,
+    loaded: Arc<AtomicBool>, // decoder open (even while paused)
+    ended: Arc<AtomicBool>,  // decoder EOF'd — ring may still hold audio
+    position_secs: Arc<AtomicF32>, // frames consumed / rate
+    viz: Arc<Mutex<VizTap>>,
+    _stream: cpal::Stream,
+    _worker: thread::JoinHandle<()>,
+}
+
+impl Engine {
+    /// Bring up output + worker. Compat path: cpal default device, f32.
+    pub fn new() -> Result<Self, LyraError> {
+        let host = cpal::default_host();
+        let device = host
+            .default_output_device()
+            .ok_or_else(|| LyraError::Audio("no output device".into()))?;
+        let supported = device
+            .default_output_config()
+            .map_err(|e| LyraError::Audio(e.to_string()))?;
+        let config: cpal::StreamConfig = supported.clone().into();
+        let out_ch = config.channels as usize;
+
+        let rb = HeapRb::<f32>::new(RING_SAMPLES);
+        let (prod, mut cons) = rb.split();
+
+        let volume = Arc::new(AtomicF32::new(1.0));
+        let playing = Arc::new(AtomicBool::new(false));
+        let loaded = Arc::new(AtomicBool::new(false));
+        let ended = Arc::new(AtomicBool::new(false));
+        let position_secs = Arc::new(AtomicF32::new(0.0));
+        let flush = Arc::new(AtomicBool::new(false));
+
+        // ── RT callback: copy + volume only. No alloc, no locks. ──────────
+        let (vol_c, play_c, pos_c, flush_c, ended_c, loaded_c) = (
+            Arc::clone(&volume),
+            Arc::clone(&playing),
+            Arc::clone(&position_secs),
+            Arc::clone(&flush),
+            Arc::clone(&ended),
+            Arc::clone(&loaded),
+        );
+        let out_rate = config.sample_rate as f32;
+        let stream = device
+            .build_output_stream(
+                config,
+                move |out: &mut [f32], _| {
+                    if flush_c.swap(false, Ordering::Relaxed) {
+                        cons.clear();
+                    }
+                    let mut got = 0usize;
+                    if play_c.load(Ordering::Relaxed) {
+                        got = cons.pop_slice(out);
+                        // Natural EOF: decoder finished AND ring drained —
+                        // now go idle (loaded=false so can_resume is false).
+                        if got == 0 && ended_c.load(Ordering::Relaxed) {
+                            play_c.store(false, Ordering::Relaxed);
+                            loaded_c.store(false, Ordering::Relaxed);
+                        }
+                    }
+                    for s in &mut out[got..] {
+                        *s = 0.0; // underrun → silence
+                    }
+                    let g = vol_c.load(Ordering::Relaxed);
+                    if g != 1.0 {
+                        for s in &mut out[..got] {
+                            *s *= g;
+                        }
+                    }
+                    let frames = got / out_ch.max(1);
+                    let prev = pos_c.load(Ordering::Relaxed);
+                    pos_c.store(prev + frames as f32 / out_rate, Ordering::Relaxed);
+                },
+                |e| warn!("output error: {e}"),
+                None,
+            )
+            .map_err(|e| LyraError::Audio(e.to_string()))?;
+        stream.play().map_err(|e| LyraError::Audio(e.to_string()))?;
+
+        let viz = Arc::new(Mutex::new(VizTap {
+            levels: Levels::new(0.85),
+            spectrum: SpectrumAnalyzer::new(out_rate, 4096, 48, 20.0, 20_000.0, -80.0, 0.6, 0.12),
+            fft_accum: Vec::with_capacity(8192),
+        }));
+
+        // ── Decode+DSP worker ────────────────────────────────────────────
+        let (cmd_tx, cmd_rx) = channel::<Command>();
+        let worker = {
+            let playing = Arc::clone(&playing);
+            let loaded = Arc::clone(&loaded);
+            let ended = Arc::clone(&ended);
+            let position = Arc::clone(&position_secs);
+            let viz = Arc::clone(&viz);
+            let flush = Arc::clone(&flush);
+            thread::spawn(move || {
+                worker_loop(
+                    cmd_rx, prod, playing, loaded, ended, position, flush, viz, out_rate, out_ch,
+                )
+            })
+        };
+
+        Ok(Self {
+            cmd: cmd_tx,
+            volume,
+            playing,
+            loaded,
+            ended,
+            position_secs,
+            viz,
+            _stream: stream,
+            _worker: worker,
+        })
+    }
+
+    /// Play any byte source — local, SSH-cached, torrent, future backends.
+    pub fn play(&self, source: Arc<dyn ByteSource>, extension: Option<&str>) {
+        let _ = self.cmd.send(Command::Play {
+            source,
+            extension: extension.map(String::from),
+        });
+    }
+
+    pub fn pause(&self) { let _ = self.cmd.send(Command::Pause); }
+    pub fn resume(&self) { let _ = self.cmd.send(Command::Resume); }
+    pub fn stop(&self) { let _ = self.cmd.send(Command::Stop); }
+    pub fn seek(&self, secs: f64) { let _ = self.cmd.send(Command::Seek(secs)); }
+    pub fn set_band(&self, band: usize, spec: BandSpec) {
+        let _ = self.cmd.send(Command::SetBand(band, spec));
+    }
+    pub fn set_volume(&self, v: f32) {
+        self.volume.store(v.clamp(0.0, 2.0), Ordering::Relaxed);
+    }
+    pub fn is_playing(&self) -> bool { self.playing.load(Ordering::Relaxed) }
+    /// A track is loaded and paused — resume continues, play would restart.
+    pub fn can_resume(&self) -> bool {
+        self.loaded.load(Ordering::Relaxed) && !self.playing.load(Ordering::Relaxed)
+    }
+    pub fn position_secs(&self) -> f32 { self.position_secs.load(Ordering::Relaxed) }
+
+    /// Draw-ready viz snapshot — UI polls this at display rate.
+    pub fn viz_snapshot(&self) -> (Vec<f32>, [f32; 2], bool) {
+        let mut tap = self.viz.lock().unwrap();
+        let (peak, _rms) = tap.levels.read();
+        (
+            SpectrumAnalyzer::normalized(&tap.spectrum.peek()),
+            peak,
+            tap.levels.take_clip(),
+        )
+    }
+
+    pub fn shutdown(&self) { let _ = self.cmd.send(Command::Shutdown); }
+}
+
+fn worker_loop(
+    cmd: Receiver<Command>,
+    mut prod: HeapProd<f32>,
+    playing: Arc<AtomicBool>,
+    loaded: Arc<AtomicBool>,
+    ended: Arc<AtomicBool>,
+    position: Arc<AtomicF32>,
+    flush: Arc<AtomicBool>,
+    viz: Arc<Mutex<VizTap>>,
+    device_rate: f32,
+    device_ch: usize,
+) {
+    let mut decoder: Option<TrackDecoder> = None;
+    let mut eq = ParametricEq::default();
+    let mut limiter = SafetyLimiter::new(44_100.0, 200.0);
+    let mut src_rate = 44_100u32;
+    let mut paused = false;
+    let mut resampler: Option<rubato::Fft<f32>> = None;
+    let mut pending_in: Vec<f32> = Vec::new(); // sub-chunk input for Fft
+    let mut src_channels = 2usize;
+
+    loop {
+        // Drain pending commands (non-blocking while decoding).
+        match if decoder.is_none() { cmd.recv().map(Some).unwrap_or(None) }
+        else { cmd.try_recv().ok() } {
+            Some(Command::Shutdown) => break,
+            Some(Command::Play { source, extension }) => {
+                let src = lyra_fs::SourceMediaSource::new(source);
+                match TrackDecoder::open(src, extension.as_deref()) {
+                    Ok(d) => {
+                        src_rate = d.sample_rate;
+                        src_channels = d.channels;
+                        eq.bands.clear(); // flat until SetBand commands land
+                        limiter = SafetyLimiter::new(src_rate as f32, 200.0);
+                        // SRC when the track rate ≠ device rate (compat path).
+                        resampler = if src_rate as f32 != device_rate {
+                            rubato::Fft::<f32>::new(
+                                src_rate as usize,
+                                device_rate as usize,
+                                1024,
+                                2,
+                                2,
+                                rubato::FixedSync::Both,
+                            )
+                            .ok()
+                        } else {
+                            None
+                        };
+                        decoder = Some(d);
+                        paused = false;
+                        loaded.store(true, Ordering::Relaxed);
+                        ended.store(false, Ordering::Relaxed);
+                        flush.store(true, Ordering::Relaxed);
+                        position.store(0.0, Ordering::Relaxed);
+                        playing.store(true, Ordering::Relaxed);
+                    }
+                    Err(e) => warn!("decode open failed: {e}"),
+                }
+            }
+            Some(Command::Pause) => {
+                paused = true;
+                playing.store(false, Ordering::Relaxed);
+            }
+            Some(Command::Resume) => {
+                paused = false;
+                // decoder may be None (whole track already in ring) — ended
+                // means buffered audio remains; if the ring is also empty the
+                // callback's drain-check turns playing back off.
+                playing.store(
+                    decoder.is_some() || ended.load(Ordering::Relaxed),
+                    Ordering::Relaxed,
+                );
+            }
+            Some(Command::Stop) => {
+                decoder = None;
+                playing.store(false, Ordering::Relaxed);
+                loaded.store(false, Ordering::Relaxed);
+                ended.store(false, Ordering::Relaxed);
+                flush.store(true, Ordering::Relaxed);
+                position.store(0.0, Ordering::Relaxed);
+            }
+            Some(Command::Seek(secs)) => {
+                if let Some(d) = decoder.as_mut() {
+                    let _ = d.seek(secs);
+                    flush.store(true, Ordering::Relaxed);
+                    position.store(secs as f32, Ordering::Relaxed);
+                }
+            }
+            Some(Command::SetBand(i, spec)) => {
+                let flat = EqBand {
+                    filter: Biquad::peaking_eq(src_rate as f32, 1000.0, 0.7, 0.0),
+                    enabled: false,
+                };
+                if i >= eq.bands.len() && i < EQ_BANDS {
+                    eq.bands.resize(i + 1, flat);
+                }
+                if let Some(b) = eq.bands.get_mut(i) {
+                    let f = if spec.peaking {
+                        Biquad::peaking_eq(src_rate as f32, spec.freq_hz, spec.q, spec.gain_db)
+                    } else {
+                        Biquad::low_shelf(src_rate as f32, spec.freq_hz, spec.q, spec.gain_db)
+                    };
+                    *b = EqBand { filter: f, enabled: spec.gain_db != 0.0 };
+                }
+            }
+            None => {}
+        }
+
+        if paused {
+            thread::sleep(Duration::from_millis(20));
+            continue;
+        }
+
+        let Some(d) = decoder.as_mut() else {
+            // idle — wait handled above via blocking recv
+            thread::sleep(Duration::from_millis(5));
+            continue;
+        };
+
+        match d.next_block() {
+            Ok(Some(pcm_in)) => {
+                // Channel adapt → stereo. Mono duplicates, >2ch keeps L/R.
+                let mut pcm = adapt_channels(pcm_in, src_channels, device_ch);
+                // SRC to device rate — always stereo after adapt.
+                if let Some(rs) = resampler.as_mut() {
+                    pcm = resample(rs, &pcm, &mut pending_in);
+                }
+                // DSP: EQ → safety limiter (catches EQ-induced clipping) → viz.
+                eq.process(&mut pcm);
+                limiter.process(&mut pcm);
+                if let Ok(mut tap) = viz.try_lock() {
+                    let VizTap { levels, spectrum, fft_accum } = &mut *tap;
+                    levels.push(&pcm);
+                    let _ = spectrum.push(&mut pcm.clone(), fft_accum);
+                }
+                // Push to ring; brief park when full (consumer drains at rate).
+                let mut off = 0;
+                while off < pcm.len() {
+                    off += prod.push_slice(&pcm[off..]);
+                    if off < pcm.len() {
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                }
+            }
+            Ok(None) => {
+                // EOF — decoder done but the ring may still hold seconds of
+                // audio. `ended` lets the callback drain it before idling.
+                decoder = None;
+                ended.store(true, Ordering::Relaxed);
+            }
+            Err(e) => {
+                warn!("decode error: {e}");
+                decoder = None;
+                ended.store(true, Ordering::Relaxed); // drain what we have
+            }
+        }
+    }
+}
+
+/// Adapt channel count: mono duplicates to every output channel, >2 keeps
+/// the first `out_ch` channels. Ring always carries `device_ch` layout.
+fn adapt_channels(pcm: Vec<f32>, src_ch: usize, out_ch: usize) -> Vec<f32> {
+    if src_ch == out_ch {
+        return pcm;
+    }
+    let frames = pcm.len() / src_ch;
+    let mut out = Vec::with_capacity(frames * out_ch);
+    for f in 0..frames {
+        for c in 0..out_ch {
+            out.push(pcm[f * src_ch + c.min(src_ch - 1)]);
+        }
+    }
+    out
+}
+
+/// rubato Fft needs exactly `input_frames_next()` frames per call —
+/// accumulate input across blocks in `pending`, process full chunks.
+/// Output comes back interleaved via InterleavedOwned::take_data.
+fn resample(rs: &mut rubato::Fft<f32>, interleaved: &[f32], pending: &mut Vec<f32>) -> Vec<f32> {
+    use rubato::audioadapter_buffers::direct::SequentialSliceOfVecs;
+    use rubato::Resampler;
+    pending.extend_from_slice(interleaved);
+    let need_frames = rs.input_frames_next();
+    let mut out = Vec::new();
+    while pending.len() >= need_frames * 2 {
+        let chunk: Vec<f32> = pending.drain(..need_frames * 2).collect();
+        let l: Vec<f32> = chunk.iter().step_by(2).copied().collect();
+        let r: Vec<f32> = chunk.iter().skip(1).step_by(2).copied().collect();
+        match SequentialSliceOfVecs::new(&[l, r], 2, need_frames)
+            .map_err(|e| e.to_string())
+            .and_then(|a| rs.process(&a, 0, None).map_err(|e| e.to_string()))
+        {
+            Ok(res) => out.extend_from_slice(&res.take_data()),
+            Err(e) => warn!("resample: {e}"),
+        }
+    }
+    out
+}
+
+
