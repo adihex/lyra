@@ -7,6 +7,9 @@
     <!-- user picks music folders once; we keep access via bookmarks -->
     <key>com.apple.security.files.user-selected.read-write</key><true/>
     <key>com.apple.security.files.bookmarks.app-scope</key><true/>
+    <!-- music player: ~/Music is readable without a per-folder grant;
+         arbitrary folders ride the security-scoped bookmark above -->
+    <key>com.apple.security.assets.music.read-only</key><true/>
     <!-- outbound: last.fm/musicbrainz/lrclib/coverart/license/appcast -->
     <key>com.apple.security.network.client</key><true/>
     <!-- inbound: LAN remote-control listener -->

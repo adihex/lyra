@@ -50,6 +50,7 @@ final class ViewModel: ObservableObject {
 
     // now playing
     @Published var current: Track?
+    @Published var lastError: String?
     @Published var playing = false
     @Published var position: Double = 0
     @Published var scrubbing = false
@@ -68,9 +69,11 @@ final class ViewModel: ObservableObject {
 
     private var timer: Timer?
     private var vizBuf: UnsafeMutableBufferPointer<Float>
+    private var accessedFolders: [URL] = []
 
     init() {
         vizBuf = .allocate(capacity: 48)
+        restoreBookmarks()
         MediaKeys.shared.hook(
             getState: { (LyraPlayer.shared.isPlaying, LyraPlayer.shared.position) },
             onToggle: { [weak self] in self?.toggle() },
@@ -121,11 +124,37 @@ final class ViewModel: ObservableObject {
         }
     }
 
+    func restoreBookmarks() {
+        // Persisted security-scoped bookmarks re-grant access to library
+        // folders across launches — without this the sandbox denies reads
+        // of every persisted path.
+        let dict = UserDefaults.standard.dictionary(forKey: "folderBookmarks") as? [String: Data] ?? [:]
+        for (path, data) in dict {
+            var stale = false
+            guard let url = try? URL(resolvingBookmarkData: data,
+                                     options: .withSecurityScope,
+                                     bookmarkDataIsStale: &stale) else { continue }
+            if url.startAccessingSecurityScopedResource() {
+                accessedFolders.append(url)
+            }
+            if stale { storeBookmark(for: URL(fileURLWithPath: path)) }
+        }
+    }
+
+    private func storeBookmark(for url: URL) {
+        guard let data = try? url.bookmarkData(options: .withSecurityScope)
+        else { return }
+        var dict = UserDefaults.standard.dictionary(forKey: "folderBookmarks") as? [String: Data] ?? [:]
+        dict[url.path] = data
+        UserDefaults.standard.set(dict, forKey: "folderBookmarks")
+    }
+
     func scanFolder() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        storeBookmark(for: url)
         libraryRoot = url.path
         scanning = true
         scanStatus = ""
@@ -148,9 +177,12 @@ final class ViewModel: ObservableObject {
     func play(_ t: Track) {
         if LyraPlayer.shared.play(path: t.path) {
             current = t
+            lastError = nil
             position = 0
             pushEQ()
             publishNowPlaying(t)
+        } else {
+            lastError = "Cannot open \(URL(fileURLWithPath: t.path).lastPathComponent)"
         }
     }
 
@@ -305,6 +337,7 @@ struct ContentView: View {
                     }.width(56)
                 }
                 .id(vm.contentID) // force rebuild — 100k-row diffing stalls
+                .tableStyle(.bordered(alternatesRowBackgrounds: false))
                 .contextMenu(forSelectionType: Track.ID.self) { items in
                     Button("Play") { vm.playSelection(items) }
                     Divider()
@@ -345,8 +378,10 @@ struct ContentView: View {
                 VStack(alignment: .leading) {
                     Text(vm.current?.title ?? "Nothing playing").font(.headline).lineLimit(1)
                         .foregroundStyle(vm.current == nil ? .secondary : .primary)
-                    Text([vm.current?.artist, vm.current?.album].compactMap { $0 }.joined(separator: " — "))
-                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    Text(vm.lastError ?? [vm.current?.artist, vm.current?.album].compactMap { $0 }.joined(separator: " — "))
+                        .font(.caption)
+                        .foregroundStyle(vm.lastError != nil ? .red : .secondary)
+                        .lineLimit(1)
                 }
                 .frame(minWidth: 160, alignment: .leading)
                 Spacer()
