@@ -46,6 +46,27 @@ pub struct TagMap {
     pub track_number: Option<u32>,
 }
 
+/// One scanned library row — path + tags + stream info. What the library
+/// table, queue, and remote API all share.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryTrack {
+    pub path: String,
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub album_artist: Option<String>,
+    pub genre: Option<String>,
+    pub year: Option<u32>,
+    pub track_number: Option<u32>,
+    pub duration_secs: Option<f64>,
+    pub format: AudioFormat,
+    pub codec: String,
+    pub sample_rate: Option<u32>,
+    pub channels: Option<u32>,
+    pub bits_per_sample: Option<u32>,
+}
+
 /// Commands the UI / remote can send to the engine.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "camelCase")]

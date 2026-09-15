@@ -52,6 +52,23 @@ pub extern "C" fn lyra_probe(path: *const c_char) -> *mut c_char {
     CString::new(result.to_string()).unwrap_or_default().into_raw()
 }
 
+/// Scan a folder recursively → JSON array of LibraryTrack. Caller frees.
+/// Synchronous — call from a background thread for big trees.
+#[no_mangle]
+pub extern "C" fn lyra_scan_dir(path: *const c_char) -> *mut c_char {
+    init_logging();
+    let path = match unsafe { CStr::from_ptr(path) }.to_str() {
+        Ok(p) if !p.is_empty() => PathBuf::from(p),
+        _ => return std::ptr::null_mut(),
+    };
+    match lyra_formats::scan_dir(&path) {
+        Ok(tracks) => CString::new(serde_json::json!(tracks).to_string())
+            .unwrap_or_default()
+            .into_raw(),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
 /// Frees strings returned by lyra_*.
 ///
 /// # Safety
@@ -132,6 +149,30 @@ pub unsafe extern "C" fn lyra_engine_is_playing(e: *const lyra_engine::Engine) -
 #[no_mangle]
 pub unsafe extern "C" fn lyra_engine_can_resume(e: *const lyra_engine::Engine) -> c_int {
     if e.is_null() { 0 } else { unsafe { &*e }.can_resume() as c_int }
+}
+
+/// Set EQ band params. `peaking` 1 = peaking filter, 0 = low shelf.
+#[no_mangle]
+pub unsafe extern "C" fn lyra_engine_set_band(
+    e: *mut lyra_engine::Engine,
+    band: c_int,
+    freq_hz: f32,
+    q: f32,
+    gain_db: f32,
+    peaking: c_int,
+) {
+    if e.is_null() || band < 0 {
+        return;
+    }
+    unsafe { &*e }.set_band(
+        band as usize,
+        lyra_engine::BandSpec {
+            freq_hz,
+            q,
+            gain_db,
+            peaking: peaking != 0,
+        },
+    );
 }
 
 /// Viz snapshot as JSON: {"bands":[…48], "peak":[l,r] dB, "clip":bool}.

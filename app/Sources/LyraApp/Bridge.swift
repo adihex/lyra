@@ -10,7 +10,6 @@ enum LyraCore {
     }
 
     /// Probe an audio file → decoded JSON dictionary.
-    /// Access is via security-scoped user selection (sandbox-safe).
     static func probe(path: String) -> [String: Any]? {
         guard let raw = path.withCString({ lyra_probe($0) }) else { return nil }
         defer { lyra_string_free(raw) }
@@ -18,8 +17,16 @@ enum LyraCore {
         return try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any]
     }
 
+    /// Scan a folder recursively → [[String:Any]] track rows (LibraryTrack).
+    /// Synchronous + CPU-bound — call off the main thread.
+    static func scanDir(path: String) -> [[String: Any]]? {
+        guard let raw = path.withCString({ lyra_scan_dir($0) }) else { return nil }
+        defer { lyra_string_free(raw) }
+        let json = String(cString: raw)
+        return try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [[String: Any]]
+    }
+
     /// Start the LAN remote server. Returns true if it launched.
-    /// Security model is in lyra-remote; see BLUEPRINT.md § remote.
     @discardableResult
     static func startRemote(port: UInt16) -> Bool {
         lyra_remote_start(port) == 0
@@ -27,7 +34,6 @@ enum LyraCore {
 }
 
 /// Playback engine handle — wraps the lyra_engine_* C API.
-/// Lazy-init: created on first use (grabs the default output device).
 final class LyraPlayer {
     static let shared = LyraPlayer()
     private var engine: UnsafeMutableRawPointer?
@@ -48,6 +54,9 @@ final class LyraPlayer {
     func stop() { lyra_engine_stop(engine) }
     func seek(_ secs: Double) { lyra_engine_seek(engine, secs) }
     func setVolume(_ v: Float) { lyra_engine_set_volume(engine, v) }
+    func setBand(_ band: Int, freq: Float, q: Float, gainDb: Float, peaking: Bool) {
+        lyra_engine_set_band(engine, Int32(band), freq, q, gainDb, peaking ? 1 : 0)
+    }
 
     var position: Double { lyra_engine_position(engine) }
     var isPlaying: Bool { lyra_engine_is_playing(engine) != 0 }
