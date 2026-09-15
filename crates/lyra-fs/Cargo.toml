@@ -1,0 +1,17 @@
+[package]
+name = "lyra-fs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+lyra-core = { path = "../lyra-core" }
+symphonia-core = "0.6"
+thiserror.workspace = true
+tracing.workspace = true
+serde.workspace = true
+
+# In-process SSH for the sandboxed build (spawned /usr/bin/ssh can't read
+# ~/.ssh inside the sandbox; russh + a bookmark-granted key file can).
+# Optional until the SFTP-channel impl lands.
+russh = { version = "0.63", optional = true, features = ["ring"] }

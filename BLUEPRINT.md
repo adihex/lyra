@@ -124,6 +124,39 @@ AppleScript, no Finder restarts).
   notarytool → stapler → DMG → EdDSA `sign_update`.
 - Dev loop: this Makefile — works on CLT alone, produces sandboxed .app.
 
+## § Remote libraries — SSH (lyra-fs)
+
+Files live on remote boxes (adi-linux, jiopc — tailnet sshd, no extra daemons).
+Design: **pull bytes over SSH, decode locally** — the decoded stream is
+bit-exact with the source file. No transcode, no macFUSE/sshfs, no SMB setup.
+
+```text
+remote path ──ByteSource──▶ CachingSource ──MediaSource──▶ symphonia ─▶ DSP
+  (ssh dd / sftp / russh)    1MiB LRU + read-ahead          (Read+Seek)
+```
+
+- `ByteSource` seam: `LocalFile` now; `SshExecFile` (v0: `ssh host stat/dd`,
+  works with config aliases today); next: `openssh-sftp-client` multiplexed
+  channel (dev path — inherits `~/.ssh/config`), then `russh` (feature-gated)
+  for the sandboxed build — a bookmark-granted key file, since a spawned
+  /usr/bin/ssh can't read `~/.ssh` inside the sandbox.
+- `CachingSource`: 1 MiB blocks, 256 MiB LRU, sequential read-ahead — a track
+  is fetched once, gapless prefetch rides the same mechanism (pre-open next
+  track's blocks while current plays).
+- `scan(host, root)`: `ssh host find -printf` enumeration — remote-side walk,
+  avoids per-file SFTP stat storms; lazy tag reads via ranged fetch (lofty
+  only needs head/tail chunks).
+- `pin(host, dir)`: rsync `-a --partial` to local cache — offline copies with
+  delta/resume/checksums. rsync is the *offline* primitive, not playback.
+- Later: `lyra-agent` static binary on the remote → scan+tag+serve in one
+  protocol (turns each box into a library server; also fixes jiopc-class
+  constrained hosts where dd-per-block is wasteful).
+
+Security notes: russh path means no `~/.ssh` read inside the sandbox (key
+bytes come via bookmarked file); exec path relies on user's ssh config
+(ProxyJump/ports just work); host-key verification still applies (russh
+`check_server_key` — pin per-host on first connect, TOFU).
+
 ## § Data / ML / integrations
 
 - **rusqlite `bundled`** (SQLite 3.53, FTS5 built in) + `rusqlite_migration`;
