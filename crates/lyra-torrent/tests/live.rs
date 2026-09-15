@@ -160,6 +160,38 @@ fn seed_leech_body() {
     eprintln!("decoded {frames} frames of streamed torrent audio — PASS");
 }
 
+/// Audible variant: leech the FLAC and push it through the real output
+/// device — you should HEAR ~2s of tone sourced entirely via BitTorrent.
+/// `cargo test -p lyra-torrent -- --ignored audible --nocapture`
+#[test]
+#[ignore]
+fn local_seed_leech_audible() {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        seed_leech_body();
+        let _ = tx.send(());
+    });
+    rx.recv_timeout(Duration::from_secs(120))
+        .expect("e2e timed out");
+
+    // Re-leech is unnecessary — the file completed during the body run.
+    // Play the completed download through the real device.
+    let completed = std::env::temp_dir()
+        .join("lyra-torrent-e2e/leech/e2e-tone.flac");
+    assert!(completed.exists(), "leeched flac missing: {completed:?}");
+
+    let engine = lyra_engine::Engine::new().unwrap();
+    engine.play(
+        Arc::new(lyra_fs::LocalFile::open(&completed).unwrap()),
+        Some("flac"),
+    );
+    engine.set_volume(0.3);
+    std::thread::sleep(Duration::from_millis(2200));
+    let pos = engine.position_secs();
+    assert!(pos > 0.5, "audible playback stalled at {pos}s");
+    eprintln!("played {pos:.2}s of torrent-sourced audio through device");
+}
+
 #[test]
 #[ignore]
 fn archive_org_metadata() {

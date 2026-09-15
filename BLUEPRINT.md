@@ -257,6 +257,15 @@ Rust — DHT, magnets, per-file selection, streaming `FileStream`).
 - **Legality/privacy**: intended for netlabels, etree-style taper archives,
   CC/PD and artist-distributed content. DHT exposes the swarm IP — offer a
   tracker-only mode; note it in first-run copy.
+- **Verified 2026-09**: local seed↔leech e2e — magnet add, metadata from
+  peer, `read_at` piece fetch, `TrackDecoder` decode (45k frames), and
+  audible output through `Engine` all pass over loopback
+  (`tests/live.rs`, `local_seed_leech_decode` / `_audible`).
+- **Known gap — BEP19 web seeds**: archive.org torrents carry a `url-list`
+  HTTP mirror and a dead tracker; rqbit has no web-seed support, so those
+  swarms stall at 0 B. TODO: parse `url-list` on add and attach an HTTP
+  range-request `ByteSource` fallback (the mirror is just HTTP — arguably
+  the better path for archive.org anyway).
 
 ## § Data / ML / integrations
 

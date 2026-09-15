@@ -16,4 +16,5 @@ librqbit = "8" # pure-Rust BitTorrent: DHT, magnets, per-file select, streaming
 
 [dev-dependencies]
 lyra-formats = { path = "../lyra-formats" }
+lyra-engine = { path = "../lyra-engine" }
 librqbit = "8" # create_torrent for the local seed↔leech e2e
