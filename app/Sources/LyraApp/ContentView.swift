@@ -2,7 +2,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 /// One scanned library row — mirrors LibraryTrack's camelCase JSON.
-struct Track: Identifiable {
+struct Track: Identifiable, Hashable {
     let id: String // path
     let path: String
     var title: String
@@ -11,6 +11,7 @@ struct Track: Identifiable {
     var albumArtist: String
     var duration: Double
     var format: String
+    var codec: String
     var trackNumber: Int
 
     init(_ d: [String: Any]) {
@@ -22,6 +23,7 @@ struct Track: Identifiable {
         albumArtist = d["albumArtist"] as? String ?? artist
         duration = d["durationSecs"] as? Double ?? 0
         format = (d["format"] as? String ?? "?").uppercased()
+        codec = d["codec"] as? String ?? format
         trackNumber = d["trackNumber"] as? Int ?? 0
     }
 }
@@ -29,36 +31,67 @@ struct Track: Identifiable {
 /// ISO-center EQ bands for the 10-band parametric.
 let eqFreqs: [Float] = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
 
-/// View model. NOTE: built with CLT swiftc (no Xcode) — bare `@State` is a
+/// View model. Built with CLT swiftc (no Xcode) — bare `@State` is a
 /// SwiftUIMacros convenience macro unavailable here; ObservableObject +
 /// @Published + @StateObject are plain property wrappers and work.
 final class ViewModel: ObservableObject {
+    static let shared = ViewModel() // one VM — window, menu, mini player
+
     @Published var selection: SidebarItem? = .library
     @Published var tracks: [Track] = []
-    @Published var selectedTrack: Track.ID?
+    @Published var selectedTracks = Set<Track.ID>()
+    @Published var sortOrder = [KeyPathComparator(\Track.trackNumber)]
+    @Published var query = ""
     @Published var scanning = false
     @Published var libraryRoot: String?
+    @Published var contentID = UUID() // bump → Table skips dataset diffing
 
     // now playing
     @Published var current: Track?
     @Published var playing = false
     @Published var position: Double = 0
-    @Published var draggingSeek = false
-    @Published var seekValue: Double = 0
+    @Published var scrubbing = false
+    @Published var displayPosition: Double = 0
     @Published var volume: Float = 1.0 {
-        didSet { LyraPlayer.shared.setVolume(volume) }
+        didSet { LyraPlayer.shared.setVolume(volume * volume) } // perceptual taper
     }
 
     // eq gains per band, dB
     @Published var eq: [Float] = Array(repeating: 0, count: 10)
+    @Published var eqCurve: (freqs: [Float], db: [Float]) = ([], [])
 
-    // viz
-    @Published var bands: [Float] = []
+    // viz — raw buffer path, no JSON at 60Hz
+    @Published var bands: [Float] = Array(repeating: 0, count: 48)
     @Published var clip = false
 
     private var timer: Timer?
+    private var vizBuf: UnsafeMutableBufferPointer<Float>
 
-    var currentIndex: Int? { tracks.firstIndex { $0.id == current?.id } }
+    init() {
+        vizBuf = .allocate(capacity: 48)
+        MediaKeys.shared.hook(
+            getState: { (LyraPlayer.shared.isPlaying, LyraPlayer.shared.position) },
+            onToggle: { [weak self] in self?.toggle() },
+            onNext: { [weak self] in self?.next() },
+            onPrev: { [weak self] in self?.prev() },
+            onSeek: { pos in LyraPlayer.shared.seek(pos) }
+        )
+    }
+    deinit { vizBuf.deallocate() }
+
+    /// Table sorts via KeyPathComparator — the sortable custom-column
+    /// overload only compiles when sortOrder is bound (research-confirmed).
+    var sortedTracks: [Track] {
+        let base = query.isEmpty ? tracks
+            : tracks.filter { t in
+                t.title.localizedCaseInsensitiveContains(query)
+                || t.artist.localizedCaseInsensitiveContains(query)
+                || t.album.localizedCaseInsensitiveContains(query)
+            }
+        return base.sorted(using: sortOrder)
+    }
+
+    var currentIndex: Int? { sortedTracks.firstIndex { $0.id == current?.id } }
 
     func startPolling() {
         timer?.invalidate()
@@ -67,11 +100,13 @@ final class ViewModel: ObservableObject {
             let p = LyraPlayer.shared
             DispatchQueue.main.async {
                 self.playing = p.isPlaying
-                if !self.draggingSeek { self.position = p.position }
-                if let v = p.viz {
-                    self.bands = v["bands"] as? [Float] ?? self.bands
-                    self.clip = v["clip"] as? Bool ?? false
+                if !self.scrubbing {
+                    self.position = p.position
+                    self.displayPosition = p.position
                 }
+                _ = p.vizBands(into: self.vizBuf)
+                self.bands = Array(self.vizBuf)
+                if let v = p.viz { self.clip = v["clip"] as? Bool ?? false }
             }
         }
     }
@@ -83,12 +118,12 @@ final class ViewModel: ObservableObject {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         libraryRoot = url.path
         scanning = true
-        tracks = []
         DispatchQueue.global(qos: .userInitiated).async {
             let rows = LyraCore.scanDir(path: url.path) ?? []
             let ts = rows.map(Track.init)
             DispatchQueue.main.async {
                 self.tracks = ts
+                self.contentID = UUID() // force no-diff Table rebuild
                 self.scanning = false
             }
         }
@@ -98,31 +133,61 @@ final class ViewModel: ObservableObject {
         if LyraPlayer.shared.play(path: t.path) {
             current = t
             position = 0
-            // push EQ state into the engine (it rebuilds at track rate)
-            for (i, f) in eqFreqs.enumerated() {
-                LyraPlayer.shared.setBand(i, freq: f, q: 0.9, gainDb: eq[i],
-                                          peaking: i != 0)
-            }
+            pushEQ()
+            publishNowPlaying(t)
         }
+    }
+
+    func playSelection(_ ids: Set<Track.ID>) {
+        guard let id = ids.first,
+              let t = tracks.first(where: { $0.id == id }) else { return }
+        play(t)
     }
 
     func toggle() {
         let p = LyraPlayer.shared
         if p.isPlaying { p.pause() }
         else if p.canResume { p.resume() }
-        else if let t = current ?? tracks.first { play(t) }
+        else if let t = current ?? sortedTracks.first { play(t) }
+        MediaKeys.shared.refreshState()
     }
 
     func next() { step(1) }
     func prev() { step(-1) }
     private func step(_ d: Int) {
-        guard let i = currentIndex, tracks.indices.contains(i + d) else { return }
-        play(tracks[i + d])
+        guard let i = currentIndex, sortedTracks.indices.contains(i + d) else { return }
+        play(sortedTracks[i + d])
+    }
+    func seekBy(_ d: Double) { LyraPlayer.shared.seek(position + d) }
+
+    func scrubEnded() {
+        scrubbing = false
+        LyraPlayer.shared.seek(displayPosition)
+        position = displayPosition
     }
 
     func applyEQ(_ band: Int) {
         LyraPlayer.shared.setBand(band, freq: eqFreqs[band], q: 0.9,
                                   gainDb: eq[band], peaking: band != 0)
+        refreshCurve()
+    }
+    func pushEQ() {
+        for (i, f) in eqFreqs.enumerated() {
+            LyraPlayer.shared.setBand(i, freq: f, q: 0.9, gainDb: eq[i],
+                                      peaking: i != 0)
+        }
+        refreshCurve()
+    }
+    func refreshCurve() {
+        // specs update on the worker thread — re-read after it lands
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+            if let r = LyraPlayer.shared.eqResponse { self.eqCurve = r }
+        }
+    }
+
+    func publishNowPlaying(_ t: Track) {
+        MediaKeys.shared.publish(title: t.title, artist: t.artist,
+                                 album: t.album, duration: t.duration)
     }
 
     func fmt(_ s: Double) -> String {
@@ -146,7 +211,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
 }
 
 struct ContentView: View {
-    @StateObject private var vm = ViewModel()
+    @ObservedObject private var vm = ViewModel.shared
 
     var body: some View {
         NavigationSplitView {
@@ -199,32 +264,44 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity)
                 Spacer()
             } else {
-                Table(vm.tracks, selection: $vm.selectedTrack) {
-                    TableColumn("#") { t in
-                        Text("\(t.trackNumber)").frame(width: 28)
-                    }.width(36)
-                    TableColumn("Title") { t in Text(t.title).lineLimit(1) }
-                    TableColumn("Artist") { t in Text(t.artist).lineLimit(1) }.width(140)
-                    TableColumn("Album") { t in Text(t.album).lineLimit(1) }.width(160)
-                    TableColumn("Time") { t in Text(vm.fmt(t.duration)).monospaced() }.width(52)
-                    TableColumn("Fmt") { t in Text(t.format).font(.caption) }.width(48)
+                Table(vm.sortedTracks, selection: $vm.selectedTracks,
+                      sortOrder: $vm.sortOrder) {
+                    TableColumn("#", value: \.trackNumber) { t in
+                        Text("\(t.trackNumber)")
+                    }.width(30)
+                    TableColumn("Title", value: \.title)
+                    TableColumn("Artist", value: \.artist).width(140)
+                    TableColumn("Album", value: \.album).width(150)
+                    TableColumn("Time", value: \.duration) { t in
+                        Text(vm.fmt(t.duration)).monospaced()
+                    }.width(50)
+                    TableColumn("Codec", value: \.codec) { t in
+                        Text(t.codec).font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 5).padding(.vertical, 1)
+                            .background(.quaternary, in: .capsule)
+                    }.width(56)
                 }
-                .contextMenu(forSelectionType: Track.ID.self) { _ in
-                    if let id = vm.selectedTrack,
-                       let t = vm.tracks.first(where: { $0.id == id }) {
-                        Button("Play") { vm.play(t) }
-                    }
-                }
-                HStack {
-                    Text("\(vm.tracks.count) tracks").font(.caption).foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Play selected") {
-                        if let id = vm.selectedTrack,
-                           let t = vm.tracks.first(where: { $0.id == id }) {
-                            vm.play(t)
+                .id(vm.contentID) // force rebuild — 100k-row diffing stalls
+                .contextMenu(forSelectionType: Track.ID.self) { items in
+                    Button("Play") { vm.playSelection(items) }
+                    Button("Play Next") { }
+                    Divider()
+                    Button("Reveal in Finder") {
+                        if let id = items.first {
+                            NSWorkspace.shared.activateFileViewerSelecting(
+                                [URL(fileURLWithPath: id)])
                         }
                     }
-                    .disabled(vm.selectedTrack == nil)
+                } primaryAction: { items in
+                    vm.playSelection(items) // double-click
+                }
+                .searchable(text: $vm.query, placement: .toolbar)
+                HStack {
+                    Text("\(vm.sortedTracks.count) tracks")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Play selected") { vm.playSelection(vm.selectedTracks) }
+                        .disabled(vm.selectedTracks.isEmpty)
                 }
             }
         }
@@ -235,16 +312,12 @@ struct ContentView: View {
     // ── Now playing bar ──────────────────────────────────────────────────
     private var nowPlayingBar: some View {
         VStack(spacing: 6) {
-            // seek: external clock drives position; local drag owns it while dragging
+            // seek: engine clock drives; drag owns it until release
             Slider(
-                value: Binding(
-                    get: { vm.draggingSeek ? vm.seekValue : vm.position },
-                    set: { vm.seekValue = $0 }
-                ),
+                value: $vm.displayPosition,
                 in: 0...max(vm.current?.duration ?? 1, 1),
                 onEditingChanged: { editing in
-                    vm.draggingSeek = editing
-                    if !editing { LyraPlayer.shared.seek(vm.seekValue) }
+                    if editing { vm.scrubbing = true } else { vm.scrubEnded() }
                 }
             )
             HStack(spacing: 14) {
@@ -259,10 +332,9 @@ struct ContentView: View {
                 Button { vm.toggle() } label: {
                     Image(systemName: vm.playing ? "pause.fill" : "play.fill")
                 }
-                .keyboardShortcut(.space, modifiers: [])
                 Button { LyraPlayer.shared.stop() } label: { Image(systemName: "stop.fill") }
                 Button { vm.next() } label: { Image(systemName: "forward.fill") }
-                Text("\(vm.fmt(vm.position)) / \(vm.fmt(vm.current?.duration ?? 0))")
+                Text("\(vm.fmt(vm.displayPosition)) / \(vm.fmt(vm.current?.duration ?? 0))")
                     .font(.caption.monospaced())
                 Spacer()
                 if vm.clip {
@@ -270,7 +342,7 @@ struct ContentView: View {
                 }
                 spectrumMini
                 Image(systemName: "speaker.wave.2.fill").foregroundStyle(.secondary)
-                Slider(value: $vm.volume, in: 0...2).frame(width: 110)
+                Slider(value: $vm.volume, in: 0...1.42).frame(width: 110) // 1.42² ≈ 2x gain
             }
             .padding(.horizontal, 12)
             .padding(.bottom, 8)
@@ -299,8 +371,13 @@ struct ContentView: View {
     private var eqPane: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Parametric EQ").font(.title2)
-            Text("10 bands · peaking (31Hz low-shelf) · gain ±12dB · applied in Rust before the limiter")
+            Text("Curve drawn from the same biquad coefficients the audio path uses — not an approximation.")
                 .font(.caption).foregroundStyle(.secondary)
+
+            // response curve + analyzer underlay
+            eqCurveView
+                .frame(height: 160)
+
             HStack(alignment: .bottom, spacing: 18) {
                 ForEach(0..<10, id: \.self) { i in
                     VStack(spacing: 6) {
@@ -319,7 +396,7 @@ struct ContentView: View {
                     }
                 }
             }
-            .frame(height: 180)
+            .frame(height: 170)
             HStack {
                 Button("Flat") {
                     for i in 0..<10 { vm.eq[i] = 0; vm.applyEQ(i) }
@@ -329,6 +406,59 @@ struct ContentView: View {
             Spacer()
         }
         .padding()
+        .onAppear { vm.refreshCurve() }
+    }
+
+    /// EQ response curve + live spectrum underlay. X axis is log-spaced
+    /// 20Hz–20kHz, same geometric mapping as lyra-viz's band edges.
+    private var eqCurveView: some View {
+        Canvas { ctx, size in
+            // dB grid: −12…+12
+            for db in stride(from: -12, through: 12, by: 6) {
+                let y = size.height * CGFloat(1 - (Float(db) + 12) / 24)
+                var p = Path()
+                p.move(to: CGPoint(x: 0, y: y))
+                p.addLine(to: CGPoint(x: size.width, y: y))
+                ctx.stroke(p, with: .color(.gray.opacity(db == 0 ? 0.5 : 0.2)))
+            }
+            // spectrum underlay — same log-freq geometry
+            if !vm.bands.isEmpty {
+                let n = vm.bands.count
+                let w = size.width / CGFloat(n)
+                for (i, v) in vm.bands.enumerated() {
+                    let h = size.height * CGFloat(v) * 0.5
+                    ctx.fill(
+                        Path(CGRect(x: CGFloat(i) * w, y: size.height - h,
+                                    width: w * 0.8, height: h)),
+                        with: .color(.green.opacity(0.2))
+                    )
+                }
+            }
+            // curve — Rust computed from the live coefficients
+            let (freqs, db) = vm.eqCurve
+            if freqs.count > 1 {
+                var path = Path()
+                for i in 0..<freqs.count {
+                    // x: log position of freq in [20, 20000]
+                    let lx = log(freqs[i] / 20.0) / log(1000.0)
+                    let x = CGFloat(lx) * size.width
+                    let y = size.height * CGFloat(1 - (db[i] + 12) / 24)
+                    let pt = CGPoint(x: x, y: y)
+                    i == 0 ? path.move(to: pt) : path.addLine(to: pt)
+                }
+                ctx.stroke(path, with: .color(.accentColor), lineWidth: 2)
+            }
+            // band markers
+            for (i, f) in eqFreqs.enumerated() {
+                let lx = log(f / 20.0) / log(1000.0)
+                let x = CGFloat(lx) * size.width
+                let y = size.height * CGFloat(1 - (vm.eq[i] + 12) / 24)
+                let r = CGRect(x: x - 5, y: y - 5, width: 10, height: 10)
+                ctx.fill(Path(ellipseIn: r), with: .color(
+                    vm.eq[i] == 0 ? .gray.opacity(0.5) : .accentColor))
+            }
+        }
+        .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 8))
     }
 
     private func freqLabel(_ f: Float) -> String {

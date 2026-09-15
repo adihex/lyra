@@ -187,6 +187,37 @@ pub unsafe extern "C" fn lyra_engine_viz(e: *const lyra_engine::Engine) -> *mut 
     CString::new(json.to_string()).unwrap_or_default().into_raw()
 }
 
+/// Fill `out` with normalized spectrum bands (0..1). Returns bands written.
+/// This is the 60Hz path — no JSON, no alloc.
+#[no_mangle]
+pub unsafe extern "C" fn lyra_engine_viz_bands(
+    e: *const lyra_engine::Engine,
+    out: *mut f32,
+    n: usize,
+) -> usize {
+    if e.is_null() || out.is_null() || n == 0 {
+        return 0;
+    }
+    unsafe { &*e }.viz_bands(std::slice::from_raw_parts_mut(out, n))
+}
+
+/// EQ response curve as JSON: {"freqs":[…], "db":[…]} — the drawn curve
+/// uses the same biquad coefficients as the audio path. Caller frees.
+#[no_mangle]
+pub unsafe extern "C" fn lyra_engine_eq_response(e: *const lyra_engine::Engine) -> *mut c_char {
+    if e.is_null() {
+        return std::ptr::null_mut();
+    }
+    // Log-spaced 20Hz–20kHz, 200 points.
+    let n = 200usize;
+    let freqs: Vec<f32> = (0..n)
+        .map(|i| 20.0 * (1000f32).powf(i as f32 / (n - 1) as f32))
+        .collect();
+    let db = unsafe { &*e }.eq_response(&freqs);
+    let json = serde_json::json!({"freqs": freqs, "db": db});
+    CString::new(json.to_string()).unwrap_or_default().into_raw()
+}
+
 /// Shutdown + free. Safe on null.
 #[no_mangle]
 pub unsafe extern "C" fn lyra_engine_free(e: *mut lyra_engine::Engine) {

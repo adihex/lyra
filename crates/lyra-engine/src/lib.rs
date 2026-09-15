@@ -69,9 +69,14 @@ pub struct Engine {
     volume: Arc<AtomicF32>,
     playing: Arc<AtomicBool>,
     loaded: Arc<AtomicBool>, // decoder open (even while paused)
-    ended: Arc<AtomicBool>,  // decoder EOF'd — ring may still hold audio
+    _ended: Arc<AtomicBool>, // decoder EOF'd — ring may still hold audio
     position_secs: Arc<AtomicF32>, // frames consumed / rate
     viz: Arc<Mutex<VizTap>>,
+    /// EQ band specs — shared for response-curve queries; the worker owns
+    /// the actual filters and updates both on SetBand.
+    eq_specs: Arc<Mutex<Vec<Option<BandSpec>>>>,
+    /// Rate the filters are built at (source rate — last opened track).
+    eq_rate: Arc<AtomicF32>,
     _stream: cpal::Stream,
     _worker: thread::JoinHandle<()>,
 }
@@ -150,6 +155,9 @@ impl Engine {
             spectrum: SpectrumAnalyzer::new(out_rate, 4096, 48, 20.0, 20_000.0, -80.0, 0.6, 0.12),
             fft_accum: Vec::with_capacity(8192),
         }));
+        let eq_specs: Arc<Mutex<Vec<Option<BandSpec>>>> =
+            Arc::new(Mutex::new(vec![None; EQ_BANDS]));
+        let eq_rate = Arc::new(AtomicF32::new(44_100.0));
 
         // ── Decode+DSP worker ────────────────────────────────────────────
         let (cmd_tx, cmd_rx) = channel::<Command>();
@@ -160,9 +168,12 @@ impl Engine {
             let position = Arc::clone(&position_secs);
             let viz = Arc::clone(&viz);
             let flush = Arc::clone(&flush);
+            let eq_specs = Arc::clone(&eq_specs);
+            let eq_rate = Arc::clone(&eq_rate);
             thread::spawn(move || {
                 worker_loop(
-                    cmd_rx, prod, playing, loaded, ended, position, flush, viz, out_rate, out_ch,
+                    cmd_rx, prod, playing, loaded, ended, position, flush, viz,
+                    eq_specs, eq_rate, out_rate, out_ch,
                 )
             })
         };
@@ -172,9 +183,11 @@ impl Engine {
             volume,
             playing,
             loaded,
-            ended,
+            _ended: ended,
             position_secs,
             viz,
+            eq_specs,
+            eq_rate,
             _stream: stream,
             _worker: worker,
         })
@@ -194,6 +207,42 @@ impl Engine {
     pub fn seek(&self, secs: f64) { let _ = self.cmd.send(Command::Seek(secs)); }
     pub fn set_band(&self, band: usize, spec: BandSpec) {
         let _ = self.cmd.send(Command::SetBand(band, spec));
+    }
+
+    /// Total EQ response at `freqs` (dB) — sums each enabled band's true
+    /// biquad response at the rate the filters were built at. The drawn
+    /// curve is the audio path, not a recomputed approximation.
+    pub fn eq_response(&self, freqs: &[f32]) -> Vec<f32> {
+        let rate = self.eq_rate.load(Ordering::Relaxed);
+        let specs = self.eq_specs.lock().unwrap();
+        freqs
+            .iter()
+            .map(|&f| {
+                specs
+                    .iter()
+                    .flatten()
+                    .map(|s| {
+                        let b = if s.peaking {
+                            Biquad::peaking_eq(rate, s.freq_hz, s.q, s.gain_db)
+                        } else {
+                            Biquad::low_shelf(rate, s.freq_hz, s.q, s.gain_db)
+                        };
+                        b.response_db(f, rate)
+                    })
+                    .sum()
+            })
+            .collect()
+    }
+
+    /// Normalized spectrum bands into a caller buffer — the hot-path FFI
+    /// shape (raw f32 fill, no JSON at display rate).
+    pub fn viz_bands(&self, out: &mut [f32]) -> usize {
+        let tap = self.viz.lock().unwrap();
+        let frame = tap.spectrum.peek();
+        let bands = SpectrumAnalyzer::normalized(&frame);
+        let n = bands.len().min(out.len());
+        out[..n].copy_from_slice(&bands[..n]);
+        n
     }
     pub fn set_volume(&self, v: f32) {
         self.volume.store(v.clamp(0.0, 2.0), Ordering::Relaxed);
@@ -228,6 +277,8 @@ fn worker_loop(
     position: Arc<AtomicF32>,
     flush: Arc<AtomicBool>,
     viz: Arc<Mutex<VizTap>>,
+    eq_specs: Arc<Mutex<Vec<Option<BandSpec>>>>,
+    eq_rate: Arc<AtomicF32>,
     device_rate: f32,
     device_ch: usize,
 ) {
@@ -251,6 +302,7 @@ fn worker_loop(
                     Ok(d) => {
                         src_rate = d.sample_rate;
                         src_channels = d.channels;
+                        eq_rate.store(src_rate as f32, Ordering::Relaxed);
                         eq.bands.clear(); // flat until SetBand commands land
                         limiter = SafetyLimiter::new(src_rate as f32, 200.0);
                         // SRC when the track rate ≠ device rate (compat path).
@@ -322,6 +374,11 @@ fn worker_loop(
                         Biquad::low_shelf(src_rate as f32, spec.freq_hz, spec.q, spec.gain_db)
                     };
                     *b = EqBand { filter: f, enabled: spec.gain_db != 0.0 };
+                }
+                if let Ok(mut specs) = eq_specs.try_lock() {
+                    if i < specs.len() {
+                        specs[i] = if spec.gain_db != 0.0 { Some(spec) } else { None };
+                    }
                 }
             }
             None => {}

@@ -31,7 +31,7 @@ $(APPBIN): $(SWIFT_SRC) $(LIBDIR)/liblyra_ffi.a
 	    -L $(LIBDIR) -llyra_ffi \
 	    -framework SwiftUI -framework AppKit -framework UniformTypeIdentifiers \
 	    -framework AudioToolbox -framework CoreAudio -framework CoreFoundation \
-	    -framework AVFoundation -framework CoreServices \
+	    -framework AVFoundation -framework CoreServices -framework MediaPlayer \
 	    -o $(APPBIN)
 
 $(APP)/Contents/Info.plist: Info.plist

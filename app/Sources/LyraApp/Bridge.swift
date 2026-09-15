@@ -62,6 +62,23 @@ final class LyraPlayer {
     var isPlaying: Bool { lyra_engine_is_playing(engine) != 0 }
     var canResume: Bool { lyra_engine_can_resume(engine) != 0 }
 
+    /// Raw normalized bands — the 60Hz path (no JSON, no alloc).
+    func vizBands(into buf: UnsafeMutableBufferPointer<Float>) -> Int {
+        guard let e = engine, let base = buf.baseAddress else { return 0 }
+        return Int(lyra_engine_viz_bands(e, base, UInt(buf.count)))
+    }
+
+    /// EQ response curve: {"freqs":[…], "db":[…]} — same coefficients as audio.
+    var eqResponse: (freqs: [Float], db: [Float])? {
+        guard let raw = lyra_engine_eq_response(engine) else { return nil }
+        defer { lyra_string_free(raw) }
+        let json = String(cString: raw)
+        guard let d = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any],
+              let f = d["freqs"] as? [Float], let db = d["db"] as? [Float]
+        else { return nil }
+        return (f, db)
+    }
+
     /// Draw-ready viz JSON: {"bands":[…], "peak":[l,r], "clip":bool}.
     var viz: [String: Any]? {
         guard let raw = lyra_engine_viz(engine) else { return nil }

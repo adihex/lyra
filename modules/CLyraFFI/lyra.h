@@ -25,6 +25,8 @@ int    lyra_engine_can_resume(const void *e);   /* loaded & paused */
 void   lyra_engine_set_band(void *e, int band, float freq, float q,
                             float gain_db, int peaking);
 char  *lyra_engine_viz(const void *e);            /* JSON: bands/peak/clip */
+unsigned long lyra_engine_viz_bands(const void *e, float *out, unsigned long n);
+char  *lyra_engine_eq_response(const void *e);    /* JSON: {freqs, db} */
 void   lyra_engine_free(void *e);
 
 #endif

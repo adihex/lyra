@@ -45,6 +45,21 @@ impl Biquad {
         }
     }
 
+    /// Magnitude response at `freq_hz` in dB — for drawing the EQ curve
+    /// from the *same coefficients* the audio path uses.
+    pub fn response_db(&self, freq_hz: f32, sample_rate: f32) -> f32 {
+        let w = 2.0 * std::f32::consts::PI * freq_hz / sample_rate;
+        let (sw, cw) = w.sin_cos();
+        let (s2w, c2w) = (2.0 * w).sin_cos();
+        // H(z) = (b0 + b1 z^-1 + b2 z^-2) / (1 + a1 z^-1 + a2 z^-2), z=e^{jw}
+        let nr = self.b0 + self.b1 * cw + self.b2 * c2w;
+        let ni = -self.b1 * sw - self.b2 * s2w;
+        let dr = 1.0 + self.a1 * cw + self.a2 * c2w;
+        let di = -self.a1 * sw - self.a2 * s2w;
+        let mag = ((nr * nr + ni * ni) / (dr * dr + di * di).max(1e-20)).sqrt();
+        20.0 * mag.max(1e-12).log10()
+    }
+
     /// One interleaved stereo frame.
     #[inline]
     pub fn process_frame(&mut self, frame: &mut [f32; 2]) {

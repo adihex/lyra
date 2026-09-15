@@ -143,6 +143,70 @@ ByteSource → TrackDecoder ──[worker]──▶ HeapRb ──[RT callback]�
   mode + per-track rate switching. The ring contract is the seam — engine
   and workers don't change.
 
+## § Audiophile output — `lyra-hal` (research-verified spec)
+
+CoreAudio truths the research pass established:
+
+- `coreaudio-rs 0.14` **dropped coreaudio-sys** — no IOProc wrapper, no
+  sys::audio_object. Raw bindings live in **`objc2-core-audio`** (feature
+  `AudioHardware` has everything: `AudioDeviceCreateIOProcID`, object
+  props, property-listener APIs). `coreaudio::audio_unit::macos_helpers`
+  still gives `get_default_device_id`, `set_device_sample_rate`
+  (listener-confirmed ≤2s), `toggle_hog_mode`, `find_matching_physical_format`.
+- **Hog under sandbox: works, no entitlement.** `com.apple.security.audio`
+  isn't a real key — audio *output* needs nothing; only `audio-input`
+  (mic) is entitled. Colibri ships hog mode on the MAS (sandbox mandated).
+  Hog = write `kAudioDevicePropertyHogMode` ('oink'), read back →
+  acquire iff pid==self. Non-mixable format + IOProc start auto-hogs.
+- **Bit-perfect needs both formats**: set stream `PhysicalFormat` ('pft ')
+  AND `VirtualFormat` ('sfmt') to the same integer ASBD picked from
+  `AvailablePhysicalFormats` (never hand-roll — containers differ per DAC:
+  24-in-32 `IsAlignedHigh` vs packed). Virtual stays 32f non-interleaved
+  otherwise → driver converts → not bit-perfect.
+- **Rate switching**: Stop → hog → set physical format → listener on
+  `NominalSampleRate` (never sleep — USB reclock 50–500ms) → Start.
+  IOProc survives Stop/Start. 'diff'/'livn'/'goin' listeners → reload.
+- **Ring carries wire-format bytes** for the integer path (f32→int + DoP
+  packing in the *worker*, callback stays memcpy-only). Hardware volume
+  (VolumeScalar) if present, else volume is a compat-path-only feature.
+- **DoP**: 16 DSD bits → low16 of 24-bit sample, 0x05/0xFA marker byte,
+  carrier = DSDrate/16 (DSD64→176.4k). Requires the integer path.
+- Prior art to port from: **mpv `ao_coreaudio_exclusive.c`** (canonical:
+  hog+pid, 'mix?'→0, 'stm#'/'sdir' stream select, sync format change,
+  format-restore + unhog on uninit) and **bpplay** (single-file C,
+  whole-track mlock, DoP to DSD256).
+
+Sequence: default dev → alive check → hog → mix?=0 → stream pick →
+physical fmt → virtual fmt → rate → `CreateIOProcID` → `Start`.
+Teardown: Stop → DestroyIOProcID → restore fmts/rate → unhog.
+
+## § UI layer (research-verified)
+
+- **CLT/swiftc**: `@State` is a SwiftUIMacros macro — absent from the CLT
+  toolchain (Xcode 27 makes it *more* macro'd). `@StateObject`/
+  `ObservableObject`/`@Published`/`Canvas`/`Table`/`MenuBarExtra`/
+  `Commands`/`NavigationSplitView`/`TimelineView` are all plain and work.
+  All view-local state lives in the `ObservableObject` VM.
+- **Table**: sortable custom columns need the `sortOrder:`-bound overload
+  (`value: \.keypath` + content closure); `primaryAction:` on the item
+  context menu = double-click-to-play; **bump `.id(contentID)` on dataset
+  swap** — AppKit diffing is O(seconds) at 100k rows. Table is
+  NSTableView-backed → lazy is free; push sort/filter into SQL later.
+- **Seek**: scrub-state pattern (displayPosition vs engine position, seek
+  on release only — per-move seeks hammer the remote CachingSource).
+- **Media keys**: `MPRemoteCommandCenter` is THE path — sandbox-safe,
+  CLT-safe; media-key taps need non-sandbox + Accessibility (dead end).
+  The macOS trap: **must set `playbackState = .playing`** — the system
+  can't infer it; until then keys go to Music.app.
+- **EQ**: parametric → dots-on-response-curve is the pro pattern; the
+  curve must come from `lyra_engine_eq_response` (real coefficients), not
+  Swift-side re-math. Log-freq axis shares lyra-viz's geometric mapping.
+- **Viz**: Canvas to ~5k primitives @60fps; spectrogram = CGBitmapContext
+  ring (draw new columns only, blit the bitmap); raw f32 FFI for bands,
+  not per-frame JSON. Metal only for fullscreen/120Hz/shaders.
+- **MenuBarExtra `.window`** style for the mini player (`.menu` kills
+  sliders); state in the VM not the App body (documented unresponsive bug).
+
 ## § Remote libraries — SSH (lyra-fs)
 
 Files live on remote boxes (adi-linux, jiopc — tailnet sshd, no extra daemons).
