@@ -10,7 +10,9 @@ for the per-layer research and improvement deltas).
 crates/
   lyra-core     domain model — Track, AudioFormat, PlayerCommand/Event
   lyra-formats  probe/decode/tags — symphonia + lofty + ape-decoder + cue-rw
+  lyra-fs       byte sources — local + SSH/SFTP remote, block cache, rsync pin
   lyra-dsp      render-thread-safe DSP — biquad EQ, limiter (alloc-free)
+  lyra-viz      spectrum/spectrogram/waveform/meters — draw-ready data
   lyra-remote   axum HTTP+WS LAN remote — pairing auth, hashed tokens
   lyra-net      last.fm / musicbrainz / lrclib / cover-art clients
   lyra-ffi      staticlib C ABI → Swift (uniffi migration path in blueprint)

@@ -20,3 +20,49 @@ lto = true
 codegen-units = 1
 panic = "unwind"   # keep unwind so a DSP/format bug can't take the process down across FFI
 strip = true
+opt-level = "s"    # size by default; hot paths overridden below
+
+# Decode/DSP hot paths stay at full optimization — size where it doesn't
+# cost latency, speed where it does. (profile.package needs exact names.)
+[profile.release.package.symphonia]
+opt-level = 3
+[profile.release.package.symphonia-core]
+opt-level = 3
+[profile.release.package.symphonia-bundle-flac]
+opt-level = 3
+[profile.release.package.symphonia-bundle-mp3]
+opt-level = 3
+[profile.release.package.symphonia-codec-aac]
+opt-level = 3
+[profile.release.package.symphonia-codec-alac]
+opt-level = 3
+[profile.release.package.symphonia-codec-vorbis]
+opt-level = 3
+[profile.release.package.symphonia-codec-pcm]
+opt-level = 3
+[profile.release.package.symphonia-codec-adpcm]
+opt-level = 3
+[profile.release.package.symphonia-codec-wavpack]
+opt-level = 3
+[profile.release.package.symphonia-format-isomp4]
+opt-level = 3
+[profile.release.package.symphonia-format-ogg]
+opt-level = 3
+[profile.release.package.symphonia-format-riff]
+opt-level = 3
+[profile.release.package.ape-decoder]
+opt-level = 3
+[profile.release.package.opusic-sys]
+opt-level = 3
+[profile.release.package.rustfft]
+opt-level = 3
+[profile.release.package.lyra-core]
+opt-level = 3
+[profile.release.package.lyra-formats]
+opt-level = 3
+[profile.release.package.lyra-dsp]
+opt-level = 3
+[profile.release.package.lyra-viz]
+opt-level = 3
+[profile.release.package.lyra-fs]
+opt-level = 3

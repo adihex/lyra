@@ -9,6 +9,12 @@ use std::ffi::{c_char, c_int, CStr, CString};
 use std::path::PathBuf;
 use std::sync::Once;
 
+/// mimalloc as the Rust core's allocator — measurable RSS reduction for the
+/// alloc patterns here (many small blocks + stream buffers) vs the macOS
+/// default. One line, real win.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 static INIT: Once = Once::new();
 
 fn init_logging() {

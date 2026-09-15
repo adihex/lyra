@@ -205,6 +205,45 @@ reinstall-requiring DBs (Audirvāna), mDNS-only discovery + port-forwarding
 (Roon), phone-UI-on-desktop (Plexamp Mac), config-maximalism (fb2k), MQA,
 iPod sync.
 
+## § Footprint — memory & binary size
+
+**Memory.** The incumbent parks whole decoded tracks in RAM (memoryPlayback
+up to 256MB/track, artwork cache unbounded). Lyra's rules:
+
+- **Stream, don't stage**: the `CachingSource` block cache is bounded across
+  the *library* (256 MiB default), not per track; DSD/hi-res can't balloon it.
+- **mimalloc** global allocator in lyra-ffi — less fragmentation/RSS for the
+  small-block + stream-buffer alloc pattern.
+- **Bounded viz state**: FFT scratch allocated once, spectrogram/scope rings
+  fixed-capacity, waveform peaks stored as O(width) rows in SQLite, never
+  per-sample.
+- **Lazy models**: the `ort` session loads on first "For You"/tagging use and
+  unloads on idle — ~20-40MB not resident at rest.
+- **Artwork**: decode off main thread, downscale to display size, LRU disk
+  cache (the incumbent caches full-res PNGs).
+
+**Binary size.** `opt-level="s"` workspace-wide with explicit `opt-level=3`
+per-package overrides for the decode/DSP hot path (symphonia bundles, ape,
+opusic-sys, rustfft, lyra-dsp/viz/fs). LTO + codegen-units=1 + strip already
+on. The big lever vs the incumbent's ~51MB: **models ship as downloads** —
+EffNet/EfficientAT ONNX fetched on first use (optional "download at install"
+pref), not bundled .mlpackages. `cargo bloat` in CI to keep it honest.
+
+## § Visualizations (lyra-viz)
+
+Computed in Rust on the DSP tap; UI gets draw-ready values only.
+
+| Viz | Mechanism | Cost |
+|---|---|---|
+| Spectrum bars | Hann FFT (rustfft, SIMD) → geometric log bands → attack/decay ballistics | one 4k FFT per frame, ~µs |
+| Spectrogram | bounded ring of normalized spectrum rows (waterfall) | same FFT, O(width×bands) |
+| Waveform seekbar | min/max per bucket at **import time** → SQLite row | O(n) once per track |
+| VU/peak + clip latch | per-channel peak w/ PPM decay + block RMS dBFS | trivial |
+| Oscilloscope/Lissajous | strided decimation ring, L+R traces | bounded |
+
+The wire format to Swift is just `Vec<f32>` bars / `(peak,rms)` pairs — the
+SwiftUI layer draws with Canvas; nothing crosses the boundary per-sample.
+
 ## § Build
 
 - Toolchain pinned per-project: `mise.toml` → rust stable, cmake+ninja
