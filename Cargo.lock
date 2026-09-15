@@ -2517,6 +2517,7 @@ version = "0.1.0"
 dependencies = [
  "librqbit",
  "lyra-core",
+ "lyra-formats",
  "lyra-fs",
  "serde",
  "serde_json",

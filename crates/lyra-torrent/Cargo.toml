@@ -13,3 +13,7 @@ tracing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 librqbit = "8" # pure-Rust BitTorrent: DHT, magnets, per-file select, streaming
+
+[dev-dependencies]
+lyra-formats = { path = "../lyra-formats" }
+librqbit = "8" # create_torrent for the local seed↔leech e2e

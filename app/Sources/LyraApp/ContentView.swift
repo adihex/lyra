@@ -41,6 +41,7 @@ final class ViewModel: ObservableObject {
     @Published var tracks: [Track] = []
     @Published var selectedTracks = Set<Track.ID>()
     @Published var sortOrder = [KeyPathComparator(\Track.trackNumber)]
+    @Published var columnVis = NavigationSplitViewVisibility.all
     @Published var query = ""
     @Published var scanning = false
     @Published var libraryRoot: String?
@@ -214,11 +215,11 @@ struct ContentView: View {
     @ObservedObject private var vm = ViewModel.shared
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $vm.columnVis) {
             List(SidebarItem.allCases, selection: $vm.selection) { item in
                 Label(item.rawValue, systemImage: item.icon).tag(item)
             }
-            .navigationSplitViewColumnWidth(min: 140, ideal: 180)
+            .navigationSplitViewColumnWidth(min: 170, ideal: 190, max: 240)
         } detail: {
             VStack(spacing: 0) {
                 detailView
@@ -249,6 +250,17 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Text("Library").font(.title2)
+                // explicit search field — .searchable(placement:.toolbar)
+                // landed in the collapsed sidebar strip; an inline field is
+                // deterministic about where it lives.
+                HStack(spacing: 4) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    TextField("Filter…", text: $vm.query)
+                        .textFieldStyle(.plain)
+                }
+                .padding(.horizontal, 8).padding(.vertical, 4)
+                .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
+                .frame(width: 200)
                 Spacer()
                 if let root = vm.libraryRoot {
                     Text(URL(fileURLWithPath: root).lastPathComponent)
@@ -284,7 +296,6 @@ struct ContentView: View {
                 .id(vm.contentID) // force rebuild — 100k-row diffing stalls
                 .contextMenu(forSelectionType: Track.ID.self) { items in
                     Button("Play") { vm.playSelection(items) }
-                    Button("Play Next") { }
                     Divider()
                     Button("Reveal in Finder") {
                         if let id = items.first {
@@ -295,7 +306,6 @@ struct ContentView: View {
                 } primaryAction: { items in
                     vm.playSelection(items) // double-click
                 }
-                .searchable(text: $vm.query, placement: .toolbar)
                 HStack {
                     Text("\(vm.sortedTracks.count) tracks")
                         .font(.caption).foregroundStyle(.secondary)
@@ -336,6 +346,7 @@ struct ContentView: View {
                 Button { vm.next() } label: { Image(systemName: "forward.fill") }
                 Text("\(vm.fmt(vm.displayPosition)) / \(vm.fmt(vm.current?.duration ?? 0))")
                     .font(.caption.monospaced())
+                    .fixedSize()
                 Spacer()
                 if vm.clip {
                     Text("CLIP").font(.caption2.bold()).foregroundStyle(.red)
@@ -376,32 +387,45 @@ struct ContentView: View {
 
             // response curve + analyzer underlay
             eqCurveView
+                .frame(maxWidth: .infinity)
                 .frame(height: 160)
 
-            HStack(alignment: .bottom, spacing: 18) {
+            // Vertical sliders: rotate a horizontal Slider — the layout
+            // frame must be pinned to the ROTATED bounds (20×110), not the
+            // unrotated ones, or it overlaps its neighbours.
+            HStack(alignment: .top, spacing: 0) {
                 ForEach(0..<10, id: \.self) { i in
-                    VStack(spacing: 6) {
-                        Text(String(format: "%+.1f", vm.eq[i]))
+                    VStack(spacing: 4) {
+                        Text(String(format: "%+.0f", vm.eq[i]))
                             .font(.caption2.monospaced())
-                            .frame(width: 44)
-                        Slider(value: Binding(
-                            get: { vm.eq[i] },
-                            set: { vm.eq[i] = $0; vm.applyEQ(i) }
-                        ), in: -12...12)
-                        .rotationEffect(.degrees(-90))
-                        .frame(width: 120)
+                            .frame(height: 14)
+                        ZStack {
+                            // explicit track — the rotated Slider's own
+                            // track renders too thin to read in dark mode
+                            Capsule().fill(.quaternary)
+                                .frame(width: 4, height: 110)
+                            Slider(value: Binding(
+                                get: { vm.eq[i] },
+                                set: { vm.eq[i] = $0; vm.applyEQ(i) }
+                            ), in: -12...12)
+                            .rotationEffect(.degrees(-90))
+                            .frame(width: 20, height: 110)
+                        }
                         Text(freqLabel(eqFreqs[i]))
                             .font(.caption2.monospaced())
                             .foregroundStyle(.secondary)
                     }
+                    .frame(maxWidth: .infinity)
                 }
             }
-            .frame(height: 170)
+            .frame(height: 150)
             HStack {
                 Button("Flat") {
                     for i in 0..<10 { vm.eq[i] = 0; vm.applyEQ(i) }
                 }
                 Spacer()
+                Text("±12dB · 31Hz band is a low shelf")
+                    .font(.caption2).foregroundStyle(.secondary)
             }
             Spacer()
         }

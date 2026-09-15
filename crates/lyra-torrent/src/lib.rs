@@ -27,6 +27,26 @@ pub struct TorrentFileInfo {
     pub len: u64,
 }
 
+/// Session-level configuration — mostly test/headless knobs; production
+/// defaults are DHT on, OS-assigned listen port.
+#[derive(Debug, Clone, Default)]
+pub struct EngineConfig {
+    pub disable_dht: bool,
+    pub listen_port_range: Option<std::ops::Range<u16>>,
+}
+
+/// Per-add options. `initial_peers` + `disable_trackers` allow a
+/// tracker-less local swarm (tests, trusted LAN seeds).
+#[derive(Debug, Clone, Default)]
+pub struct AddOpts {
+    pub initial_peers: Option<Vec<std::net::SocketAddr>>,
+    pub disable_trackers: bool,
+    /// Overwrite existing files — also the "seed an existing complete
+    /// folder" path: rqbit verifies instead of re-downloading.
+    pub overwrite: bool,
+    pub output_folder: Option<PathBuf>,
+}
+
 pub struct TorrentEngine {
     rt: Runtime,
     session: Arc<librqbit::Session>,
@@ -35,16 +55,38 @@ pub struct TorrentEngine {
 
 impl TorrentEngine {
     pub fn new(download_dir: PathBuf) -> Result<Self, LyraError> {
+        Self::new_with_config(download_dir, EngineConfig::default())
+    }
+
+    pub fn new_with_config(
+        download_dir: PathBuf,
+        cfg: EngineConfig,
+    ) -> Result<Self, LyraError> {
         std::fs::create_dir_all(&download_dir)?;
         let rt = Runtime::new().map_err(|e| LyraError::Remote(e.to_string()))?;
+        let opts = librqbit::SessionOptions {
+            disable_dht: cfg.disable_dht,
+            disable_dht_persistence: cfg.disable_dht,
+            listen_port_range: cfg.listen_port_range,
+            ..Default::default()
+        };
         let session = rt
-            .block_on(librqbit::Session::new(download_dir.clone()))
+            .block_on(librqbit::Session::new_with_opts(download_dir.clone(), opts))
             .map_err(|e| LyraError::Remote(format!("rqbit session: {e}")))?;
         Ok(Self { rt, session, download_dir })
     }
 
+    /// This session's inbound peer port, if listening.
+    pub fn listen_port(&self) -> Option<u16> {
+        self.session.tcp_listen_port()
+    }
+
     /// Add a magnet URI or local .torrent path. Returns torrent id.
     pub fn add(&self, spec: &str) -> Result<usize, LyraError> {
+        self.add_opts(spec, AddOpts::default())
+    }
+
+    pub fn add_opts(&self, spec: &str, add: AddOpts) -> Result<usize, LyraError> {
         let source = if spec.starts_with("magnet:") {
             librqbit::AddTorrent::from_url(spec)
         } else {
@@ -52,8 +94,12 @@ impl TorrentEngine {
                 .map_err(|e| LyraError::Remote(format!("bad torrent file: {e}")))?
         };
         let opts = librqbit::AddTorrentOptions {
-            // Seed only while downloading by default — ratio policy is a
-            // settings knob; keep the default neighborly but bounded.
+            initial_peers: add.initial_peers,
+            disable_trackers: add.disable_trackers,
+            overwrite: add.overwrite,
+            output_folder: add
+                .output_folder
+                .map(|p| p.to_string_lossy().into_owned()),
             ..Default::default()
         };
         let resp = self
@@ -121,6 +167,8 @@ impl TorrentEngine {
         file_idx: usize,
     ) -> Result<Arc<TorrentFileSource>, LyraError> {
         let handle = self.handle(id)?;
+        // rqbit's stream() spawns onto the ambient runtime — enter ours.
+        let _guard = self.rt.enter();
         let stream = handle
             .clone()
             .stream(file_idx)
@@ -132,6 +180,22 @@ impl TorrentEngine {
             file_idx,
             len,
         }))
+    }
+
+    /// Create a .torrent (v1) for a local file or directory — e.g. seeding
+    /// your own library to another Lyra instance. Returns torrent bytes.
+    pub fn create_torrent_bytes(&self, path: &std::path::Path) -> Result<Vec<u8>, LyraError> {
+        let _guard = self.rt.enter();
+        let res = self
+            .rt
+            .block_on(librqbit::create_torrent(
+                path,
+                librqbit::CreateTorrentOptions::default(),
+            ))
+            .map_err(|e| LyraError::Remote(format!("create torrent: {e}")))?;
+        res.as_bytes()
+            .map(|b| b.to_vec())
+            .map_err(|e| LyraError::Remote(format!("serialize torrent: {e}")))
     }
 
     /// Local path of a completed file — the "import into library" hook.
