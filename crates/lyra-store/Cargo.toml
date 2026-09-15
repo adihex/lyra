@@ -1,0 +1,15 @@
+[package]
+name = "lyra-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+lyra-core = { path = "../lyra-core", features = ["db"] }
+rusqlite.workspace = true
+rusqlite_migration.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+lyra-formats = { path = "../lyra-formats" }

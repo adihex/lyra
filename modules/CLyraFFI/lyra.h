@@ -29,4 +29,11 @@ unsigned long lyra_engine_viz_bands(const void *e, float *out, unsigned long n);
 char  *lyra_engine_eq_response(const void *e);    /* JSON: {freqs, db} */
 void   lyra_engine_free(void *e);
 
+/* ── library DB (opaque handle) ── */
+void  *lyra_lib_open(const char *path);           /* null on failure */
+char  *lyra_lib_sync_dir(void *l, const char *dir); /* JSON SyncStats */
+char  *lyra_lib_tracks(void *l);                  /* JSON array */
+char  *lyra_lib_search(void *l, const char *q);   /* JSON array */
+void   lyra_lib_free(void *l);
+
 #endif

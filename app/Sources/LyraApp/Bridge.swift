@@ -33,6 +33,48 @@ enum LyraCore {
     }
 }
 
+/// Persistent library DB — wraps lyra_lib_*. Open once at app start;
+/// rows survive relaunch, rescan only re-probes mtime-changed files.
+final class LyraLibrary {
+    static let shared = LyraLibrary()
+    private var lib: UnsafeMutableRawPointer?
+
+    private init() {
+        let dir = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Lyra", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        lib = dir.appendingPathComponent("library.db").path
+            .withCString { lyra_lib_open($0) }
+    }
+
+    deinit { lyra_lib_free(lib) }
+
+    /// Incremental sync — returns SyncStats dict (walked/probed/skipped/pruned).
+    /// Synchronous + blocking — call off the main thread.
+    @discardableResult
+    func syncDir(_ path: String) -> [String: Any]? {
+        guard let lib, let raw = path.withCString({ lyra_lib_sync_dir(lib, $0) })
+        else { return nil }
+        defer { lyra_string_free(raw) }
+        return try? JSONSerialization.jsonObject(with: Data(String(cString: raw).utf8)) as? [String: Any]
+    }
+
+    /// All library rows (LibraryTrack JSON dicts).
+    var tracks: [[String: Any]] {
+        guard let lib, let raw = lyra_lib_tracks(lib) else { return [] }
+        defer { lyra_string_free(raw) }
+        return (try? JSONSerialization.jsonObject(with: Data(String(cString: raw).utf8)) as? [[String: Any]]) ?? []
+    }
+
+    /// FTS search — prefix terms over title/artist/album.
+    func search(_ q: String) -> [[String: Any]] {
+        guard let lib, let raw = q.withCString({ lyra_lib_search(lib, $0) }) else { return [] }
+        defer { lyra_string_free(raw) }
+        return (try? JSONSerialization.jsonObject(with: Data(String(cString: raw).utf8)) as? [[String: Any]]) ?? []
+    }
+}
+
 /// Playback engine handle — wraps the lyra_engine_* C API.
 final class LyraPlayer {
     static let shared = LyraPlayer()

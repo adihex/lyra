@@ -115,6 +115,9 @@ pub enum LyraError {
     Tag(String),
     #[error("remote: {0}")]
     Remote(String),
+    #[cfg(feature = "db")]
+    #[error("db: {0}")]
+    Db(#[from] rusqlite::Error),
     #[error("audio: {0}")]
     Audio(String),
 }

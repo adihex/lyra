@@ -44,6 +44,7 @@ final class ViewModel: ObservableObject {
     @Published var columnVis = NavigationSplitViewVisibility.all
     @Published var query = ""
     @Published var scanning = false
+    @Published var scanStatus = ""
     @Published var libraryRoot: String?
     @Published var contentID = UUID() // bump → Table skips dataset diffing
 
@@ -77,6 +78,14 @@ final class ViewModel: ObservableObject {
             onPrev: { [weak self] in self?.prev() },
             onSeek: { pos in LyraPlayer.shared.seek(pos) }
         )
+        // Persistent library: rows from the last sync load instantly.
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let ts = LyraLibrary.shared.tracks.map(Track.init)
+            DispatchQueue.main.async {
+                self?.tracks = ts
+                self?.contentID = UUID()
+            }
+        }
     }
     deinit { vizBuf.deallocate() }
 
@@ -119,13 +128,19 @@ final class ViewModel: ObservableObject {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         libraryRoot = url.path
         scanning = true
+        scanStatus = ""
         DispatchQueue.global(qos: .userInitiated).async {
-            let rows = LyraCore.scanDir(path: url.path) ?? []
-            let ts = rows.map(Track.init)
+            // Incremental sync into the persistent DB — only mtime-changed
+            // files get re-probed; then reload all rows.
+            let stats = LyraLibrary.shared.syncDir(url.path)
+            let ts = LyraLibrary.shared.tracks.map(Track.init)
             DispatchQueue.main.async {
                 self.tracks = ts
                 self.contentID = UUID() // force no-diff Table rebuild
                 self.scanning = false
+                if let s = stats {
+                    self.scanStatus = "\(ts.count) tracks — probed \(s["probed"] ?? 0), skipped \(s["skipped"] ?? 0), pruned \(s["pruned"] ?? 0) in \(s["elapsedMs"] ?? s["elapsed_ms"] ?? 0)ms"
+                }
             }
         }
     }
@@ -227,13 +242,6 @@ struct ContentView: View {
             }
         }
         .frame(minWidth: 780, minHeight: 560)
-        .toolbar {
-            ToolbarItem(placement: .status) {
-                Text("lyra-ffi \(LyraCore.version)")
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
-            }
-        }
     }
 
     @ViewBuilder private var detailView: some View {
@@ -268,6 +276,9 @@ struct ContentView: View {
                 }
                 Button(vm.scanning ? "Scanning…" : "Scan folder…") { vm.scanFolder() }
                     .disabled(vm.scanning)
+            }
+            if !vm.scanStatus.isEmpty {
+                Text(vm.scanStatus).font(.caption).foregroundStyle(.secondary)
             }
             if vm.tracks.isEmpty {
                 Spacer()
@@ -332,7 +343,8 @@ struct ContentView: View {
             )
             HStack(spacing: 14) {
                 VStack(alignment: .leading) {
-                    Text(vm.current?.title ?? "—").font(.headline).lineLimit(1)
+                    Text(vm.current?.title ?? "Nothing playing").font(.headline).lineLimit(1)
+                        .foregroundStyle(vm.current == nil ? .secondary : .primary)
                     Text([vm.current?.artist, vm.current?.album].compactMap { $0 }.joined(separator: " — "))
                         .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }

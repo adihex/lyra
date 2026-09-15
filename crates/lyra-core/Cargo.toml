@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+db = ["dep:rusqlite"]
+
 [dependencies]
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
+rusqlite = { workspace = true, optional = true }

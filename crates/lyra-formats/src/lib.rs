@@ -332,32 +332,10 @@ pub fn scan_dir(dir: &Path) -> Result<Vec<LibraryTrack>, LyraError> {
                 .and_then(|e| e.to_str())
                 .map(|s| s.to_lowercase())
                 .unwrap_or_default();
-            if !matches!(
-                ext.as_str(),
-                "flac" | "wav" | "aiff" | "aif" | "m4a" | "mp4" | "mp3" | "ogg"
-                    | "opus" | "dsf" | "dff" | "ape" | "wv" | "wvc"
-            ) {
+            if !is_audio_ext(&ext) {
                 continue;
             }
-            let format = probe(&p);
-            let stream = stream_info(&p).ok();
-            let tags = read_tags(&p).unwrap_or_default();
-            tracks.push(LibraryTrack {
-                path: p.display().to_string(),
-                title: tags.title,
-                artist: tags.artist,
-                album: tags.album,
-                album_artist: tags.album_artist,
-                genre: tags.genre,
-                year: tags.year,
-                track_number: tags.track_number,
-                duration_secs: stream.as_ref().and_then(|s| s.duration_secs),
-                codec: stream.as_ref().map(|s| s.codec.clone()).unwrap_or_default(),
-                sample_rate: stream.as_ref().and_then(|s| s.sample_rate),
-                channels: stream.as_ref().and_then(|s| s.channels),
-                bits_per_sample: stream.as_ref().and_then(|s| s.bits_per_sample),
-                format: stream.map(|s| s.format).unwrap_or(format),
-            });
+            tracks.push(probe_track(&p));
         }
     }
     tracks.sort_by(|a, b| {
@@ -365,6 +343,39 @@ pub fn scan_dir(dir: &Path) -> Result<Vec<LibraryTrack>, LyraError> {
             .cmp(&(b.album.as_deref().unwrap_or(""), b.track_number.unwrap_or(0)))
     });
     Ok(tracks)
+}
+
+/// Probe one file → a library row (format probe + stream info + tags).
+/// Single source for both scan_dir and the store's incremental sync.
+pub fn probe_track(p: &Path) -> LibraryTrack {
+    let format = probe(p);
+    let stream = stream_info(p).ok();
+    let tags = read_tags(p).unwrap_or_default();
+    LibraryTrack {
+        path: p.display().to_string(),
+        title: tags.title,
+        artist: tags.artist,
+        album: tags.album,
+        album_artist: tags.album_artist,
+        genre: tags.genre,
+        year: tags.year,
+        track_number: tags.track_number,
+        duration_secs: stream.as_ref().and_then(|s| s.duration_secs),
+        codec: stream.as_ref().map(|s| s.codec.clone()).unwrap_or_default(),
+        sample_rate: stream.as_ref().and_then(|s| s.sample_rate),
+        channels: stream.as_ref().and_then(|s| s.channels),
+        bits_per_sample: stream.as_ref().and_then(|s| s.bits_per_sample),
+        format: stream.map(|s| s.format).unwrap_or(format),
+    }
+}
+
+/// Extensions the scanner considers audio candidates.
+pub fn is_audio_ext(ext: &str) -> bool {
+    matches!(
+        ext,
+        "flac" | "wav" | "aiff" | "aif" | "m4a" | "mp4" | "mp3" | "ogg"
+            | "opus" | "dsf" | "dff" | "ape" | "wv" | "wvc"
+    )
 }
 
 /// Read tags via lofty — the Rust-native TagLib replacement.

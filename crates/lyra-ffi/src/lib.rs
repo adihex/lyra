@@ -218,6 +218,93 @@ pub unsafe extern "C" fn lyra_engine_eq_response(e: *const lyra_engine::Engine) 
     CString::new(json.to_string()).unwrap_or_default().into_raw()
 }
 
+/// ── Library DB (lyra-store) ─────────────────────────────────────────────
+/// Opaque handle. Open once at app start; the library persists across
+/// launches — rescan only re-probes mtime-changed files.
+
+/// Open/create the library DB at `path`. Null on failure.
+#[no_mangle]
+pub extern "C" fn lyra_lib_open(path: *const c_char) -> *mut lyra_store::Library {
+    init_logging();
+    let path = match unsafe { CStr::from_ptr(path) }.to_str() {
+        Ok(p) if !p.is_empty() => PathBuf::from(p),
+        _ => return std::ptr::null_mut(),
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match lyra_store::Library::open(&path) {
+        Ok(l) => Box::into_raw(Box::new(l)),
+        Err(e) => {
+            tracing::error!("lib open: {e}");
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Incremental sync of a folder into the DB → SyncStats JSON. Caller frees.
+#[no_mangle]
+pub unsafe extern "C" fn lyra_lib_sync_dir(
+    l: *mut lyra_store::Library,
+    dir: *const c_char,
+) -> *mut c_char {
+    if l.is_null() {
+        return std::ptr::null_mut();
+    }
+    let dir = match unsafe { CStr::from_ptr(dir) }.to_str() {
+        Ok(p) => PathBuf::from(p),
+        Err(_) => return std::ptr::null_mut(),
+    };
+    match unsafe { &*l }.sync_dir(&dir) {
+        Ok(stats) => CString::new(serde_json::json!(stats).to_string())
+            .unwrap_or_default()
+            .into_raw(),
+        Err(e) => {
+            tracing::error!("sync_dir: {e}");
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// All library rows as JSON. Caller frees.
+#[no_mangle]
+pub unsafe extern "C" fn lyra_lib_tracks(l: *mut lyra_store::Library) -> *mut c_char {
+    if l.is_null() {
+        return std::ptr::null_mut();
+    }
+    match unsafe { &*l }.all_tracks() {
+        Ok(t) => CString::new(serde_json::json!(t).to_string())
+            .unwrap_or_default()
+            .into_raw(),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+/// FTS search → JSON rows. Caller frees.
+#[no_mangle]
+pub unsafe extern "C" fn lyra_lib_search(
+    l: *mut lyra_store::Library,
+    q: *const c_char,
+) -> *mut c_char {
+    if l.is_null() {
+        return std::ptr::null_mut();
+    }
+    let q = unsafe { CStr::from_ptr(q) }.to_str().unwrap_or_default();
+    match unsafe { &*l }.search(q) {
+        Ok(t) => CString::new(serde_json::json!(t).to_string())
+            .unwrap_or_default()
+            .into_raw(),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn lyra_lib_free(l: *mut lyra_store::Library) {
+    if !l.is_null() {
+        drop(Box::from_raw(l));
+    }
+}
+
 /// Shutdown + free. Safe on null.
 #[no_mangle]
 pub unsafe extern "C" fn lyra_engine_free(e: *mut lyra_engine::Engine) {
