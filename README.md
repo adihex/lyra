@@ -11,6 +11,7 @@ crates/
   lyra-core     domain model — Track, AudioFormat, PlayerCommand/Event
   lyra-formats  probe/decode/tags — symphonia + lofty + ape-decoder + cue-rw
   lyra-fs       byte sources — local + SSH/SFTP remote, block cache, rsync pin
+  lyra-torrent  librqbit engine — download→import + stream-while-downloading
   lyra-dsp      render-thread-safe DSP — biquad EQ, limiter (alloc-free)
   lyra-viz      spectrum/spectrogram/waveform/meters — draw-ready data
   lyra-remote   axum HTTP+WS LAN remote — pairing auth, hashed tokens

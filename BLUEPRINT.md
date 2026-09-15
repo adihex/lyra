@@ -157,6 +157,24 @@ bytes come via bookmarked file); exec path relies on user's ssh config
 (ProxyJump/ports just work); host-key verification still applies (russh
 `check_server_key` — pin per-host on first connect, TOFU).
 
+## § Torrent sources (lyra-torrent)
+
+Same seam as SSH: a torrent file is a `ByteSource`. `librqbit` 8.x (pure
+Rust — DHT, magnets, per-file selection, streaming `FileStream`).
+
+- **Download → import** (default): completes into a managed dir, normal
+  scanner imports as local files. Per-file selection for multi-file album
+  torrents.
+- **Stream-while-downloading**: `TorrentFileSource` wraps rqbit's
+  `FileStream` (AsyncRead+AsyncSeek) — pieces fetch on demand in read
+  order, `CachingSource` absorbs seek latency. Play starts in seconds,
+  not when the swarm finishes.
+- **Seeding policy**: seed-while-downloading default; ratio/time caps and
+  private-tracker seeding are settings, not defaults.
+- **Legality/privacy**: intended for netlabels, etree-style taper archives,
+  CC/PD and artist-distributed content. DHT exposes the swarm IP — offer a
+  tracker-only mode; note it in first-run copy.
+
 ## § Data / ML / integrations
 
 - **rusqlite `bundled`** (SQLite 3.53, FTS5 built in) + `rusqlite_migration`;
