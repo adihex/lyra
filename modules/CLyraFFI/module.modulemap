@@ -1,0 +1,4 @@
+module CLyraFFI [system] {
+    header "lyra.h"
+    export *
+}

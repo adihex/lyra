@@ -1,0 +1,33 @@
+[package]
+name = "lyra-formats"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+lyra-core = { path = "../lyra-core" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+# Memory-safe decode. Symphonia 0.6: explicit features — wavpack/opus aren't
+# wired into released feature flags yet (research: BLUEPRINT.md § formats).
+symphonia = { version = "0.6", default-features = false, features = [
+    "flac", "mp3", "aac", "alac", "vorbis", "pcm", "adpcm",
+    "wav", "aiff", "isomp4", "ogg", "all-meta", "opt-simd",
+] }
+# WavPack: pure-Rust first-party decoder (0.1.1, Jun 2026) — register manually.
+symphonia-codec-wavpack = "0.1"
+# Opus: no mature pure-Rust decoder — libopus via official adapter (FFI boundary
+# is ours; the only C we accept lives behind this seam).
+symphonia-adapter-libopus = "0.3"
+# APE (Monkey's): pure Rust, new but byte-exact vs reference.
+ape-decoder = "0.3"
+
+# Tags: lofty everywhere except DSF/DFF write (audex until lofty#638 lands).
+lofty = "0.24"
+audex = "0.2"
+
+# CUE + encodings: real-world sheets are Shift-JIS/GBK/Latin-1.
+cue-rw = "0.3"
+encoding_rs = "0.8"

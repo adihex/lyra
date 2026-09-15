@@ -1,0 +1,10 @@
+[package]
+name = "lyra-dsp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+lyra-core = { path = "../lyra-core" }
+serde.workspace = true
+thiserror.workspace = true

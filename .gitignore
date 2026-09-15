@@ -1,0 +1,4 @@
+target/
+.build/
+app/.libs/
+.DS_Store

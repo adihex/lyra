@@ -1,0 +1,5 @@
+[tools]
+cmake = "latest"
+mr-boxington = "latest"
+ninja = "latest"
+rust = "stable"
