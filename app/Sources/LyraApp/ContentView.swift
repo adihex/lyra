@@ -874,9 +874,17 @@ struct ContentView: View {
         .background(sel ? Ui.accent
                     : vm.hoveredTrack == t.id ? Ui.ink.opacity(0.05) : Color.clear)
         .contentShape(Rectangle())
-        .onHover { vm.hoveredTrack = $0 ? t.id : nil }
-        .onTapGesture(count: 2) { vm.play(t) }
-        .onTapGesture(count: 1) { vm.selectTrack(t.id) }
+        .onHover { h in
+            let id = h ? t.id : nil
+            if vm.hoveredTrack != id { vm.hoveredTrack = id }
+        }
+        // Single tap only — a paired count:2 gesture delays recognition
+        // ~300ms to disambiguate. clickCount detects the double-click
+        // without the wait.
+        .onTapGesture {
+            vm.selectTrack(t.id)
+            if (NSApp.currentEvent?.clickCount ?? 1) >= 2 { vm.play(t) }
+        }
         .contextMenu { trackMenu(t) }
     }
 
