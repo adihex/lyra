@@ -1,0 +1,33 @@
+[package]
+name = "lyra-map"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# ONNX inference (beat_this, basic-pitch) via ort. Off by default so the
+# crate builds and tests with zero weights and no onnxruntime download;
+# the Null* fallbacks keep the pipeline end-to-end runnable.
+onnx = ["dep:ort"]
+# CoreML execution provider for Apple-silicon acceleration. Must not break
+# Linux builds — verified in CI via `cargo check --features coreml`.
+coreml = ["onnx", "ort/coreml"]
+
+[dependencies]
+lyra-core = { path = "../lyra-core" }
+lyra-formats = { path = "../lyra-formats" }
+lyra-fs = { path = "../lyra-fs" }
+lyra-store = { path = "../lyra-store" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+rustfft.workspace = true
+zstd.workspace = true
+blake3.workspace = true
+# Pinned exact: ONNX runtime for every model stage (MIT/Apache-2.0).
+ort = { version = "=2.0.0-rc.13", optional = true }
+
+[[bin]]
+name = "lyra-mapgen"
+path = "src/bin/lyra-mapgen.rs"
