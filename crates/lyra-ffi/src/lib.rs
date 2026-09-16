@@ -7,7 +7,8 @@
 
 use std::ffi::{c_char, c_int, CStr, CString};
 use std::path::PathBuf;
-use std::sync::Once;
+use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
+use std::sync::{Mutex, Once};
 
 /// mimalloc as the Rust core's allocator — measurable RSS reduction for the
 /// alloc patterns here (many small blocks + stream buffers) vs the macOS
@@ -82,18 +83,81 @@ pub unsafe extern "C" fn lyra_string_free(s: *mut c_char) {
 
 /// ── Playback engine ─────────────────────────────────────────────────────
 /// Opaque handle API. `lyra_engine_new` may return null if no output device.
+///
+/// The engine is hot-swappable: `set_output_mode` builds a replacement,
+/// swaps it in, then retires the old one. `lyra_engine_current` always
+/// returns the live handle — callers must not cache it across a mode
+/// switch. ENGINE_LOCK guards the free vs the remote-command path: the
+/// sink holds it while touching the engine, the swap holds it while
+/// freeing, so a remote command can never land on a retired engine.
+static CURRENT_ENGINE: AtomicUsize = AtomicUsize::new(0);
+static CURRENT_MODE: AtomicI32 = AtomicI32::new(0);
+static ENGINE_LOCK: Mutex<()> = Mutex::new(());
 
-/// Create the engine (brings up the output stream + worker). Null on failure.
+fn install_engine(e: *mut lyra_engine::Engine) -> *mut lyra_engine::Engine {
+    let _g = ENGINE_LOCK.lock().unwrap();
+    let old = CURRENT_ENGINE.swap(e as usize, Ordering::SeqCst)
+        as *mut lyra_engine::Engine;
+    if !old.is_null() {
+        unsafe {
+            (&*old).shutdown();
+            drop(Box::from_raw(old));
+        }
+    }
+    e
+}
+
+/// The live engine handle — re-fetch after any output-mode switch.
+#[no_mangle]
+pub extern "C" fn lyra_engine_current() -> *mut lyra_engine::Engine {
+    CURRENT_ENGINE.load(Ordering::SeqCst) as *mut lyra_engine::Engine
+}
+
+/// Create the engine on the compat (cpal) path. Null on failure.
 #[no_mangle]
 pub extern "C" fn lyra_engine_new() -> *mut lyra_engine::Engine {
+    lyra_engine_new_mode(0)
+}
+
+/// Create the engine on a chosen output path (0 = Compat, 1 = HAL
+/// exclusive). Swaps out any existing engine. Null on failure — a failed
+/// build leaves the previous engine running.
+#[no_mangle]
+pub extern "C" fn lyra_engine_new_mode(mode: c_int) -> *mut lyra_engine::Engine {
     init_logging();
-    match lyra_engine::Engine::new() {
-        Ok(e) => Box::into_raw(Box::new(e)),
+    let m = if mode == 1 {
+        lyra_engine::OutputMode::HalExclusive
+    } else {
+        lyra_engine::OutputMode::Compat
+    };
+    match lyra_engine::Engine::with_output(m) {
+        Ok(e) => {
+            CURRENT_MODE.store(mode, Ordering::SeqCst);
+            install_engine(Box::into_raw(Box::new(e)))
+        }
         Err(e) => {
             tracing::error!("engine init: {e}");
             std::ptr::null_mut()
         }
     }
+}
+
+/// Switch the output path at runtime. 0 ok — the new engine is live and
+/// the old one retired (playback restarts idle). Nonzero on failure —
+/// the previous engine is untouched.
+#[no_mangle]
+pub extern "C" fn lyra_engine_set_output_mode(mode: c_int) -> c_int {
+    if lyra_engine_new_mode(mode).is_null() {
+        1
+    } else {
+        0
+    }
+}
+
+/// 0 = Compat, 1 = HAL exclusive — the mode the live engine was built with.
+#[no_mangle]
+pub extern "C" fn lyra_engine_output_mode() -> c_int {
+    CURRENT_MODE.load(Ordering::SeqCst)
 }
 
 /// Play a local file (block-cached through lyra-fs). Returns 0 if the
@@ -305,12 +369,16 @@ pub unsafe extern "C" fn lyra_lib_free(l: *mut lyra_store::Library) {
     }
 }
 
-/// Shutdown + free. Safe on null.
+/// Shutdown + free the live engine. Safe on null; `e` kept for ABI
+/// symmetry with the other lyra_engine_* calls.
 #[no_mangle]
 pub unsafe extern "C" fn lyra_engine_free(e: *mut lyra_engine::Engine) {
-    if !e.is_null() {
-        unsafe { &*e }.shutdown();
-        drop(Box::from_raw(e));
+    let _g = ENGINE_LOCK.lock().unwrap();
+    let cur = CURRENT_ENGINE.swap(0, Ordering::SeqCst) as *mut lyra_engine::Engine;
+    let p = if cur.is_null() { e } else { cur };
+    if !p.is_null() {
+        unsafe { &*p }.shutdown();
+        drop(Box::from_raw(p));
     }
 }
 
@@ -321,16 +389,19 @@ static REMOTE: std::sync::OnceLock<
     Result<std::sync::Arc<lyra_remote::Host>, String>,
 > = std::sync::OnceLock::new();
 
-/// Engine pointer is app-lifetime (freed only at exit) — the sink calls
-/// channel/atomic methods, all safe to invoke from any thread.
-struct EngineSink(usize);
-unsafe impl Send for EngineSink {}
-unsafe impl Sync for EngineSink {}
+/// Resolves through CURRENT_ENGINE under ENGINE_LOCK so remote commands
+/// always hit the live engine — output-mode swaps can't strand it.
+struct EngineSink;
 
 impl lyra_remote::CommandSink for EngineSink {
     fn handle(&self, cmd: &lyra_core::PlayerCommand) -> serde_json::Value {
         use lyra_core::PlayerCommand as C;
-        let e = unsafe { &*(self.0 as *const lyra_engine::Engine) };
+        let _g = ENGINE_LOCK.lock().unwrap();
+        let ptr = CURRENT_ENGINE.load(Ordering::SeqCst) as *const lyra_engine::Engine;
+        if ptr.is_null() {
+            return serde_json::json!({"ok": false, "error": "no engine"});
+        }
+        let e = unsafe { &*ptr };
         match cmd {
             C::Toggle => {
                 if e.is_playing() { e.pause() } else { e.resume() }
@@ -370,7 +441,7 @@ pub unsafe extern "C" fn lyra_remote_init(
         Ok(p) => PathBuf::from(p),
         Err(_) => return 2,
     };
-    let res = lyra_remote::Host::new(&kp, std::sync::Arc::new(EngineSink(e as usize)))
+    let res = lyra_remote::Host::new(&kp, std::sync::Arc::new(EngineSink))
         .map(std::sync::Arc::new)
         .map_err(|e| e.to_string());
     let _ = REMOTE.set(res);
@@ -421,6 +492,43 @@ pub extern "C" fn lyra_remote_open_pairing() -> *mut c_char {
 #[no_mangle]
 pub extern "C" fn lyra_remote_paired_count() -> c_int {
     remote().map(|h| h.paired_count() as c_int).unwrap_or(-1)
+}
+
+/// Paired devices as JSON [{id, name}] — `id` is the pinned-key hash hex
+/// used by lyra_remote_revoke. Free with lyra_string_free.
+#[no_mangle]
+pub extern "C" fn lyra_remote_devices() -> *mut c_char {
+    match remote() {
+        Ok(h) => {
+            let j = serde_json::json!(h
+                .devices()
+                .iter()
+                .map(|(id, name)| serde_json::json!({"id": id, "name": name}))
+                .collect::<Vec<_>>());
+            CString::new(j.to_string()).unwrap_or_default().into_raw()
+        }
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+/// Remove a paired device by id (hash hex from lyra_remote_devices).
+/// 0 revoked, 1 unknown id, 2 remote not initialized.
+#[no_mangle]
+pub unsafe extern "C" fn lyra_remote_revoke(id: *const c_char) -> c_int {
+    let id = match unsafe { CStr::from_ptr(id) }.to_str() {
+        Ok(s) => s,
+        Err(_) => return 1,
+    };
+    match remote() {
+        Ok(h) => {
+            if h.revoke(id) {
+                0
+            } else {
+                1
+            }
+        }
+        Err(c) => c,
+    }
 }
 
 // ── Torrents ─────────────────────────────────────────────────────────────

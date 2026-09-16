@@ -14,9 +14,15 @@ int   lyra_remote_init(void *e, const char *key_path);
 int   lyra_remote_start(unsigned short port); /* 0 ok, 1 serve failed, 2 error */
 char *lyra_remote_open_pairing(void);         /* JSON {code,fp} — free me */
 int   lyra_remote_paired_count(void);
+char *lyra_remote_devices(void);              /* JSON [{id,name}] — free me */
+int   lyra_remote_revoke(const char *id);     /* 0 revoked, 1 unknown, 2 no remote */
 
 /* ── playback engine (opaque handle) ── */
 void  *lyra_engine_new(void);                     /* null on failure */
+void  *lyra_engine_new_mode(int mode);            /* 0 compat, 1 HAL exclusive */
+void  *lyra_engine_current(void);                 /* live handle — re-fetch after a mode switch */
+int    lyra_engine_set_output_mode(int mode);     /* 0 ok, 1 unavailable — old engine kept */
+int    lyra_engine_output_mode(void);             /* mode of the live engine */
 int    lyra_engine_play_file(void *e, const char *path);
 void   lyra_engine_pause(void *e);
 void   lyra_engine_resume(void *e);

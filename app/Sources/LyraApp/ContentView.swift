@@ -83,6 +83,8 @@ final class ViewModel: ObservableObject {
     @Published var pairCode: String?
     @Published var pairFp = ""
     @Published var pairedCount = 0
+    @Published var pairedDevices: [(id: String, name: String)] = []
+    @Published var exclusiveOutput = false
 
     // now playing
     @Published var current: Track?
@@ -125,6 +127,8 @@ final class ViewModel: ObservableObject {
                 self?.contentID = UUID()
             }
         }
+        exclusiveOutput = LyraPlayer.shared.exclusiveOutput
+        refreshDevices()
     }
     deinit { vizBuf.deallocate() }
 
@@ -208,6 +212,21 @@ final class ViewModel: ObservableObject {
                 }
             }
         }
+    }
+
+    /// NSOpenPanel picker for .torrent files — the only sandbox-clean way
+    /// to reach e.g. ~/Downloads (typed paths outside the container are
+    /// denied; a panel pick grants read for the session).
+    func pickTorrentFile() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [UTType(filenameExtension: "torrent") ?? .data]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        magnetInput = url.path
+        showMagnetEntry = true
+        addTorrent()
     }
 
     /// Accepts a magnet URI or a local .torrent path. Blocks in the FFI on
@@ -335,6 +354,38 @@ final class ViewModel: ObservableObject {
         }
     }
 
+    /// Switch the output path. The FFI swaps in a fresh idle engine — if
+    /// music was playing, restart the track and restore position (seek is
+    /// channel-ordered behind play, so it lands after the decoder opens).
+    func setExclusiveOutput(_ on: Bool) {
+        let wasPlaying = LyraPlayer.shared.isPlaying
+        let pos = LyraPlayer.shared.position
+        let track = current
+        if LyraPlayer.shared.setExclusiveOutput(on) {
+            exclusiveOutput = on
+            UserDefaults.standard.set(on, forKey: "exclusiveOutput")
+            lastError = nil
+            if wasPlaying, let t = track {
+                play(t)
+                if pos > 1 { LyraPlayer.shared.seek(pos) }
+            }
+        } else {
+            exclusiveOutput = LyraPlayer.shared.exclusiveOutput
+            lastError = on
+                ? "Exclusive output unavailable (device busy or not stereo) — staying on shared"
+                : "Couldn't return to shared output"
+        }
+    }
+
+    func refreshDevices() {
+        pairedDevices = LyraRemote.shared.devices
+        pairedCount = pairedDevices.count
+    }
+
+    func revokeDevice(_ id: String) {
+        if LyraRemote.shared.revoke(id) { refreshDevices() }
+    }
+
     func publishNowPlaying(_ t: Track) {
         MediaKeys.shared.publish(title: t.title, artist: t.artist,
                                  album: t.album, duration: t.duration)
@@ -425,6 +476,8 @@ struct ContentView: View {
                         .onSubmit { vm.addTorrent() }
                     Button("Add") { vm.addTorrent() }
                         .disabled(vm.magnetInput.isEmpty || vm.addingTorrent)
+                    Button("Browse…") { vm.pickTorrentFile() }
+                        .disabled(vm.addingTorrent)
                     if vm.addingTorrent {
                         ProgressView().controlSize(.small)
                         Text("resolving…").font(.caption).foregroundStyle(.secondary)
@@ -675,12 +728,30 @@ struct ContentView: View {
                     if let p = r.openPairing() {
                         vm.pairCode = p.code
                         vm.pairFp = p.fingerprint
-                        vm.pairedCount = r.pairedCount
+                        vm.refreshDevices()
                     }
                 }
                 .disabled(!r.running)
                 Text("\(vm.pairedCount) device\(vm.pairedCount == 1 ? "" : "s") paired")
                     .foregroundStyle(.secondary)
+            }
+            if !vm.pairedDevices.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(vm.pairedDevices, id: \.id) { d in
+                        HStack(spacing: 8) {
+                            Image(systemName: "iphone").foregroundStyle(.secondary)
+                            Text(d.name).lineLimit(1)
+                            Text(String(d.id.prefix(10)))
+                                .font(.caption.monospaced())
+                                .foregroundStyle(.tertiary)
+                            Spacer()
+                            Button("Revoke") { vm.revokeDevice(d.id) }
+                                .controlSize(.small)
+                        }
+                    }
+                }
+                .padding(12)
+                .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
             }
             if let code = vm.pairCode {
                 VStack(alignment: .leading, spacing: 8) {
@@ -700,5 +771,6 @@ struct ContentView: View {
             Spacer()
         }
         .padding()
+        .onAppear { vm.refreshDevices() }
     }
 }

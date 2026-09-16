@@ -25,6 +25,13 @@ struct LyraApp: App {
                     .keyboardShortcut(.rightArrow, modifiers: .option)
                 Button("Seek Back 10s") { vm.seekBy(-10) }
                     .keyboardShortcut(.leftArrow, modifiers: .option)
+                Divider()
+                // Exclusive HAL output: hog mode + IOProc. Engine swaps at
+                // runtime; choice persists to the next launch.
+                Toggle("Exclusive Output (HAL)",
+                       isOn: Binding(
+                           get: { vm.exclusiveOutput },
+                           set: { vm.setExclusiveOutput($0) }))
             }
             CommandGroup(replacing: .newItem) {}
         }

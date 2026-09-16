@@ -76,17 +76,32 @@ final class LyraLibrary {
 }
 
 /// Playback engine handle — wraps the lyra_engine_* C API.
+/// The engine is hot-swapped on output-mode changes, so the pointer is
+/// never cached: every call re-reads lyra_engine_current().
 final class LyraPlayer {
     static let shared = LyraPlayer()
-    private var engine: UnsafeMutableRawPointer?
+    private var engine: UnsafeMutableRawPointer? { lyra_engine_current() }
     /// The remote server routes commands into this engine.
     var enginePtr: UnsafeMutableRawPointer? { engine }
 
     private init() {
-        engine = lyra_engine_new()
+        // Persisted choice; fall back to compat if exclusive is unavailable
+        // (device went multichannel, hog denied) — never leave the app silent.
+        let wanted: Int32 = UserDefaults.standard.bool(forKey: "exclusiveOutput") ? 1 : 0
+        if lyra_engine_new_mode(wanted) == nil, wanted == 1 {
+            _ = lyra_engine_new_mode(0)
+        }
     }
 
     deinit { lyra_engine_free(engine) }
+
+    /// Switch output path at runtime. The engine comes back idle — the
+    /// caller decides whether to restart the current track.
+    @discardableResult
+    func setExclusiveOutput(_ on: Bool) -> Bool {
+        lyra_engine_set_output_mode(on ? 1 : 0) == 0
+    }
+    var exclusiveOutput: Bool { lyra_engine_output_mode() == 1 }
 
     @discardableResult
     func play(path: String) -> Bool {
@@ -220,4 +235,23 @@ final class LyraRemote {
     }
 
     var pairedCount: Int { Int(lyra_remote_paired_count()) }
+
+    /// Persisted paired devices — [(pinned-key hash hex, display name)].
+    var devices: [(id: String, name: String)] {
+        guard let raw = lyra_remote_devices() else { return [] }
+        defer { lyra_string_free(raw) }
+        let rows = (try? JSONSerialization.jsonObject(with: Data(String(cString: raw).utf8)))
+            as? [[String: Any]] ?? []
+        return rows.compactMap { r in
+            guard let id = r["id"] as? String, let name = r["name"] as? String
+            else { return nil }
+            return (id, name)
+        }
+    }
+
+    /// Remove a paired device — it must re-pair to connect again.
+    @discardableResult
+    func revoke(_ id: String) -> Bool {
+        id.withCString { lyra_remote_revoke($0) } == 0
+    }
 }
