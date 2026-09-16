@@ -1,0 +1,9 @@
+[package]
+name = "lyra-hal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+lyra-core = { path = "../lyra-core" }
+coreaudio-sys = "0.2.18"

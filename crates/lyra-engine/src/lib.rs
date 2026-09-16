@@ -64,6 +64,80 @@ pub struct VizTap {
     pub fft_accum: Vec<f32>,
 }
 
+/// Output path selection.
+pub enum OutputMode {
+    /// cpal default device — works everywhere, shared with other apps.
+    Compat,
+    /// CoreAudio HAL: hog mode + IOProc, exclusive access. macOS only,
+    /// stereo devices only (multichannel downmix not implemented).
+    HalExclusive,
+}
+
+enum Output {
+    Cpal(cpal::Stream),
+    #[cfg(target_os = "macos")]
+    #[allow(dead_code)]
+    Hal {
+        hog: lyra_hal::Hog,
+        proc_: lyra_hal::IoProc,
+    },
+}
+
+/// The RT-side consumer: ring → volume → position. Shared verbatim by the
+/// cpal data callback and the HAL IOProc pull contract.
+///
+/// `fill` returns frames sourced from the ring, or `usize::MAX` when the
+/// engine is idle (intentional silence — HAL must not count it as an
+/// underrun).
+struct OutputTap {
+    cons: ringbuf::HeapCons<f32>,
+    volume: Arc<AtomicF32>,
+    playing: Arc<AtomicBool>,
+    loaded: Arc<AtomicBool>,
+    ended: Arc<AtomicBool>,
+    position_secs: Arc<AtomicF32>,
+    flush: Arc<AtomicBool>,
+    out_rate: f32,
+    out_ch: usize,
+}
+
+impl OutputTap {
+    fn fill(&mut self, out: &mut [f32]) -> usize {
+        if self.flush.swap(false, Ordering::Relaxed) {
+            self.cons.clear();
+        }
+        let mut got = 0usize;
+        if self.playing.load(Ordering::Relaxed) {
+            got = self.cons.pop_slice(out);
+            // Natural EOF: decoder finished AND ring drained —
+            // now go idle (loaded=false so can_resume is false).
+            if got == 0 && self.ended.load(Ordering::Relaxed) {
+                self.playing.store(false, Ordering::Relaxed);
+                self.loaded.store(false, Ordering::Relaxed);
+            }
+        }
+        let idle = !self.playing.load(Ordering::Relaxed) && got == 0;
+        for s in &mut out[got..] {
+            *s = 0.0; // underrun → silence
+        }
+        let g = self.volume.load(Ordering::Relaxed);
+        if g != 1.0 {
+            for s in &mut out[..got] {
+                *s *= g;
+            }
+        }
+        let frames = got / self.out_ch.max(1);
+        let prev = self.position_secs.load(Ordering::Relaxed);
+        self.position_secs
+            .store(prev + frames as f32 / self.out_rate, Ordering::Relaxed);
+        if idle {
+            usize::MAX
+        } else {
+            frames
+        }
+    }
+}
+
 pub struct Engine {
     cmd: Sender<Command>,
     volume: Arc<AtomicF32>,
@@ -77,25 +151,20 @@ pub struct Engine {
     eq_specs: Arc<Mutex<Vec<Option<BandSpec>>>>,
     /// Rate the filters are built at (source rate — last opened track).
     eq_rate: Arc<AtomicF32>,
-    _stream: cpal::Stream,
+    _output: Output,
     _worker: thread::JoinHandle<()>,
 }
 
 impl Engine {
-    /// Bring up output + worker. Compat path: cpal default device, f32.
+    /// Bring up output + worker on the compat (cpal) path.
     pub fn new() -> Result<Self, LyraError> {
-        let host = cpal::default_host();
-        let device = host
-            .default_output_device()
-            .ok_or_else(|| LyraError::Audio("no output device".into()))?;
-        let supported = device
-            .default_output_config()
-            .map_err(|e| LyraError::Audio(e.to_string()))?;
-        let config: cpal::StreamConfig = supported.clone().into();
-        let out_ch = config.channels as usize;
+        Self::with_output(OutputMode::Compat)
+    }
 
+    /// Bring up output + worker on the selected output path.
+    pub fn with_output(mode: OutputMode) -> Result<Self, LyraError> {
         let rb = HeapRb::<f32>::new(RING_SAMPLES);
-        let (prod, mut cons) = rb.split();
+        let (prod, cons) = rb.split();
 
         let volume = Arc::new(AtomicF32::new(1.0));
         let playing = Arc::new(AtomicBool::new(false));
@@ -104,51 +173,73 @@ impl Engine {
         let position_secs = Arc::new(AtomicF32::new(0.0));
         let flush = Arc::new(AtomicBool::new(false));
 
-        // ── RT callback: copy + volume only. No alloc, no locks. ──────────
-        let (vol_c, play_c, pos_c, flush_c, ended_c, loaded_c) = (
-            Arc::clone(&volume),
-            Arc::clone(&playing),
-            Arc::clone(&position_secs),
-            Arc::clone(&flush),
-            Arc::clone(&ended),
-            Arc::clone(&loaded),
-        );
-        let out_rate = config.sample_rate as f32;
-        let stream = device
-            .build_output_stream(
-                config,
-                move |out: &mut [f32], _| {
-                    if flush_c.swap(false, Ordering::Relaxed) {
-                        cons.clear();
+        let mk_tap = |cons: ringbuf::HeapCons<f32>, out_rate: f32, out_ch: usize| {
+            OutputTap {
+                cons,
+                volume: Arc::clone(&volume),
+                playing: Arc::clone(&playing),
+                loaded: Arc::clone(&loaded),
+                ended: Arc::clone(&ended),
+                position_secs: Arc::clone(&position_secs),
+                flush: Arc::clone(&flush),
+                out_rate,
+                out_ch,
+            }
+        };
+
+        let (output, out_rate, out_ch) = match mode {
+            OutputMode::Compat => {
+                let host = cpal::default_host();
+                let device = host
+                    .default_output_device()
+                    .ok_or_else(|| LyraError::Audio("no output device".into()))?;
+                let supported = device
+                    .default_output_config()
+                    .map_err(|e| LyraError::Audio(e.to_string()))?;
+                let config: cpal::StreamConfig = supported.clone().into();
+                let out_ch = config.channels as usize;
+                let out_rate = config.sample_rate as f32;
+
+                // ── RT callback: copy + volume only. No alloc, no locks. ──
+                let mut tap = mk_tap(cons, out_rate, out_ch);
+                let stream = device
+                    .build_output_stream(
+                        config,
+                        move |out: &mut [f32], _| {
+                            tap.fill(out);
+                        },
+                        |e| warn!("output error: {e}"),
+                        None,
+                    )
+                    .map_err(|e| LyraError::Audio(e.to_string()))?;
+                stream.play().map_err(|e| LyraError::Audio(e.to_string()))?;
+                (Output::Cpal(stream), out_rate, out_ch)
+            }
+            OutputMode::HalExclusive => {
+                #[cfg(target_os = "macos")]
+                {
+                    let dev = lyra_hal::HalDevice::default_output()?;
+                    let (ch, rate, _il) = dev.virtual_format()?;
+                    if ch != 2 {
+                        return Err(LyraError::Audio(format!(
+                            "HAL path is stereo-only; device has {ch}ch (use Compat)"
+                        )));
                     }
-                    let mut got = 0usize;
-                    if play_c.load(Ordering::Relaxed) {
-                        got = cons.pop_slice(out);
-                        // Natural EOF: decoder finished AND ring drained —
-                        // now go idle (loaded=false so can_resume is false).
-                        if got == 0 && ended_c.load(Ordering::Relaxed) {
-                            play_c.store(false, Ordering::Relaxed);
-                            loaded_c.store(false, Ordering::Relaxed);
-                        }
-                    }
-                    for s in &mut out[got..] {
-                        *s = 0.0; // underrun → silence
-                    }
-                    let g = vol_c.load(Ordering::Relaxed);
-                    if g != 1.0 {
-                        for s in &mut out[..got] {
-                            *s *= g;
-                        }
-                    }
-                    let frames = got / out_ch.max(1);
-                    let prev = pos_c.load(Ordering::Relaxed);
-                    pos_c.store(prev + frames as f32 / out_rate, Ordering::Relaxed);
-                },
-                |e| warn!("output error: {e}"),
-                None,
-            )
-            .map_err(|e| LyraError::Audio(e.to_string()))?;
-        stream.play().map_err(|e| LyraError::Audio(e.to_string()))?;
+                    let hog = dev.hog()?;
+                    let mut tap = mk_tap(cons, rate as f32, ch);
+                    let proc_ =
+                        dev.start_ioproc(Box::new(move |buf| tap.fill(buf)))?;
+                    (Output::Hal { hog, proc_ }, rate as f32, ch)
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    let _ = (cons, &mk_tap);
+                    return Err(LyraError::Audio(
+                        "HAL output is macOS-only".into(),
+                    ));
+                }
+            }
+        };
 
         let viz = Arc::new(Mutex::new(VizTap {
             levels: Levels::new(0.85),
@@ -188,7 +279,7 @@ impl Engine {
             viz,
             eq_specs,
             eq_rate,
-            _stream: stream,
+            _output: output,
             _worker: worker,
         })
     }

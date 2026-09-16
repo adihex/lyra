@@ -19,3 +19,6 @@ atomic_float = "1"      # volume: latest-wins scalar, zero locks
 
 [dev-dependencies]
 tracing-subscriber.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+lyra-hal = { path = "../lyra-hal" }

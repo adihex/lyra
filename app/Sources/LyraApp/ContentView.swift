@@ -80,6 +80,9 @@ final class ViewModel: ObservableObject {
     @Published var magnetInput = ""
     @Published var showMagnetEntry = false
     @Published var addingTorrent = false
+    @Published var pairCode: String?
+    @Published var pairFp = ""
+    @Published var pairedCount = 0
 
     // now playing
     @Published var current: Track?
@@ -633,8 +636,41 @@ struct ContentView: View {
     private var remotePane: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Remote Control").font(.title2)
-            Text("Pairing-based auth (SPAKE2 → pinned keys → Noise XX) lands before this is exposed — see BLUEPRINT.md § remote.")
-                .foregroundStyle(.secondary)
+            let r = LyraRemote.shared
+            if !r.running {
+                Label("Listener failed to start — check log", systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+            } else {
+                Label("Listening on :4777 — Noise XX, pinned devices only", systemImage: "antenna.radiowaves.left.and.right")
+                    .foregroundStyle(.secondary)
+            }
+            HStack(spacing: 12) {
+                Button(vm.pairCode == nil ? "Pair new device…" : "Rotate code") {
+                    if let p = r.openPairing() {
+                        vm.pairCode = p.code
+                        vm.pairFp = p.fingerprint
+                        vm.pairedCount = r.pairedCount
+                    }
+                }
+                .disabled(!r.running)
+                Text("\(vm.pairedCount) device\(vm.pairedCount == 1 ? "" : "s") paired")
+                    .foregroundStyle(.secondary)
+            }
+            if let code = vm.pairCode {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Enter this code on the device — it binds one pairing handshake, it is not a credential:")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text(code)
+                        .font(.system(size: 44, weight: .bold, design: .monospaced))
+                        .textSelection(.enabled)
+                    Text("Host key fingerprint: \(vm.pairFp)")
+                        .font(.caption.monospaced()).foregroundStyle(.secondary)
+                }
+                .padding(16)
+                .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
+            }
+            Text("SPAKE2(code) → Noise XXpsk3 → pinned X25519 keys. Reconnects use plain XX — the pinned key is the identity.")
+                .font(.caption2).foregroundStyle(.tertiary)
             Spacer()
         }
         .padding()

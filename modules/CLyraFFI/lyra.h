@@ -9,7 +9,11 @@ const char *lyra_version(void);              /* static, do not free */
 char *lyra_probe(const char *path);          /* JSON: format+stream+tags */
 char *lyra_scan_dir(const char *path);       /* JSON array of LibraryTrack */
 void  lyra_string_free(char *s);
-int   lyra_remote_start(unsigned short port); /* 0 ok, 1 port taken, 2 error */
+/* ── remote: SPAKE2 pairing → pinned keys → Noise XX ── */
+int   lyra_remote_init(void *e, const char *key_path);
+int   lyra_remote_start(unsigned short port); /* 0 ok, 1 serve failed, 2 error */
+char *lyra_remote_open_pairing(void);         /* JSON {code,fp} — free me */
+int   lyra_remote_paired_count(void);
 
 /* ── playback engine (opaque handle) ── */
 void  *lyra_engine_new(void);                     /* null on failure */

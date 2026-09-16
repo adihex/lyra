@@ -139,9 +139,22 @@ ByteSource → TrackDecoder ──[worker]──▶ HeapRb ──[RT callback]�
   EQ bands rebuild on the worker via commands, not shared-mutated on RT.
 - **EOF semantics**: decoder-end ≠ playback-end — `ended` flag lets the
   callback drain the full ring before idling (found by the smoke test).
-- **Audiophile path (next)**: same ring → CoreAudio IOProc driver with hog
-  mode + per-track rate switching. The ring contract is the seam — engine
-  and workers don't change.
+- **Audiophile path (landed, `lyra-hal`)**: `Engine::with_output(
+  OutputMode::HalExclusive)` — hog + IOProc on the same ring contract via
+  the shared `OutputTap` (cpal and HAL callbacks are literally the same
+  code). Verified on-device: `tests/hal_output.rs` plays real WAV through
+  hog+IOProc; `lyra-hal` tests prove enumerate/hog/rate-switch/IOProc
+  tone at realtime with 0 underruns.
+- **HAL lessons burned in**: interleaved buffers report
+  `mDataByteSize = frames·ch·4` (dividing by 4 alone overruns `mData` 2×);
+  `AudioDeviceStart` → EAGAIN(35) while the device settles post-rate-change
+  (retry ~500ms); the default-device property flickers to none during
+  transitions (retry enumeration); rate flips kill a running IOProc —
+  per-track switching must sequence hog→rate→settle→start.
+- **Still open for the audiophile path**: per-track rate switching
+  (sequence above), PhysicalFormat/VirtualFormat integer pinning for
+  bit-perfect, DoP packing, multichannel downmix (HAL is stereo-gated
+  for now).
 
 ## § Audiophile output — `lyra-hal` (research-verified spec)
 

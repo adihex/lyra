@@ -79,6 +79,8 @@ final class LyraLibrary {
 final class LyraPlayer {
     static let shared = LyraPlayer()
     private var engine: UnsafeMutableRawPointer?
+    /// The remote server routes commands into this engine.
+    var enginePtr: UnsafeMutableRawPointer? { engine }
 
     private init() {
         engine = lyra_engine_new()
@@ -172,4 +174,40 @@ final class LyraTorrent {
         defer { lyra_string_free(raw) }
         return try? JSONSerialization.jsonObject(with: Data(String(cString: raw).utf8)) as? [String: Any]
     }
+}
+
+
+/// LAN remote — SPAKE2 pairing → pinned X25519 keys → Noise XX.
+/// The listener binds 0.0.0.0; security lives in the handshake.
+final class LyraRemote {
+    static let shared = LyraRemote()
+    private(set) var running = false
+
+    private init() {
+        let dir = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Lyra", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let key = dir.appendingPathComponent("remote-key.bin").path
+        guard let e = LyraPlayer.shared.enginePtr else { return }
+        if key.withCString({ lyra_remote_init(e, $0) }) == 0,
+           lyra_remote_start(4777) == 0 {
+            running = true
+        } else {
+            NSLog("lyra: remote init/listen failed")
+        }
+    }
+
+    /// Open a pairing window → (code, host fingerprint) or nil.
+    func openPairing() -> (code: String, fingerprint: String)? {
+        guard let raw = lyra_remote_open_pairing() else { return nil }
+        defer { lyra_string_free(raw) }
+        guard let d = try? JSONSerialization.jsonObject(with: Data(String(cString: raw).utf8))
+                as? [String: Any],
+              let code = d["code"] as? String, let fp = d["fp"] as? String
+        else { return nil }
+        return (code, fp)
+    }
+
+    var pairedCount: Int { Int(lyra_remote_paired_count()) }
 }

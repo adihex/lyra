@@ -1,46 +1,124 @@
-//! lyra-remote: LAN remote-control server — the layer BitMuse got wrong.
+//! lyra-remote: LAN remote-control — the layer BitMuse got wrong.
 //!
-//! Design deltas vs incumbent (see BLUEPRINT.md § remote for full rationale):
-//!  - pairing, not PINs: devices pair via short-auth-string / PAKE, get a
-//!    revocable device token. A 4-digit PIN is never the credential.
-//!  - tokens hashed at rest (SHA-256), compared in constant time (subtle)
-//!  - throttle survives restart (persisted) and is keyed on token+IP
-//!  - credentials never appear in URLs — no ?pin= artwork params
-//!  - transport encryption: WSS/mTLS after pairing (TLS wiring is the
-//!    immediate next milestone — see BLUEPRINT.md)
+//! Protocol (BLUEPRINT.md § remote):
+//!   pairing   SPAKE2(6-digit code) → Noise_XXpsk3(psk=spake output)
+//!             → host pins the client's X25519 static (device record)
+//!   reconnect Noise_XX — mutual static-key auth; client static must
+//!             match a pinned device, host static is TOFU-pinned client-side
+//!   transport length-prefixed AEAD frames, JSON commands inside
+//!
+//! A 4-digit PIN is never a credential: the code only *binds* one pairing
+//! handshake — credentials are the pinned X25519 keys it establishes.
+//! Pairing attempts are throttled per-IP and device names are claims, not
+//! identities (the pinned key is the identity).
 
-use axum::{
-    extract::{
-        ws::{Message, WebSocket, WebSocketUpgrade},
-        ConnectInfo, State,
-    },
-    http::StatusCode,
-    response::IntoResponse,
-    routing::{get, post},
-    Json, Router,
-};
-use lyra_core::PlayerCommand;
-use serde::{Deserialize, Serialize};
+use lyra_core::{LyraError, PlayerCommand};
+
 use sha2::{Digest, Sha256};
+use snow::params::NoiseParams;
+use snow::{Builder, HandshakeState, TransportState};
+use spake2::{Ed25519Group, Identity, Password, Spake2};
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use subtle::ConstantTimeEq;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
 use tracing::{info, warn};
 
-const MAX_WS_CONNECTIONS: usize = 4;
+const MAX_CONN: usize = 4;
 const THROTTLE_AFTER: u32 = 5;
 const THROTTLE_WINDOW: Duration = Duration::from_secs(60);
+const MAX_FRAME: usize = 1 << 16;
+/// Patterns: pairing adds psk3 (SPAKE2 output) to XX.
+const PAIR_PATTERN: &str = "Noise_XXpsk3_25519_ChaChaPoly_SHA256";
+const CONN_PATTERN: &str = "Noise_XX_25519_ChaChaPoly_SHA256";
 
-/// Persisted-auth: device tokens are hashed — a stolen DB leaks nothing usable.
-#[derive(Default)]
-pub struct DeviceStore {
-    /// device name -> sha256(token)
-    pub devices: HashMap<String, [u8; 32]>,
+fn params(s: &str) -> NoiseParams {
+    NoiseParams::from_str(s).expect("noise params")
 }
 
-/// Throttle state. TODO(blueprint): persist to disk so restart doesn't reset.
+// ── Keys ─────────────────────────────────────────────────────────────────
+
+/// A persisted X25519 keypair — the host's pinned identity.
+pub struct StaticKey {
+    pub private: [u8; 32],
+    pub public: [u8; 32],
+}
+
+impl StaticKey {
+    pub fn generate() -> Result<Self, LyraError> {
+        let kp = Builder::new(params(CONN_PATTERN))
+            .generate_keypair()
+            .map_err(|e| LyraError::Remote(e.to_string()))?;
+        let mut private = [0u8; 32];
+        let mut public = [0u8; 32];
+        private.copy_from_slice(&kp.private[..32]);
+        public.copy_from_slice(&kp.public[..32]);
+        Ok(Self { private, public })
+    }
+
+    /// Load or create at `path` (0600). Public key exposed for fingerprint UI.
+    pub fn load_or_create(path: &std::path::Path) -> Result<Self, LyraError> {
+        if let Ok(raw) = std::fs::read(path) {
+            if raw.len() == 64 {
+                let mut private = [0u8; 32];
+                let mut public = [0u8; 32];
+                private.copy_from_slice(&raw[..32]);
+                public.copy_from_slice(&raw[32..]);
+                return Ok(Self { private, public });
+            }
+        }
+        let k = Self::generate()?;
+        let mut blob = Vec::with_capacity(64);
+        blob.extend_from_slice(&k.private);
+        blob.extend_from_slice(&k.public);
+        std::fs::write(path, &blob)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        }
+        Ok(k)
+    }
+
+    /// Short fingerprint for display/verification ("Lyra key 3F4A 9C…").
+    pub fn fingerprint(&self) -> String {
+        let h = Sha256::digest(self.public);
+        h.iter()
+            .take(6)
+            .map(|b| format!("{b:02X}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
+// ── Device store ─────────────────────────────────────────────────────────
+
+/// Paired devices, keyed by their X25519 static — the key IS the identity,
+/// the name is a display claim. SHA-256 of pubkey stored, compared in CT.
+#[derive(Default)]
+pub struct DeviceStore {
+    /// sha256(client_static) -> device name
+    pub devices: HashMap<[u8; 32], String>,
+}
+
+impl DeviceStore {
+    fn contains(&self, static_key: &[u8]) -> bool {
+        let h: [u8; 32] = Sha256::digest(static_key).into();
+        self.devices.keys().any(|k| k.ct_eq(&h).into())
+    }
+    fn register(&mut self, static_key: &[u8], name: String) {
+        let h: [u8; 32] = Sha256::digest(static_key).into();
+        self.devices.insert(h, name);
+    }
+}
+
+// ── Throttle ─────────────────────────────────────────────────────────────
+
 #[derive(Default)]
 pub struct Throttle {
     attempts: HashMap<SocketAddr, (u32, Instant)>,
@@ -62,196 +140,447 @@ impl Throttle {
         let entry = self.attempts.entry(addr).or_insert((0, Instant::now()));
         entry.0 += 1;
     }
-    fn clear(&mut self, addr: SocketAddr) {
-        self.attempts.remove(&addr);
+}
+
+// ── Wire framing ─────────────────────────────────────────────────────────
+
+async fn read_frame(s: &mut TcpStream) -> Result<Vec<u8>, LyraError> {
+    let len = s.read_u32().await? as usize;
+    if len == 0 || len > MAX_FRAME {
+        return Err(LyraError::Remote("bad frame".into()));
+    }
+    let mut buf = vec![0u8; len];
+    s.read_exact(&mut buf).await?;
+    Ok(buf)
+}
+
+async fn write_frame(s: &mut TcpStream, data: &[u8]) -> Result<(), LyraError> {
+    s.write_u32(data.len() as u32).await?;
+    s.write_all(data).await?;
+    Ok(())
+}
+
+// ── Command sink ─────────────────────────────────────────────────────────
+
+/// Where commands land — the app injects the engine; tests inject an echo.
+pub trait CommandSink: Send + Sync {
+    fn handle(&self, cmd: &PlayerCommand) -> serde_json::Value;
+}
+
+struct EchoSink;
+impl CommandSink for EchoSink {
+    fn handle(&self, cmd: &PlayerCommand) -> serde_json::Value {
+        serde_json::json!({"ok": true, "got": cmd})
     }
 }
 
-pub struct RemoteState {
-    pub devices: Mutex<DeviceStore>,
-    pub throttle: Mutex<Throttle>,
-    pub connections: Mutex<usize>,
-    /// Injected at start: the one bootstrap secret the app shows as a
-    /// short-auth-string during pairing. Rotates per pairing session.
-    pub pairing_secret: Mutex<Option<[u8; 32]>>,
+// ── Host ─────────────────────────────────────────────────────────────────
+
+/// One open pairing window: a fresh code + the SPAKE2 responder keyed by it.
+struct PairingSession {
+    code: String,
 }
 
-pub fn router(state: Arc<RemoteState>) -> Router {
-    Router::new()
-        .route("/health", get(health))
-        .route("/pair", post(pair))
-        .route("/ws", get(ws_upgrade))
-        .with_state(state)
+pub struct Host {
+    key: StaticKey,
+    devices: Mutex<DeviceStore>,
+    throttle: Mutex<Throttle>,
+    pairing: Mutex<Option<PairingSession>>,
+    sink: Arc<dyn CommandSink>,
+    conns: Arc<Mutex<usize>>,
 }
 
-async fn health() -> &'static str {
-    "lyra-remote ok"
-}
+impl Host {
+    pub fn new(key_path: &std::path::Path, sink: Arc<dyn CommandSink>) -> Result<Self, LyraError> {
+        Ok(Self {
+            key: StaticKey::load_or_create(key_path)?,
+            devices: Mutex::new(DeviceStore::default()),
+            throttle: Mutex::new(Throttle::default()),
+            pairing: Mutex::new(None),
+            sink,
+            conns: Arc::new(Mutex::new(0)),
+        })
+    }
 
-#[derive(Deserialize)]
-struct PairRequest {
-    device_name: String,
-    /// Proof the client saw the on-screen code — placeholder for the real
-    /// PAKE/SAS exchange the blueprint specifies.
-    code_proof: String,
-}
+    /// Show this fingerprint next to the pairing code in the UI.
+    pub fn fingerprint(&self) -> String {
+        self.key.fingerprint()
+    }
 
-#[derive(Serialize)]
-struct PairResponse {
-    device_token: String,
-}
+    /// Open a pairing window — returns the 6-digit code to display.
+    /// One window at a time; a new window rotates the code.
+    pub fn open_pairing(&self) -> String {
+        use rand::Rng;
+        let code = format!("{:06}", rand::thread_rng().gen_range(0..1_000_000u32));
+        *self.pairing.lock().unwrap() = Some(PairingSession { code: code.clone() });
+        code
+    }
 
-async fn pair(
-    State(state): State<Arc<RemoteState>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    Json(req): Json<PairRequest>,
-) -> Result<Json<PairResponse>, (StatusCode, Json<serde_json::Value>)> {
-    {
-        let mut t = state.throttle.lock().unwrap();
-        if let Err(wait) = t.check(addr) {
-            warn!(%addr, "pair throttled");
-            return Err((
-                StatusCode::TOO_MANY_REQUESTS,
-                Json(serde_json::json!({"error":"throttled","retryAfter":wait.as_secs()})),
-            ));
+    pub fn close_pairing(&self) {
+        *self.pairing.lock().unwrap() = None;
+    }
+
+    /// Device count (tests + UI badge).
+    pub fn paired_count(&self) -> usize {
+        self.devices.lock().unwrap().devices.len()
+    }
+
+    // -- connection entry points -------------------------------------------
+
+    async fn handle_conn(self: &Arc<Self>, mut sock: TcpStream, addr: SocketAddr) {
+        {
+            let mut n = self.conns.lock().unwrap();
+            if *n >= MAX_CONN {
+                warn!(%addr, "conn limit");
+                return;
+            }
+            *n += 1;
+        }
+        let _ = self.dispatch(&mut sock, addr).await;
+        *self.conns.lock().unwrap() -= 1;
+    }
+
+    async fn dispatch(&self, sock: &mut TcpStream, addr: SocketAddr) -> Result<(), LyraError> {
+        let hello = read_frame(sock).await?;
+        let op: serde_json::Value = serde_json::from_slice(&hello)
+            .map_err(|_| LyraError::Remote("bad hello".into()))?;
+        match op["op"].as_str() {
+            Some("pair") => self.do_pair(sock, addr, &op).await,
+            Some("connect") => self.do_connect(sock, addr).await,
+            _ => Err(LyraError::Remote("unknown op".into())),
         }
     }
 
-    // TODO(blueprint): replace with SPAKE2/CPACE — a PAKE proves the code was
-    // seen without transmitting it, and yields a session key. This stub only
-    // demonstrates the pairing shape + issue/revoke-token lifecycle.
-    let secret = *state.pairing_secret.lock().unwrap();
-    let Some(expected) = secret else {
-        return Err((
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({"error":"pairing_not_open"})),
-        ));
-    };
-
-    let proof_ok: bool = Sha256::digest(req.code_proof.as_bytes())
-        .ct_eq(&expected)
-        .into();
-
-    if !proof_ok {
-        state.throttle.lock().unwrap().fail(addr);
-        return Err((
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error":"invalid_code"})),
-        ));
-    }
-
-    state.throttle.lock().unwrap().clear(addr);
-    let token = format!("lyr_{}", uuid_v4());
-    let hash: [u8; 32] = Sha256::digest(token.as_bytes()).into();
-    state
-        .devices
-        .lock()
-        .unwrap()
-        .devices
-        .insert(req.device_name, hash);
-
-    Ok(Json(PairResponse { device_token: token }))
-}
-
-fn uuid_v4() -> String {
-    use rand::RngCore;
-    let mut b = [0u8; 16];
-    rand::thread_rng().fill_bytes(&mut b);
-    b[6] = (b[6] & 0x0f) | 0x40;
-    b[8] = (b[8] & 0x3f) | 0x80;
-    format!(
-        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]
-    )
-}
-
-async fn ws_upgrade(
-    State(state): State<Arc<RemoteState>>,
-    ws: WebSocketUpgrade,
-) -> impl IntoResponse {
-    {
-        let mut n = state.connections.lock().unwrap();
-        if *n >= MAX_WS_CONNECTIONS {
-            return (StatusCode::SERVICE_UNAVAILABLE, "max connections").into_response();
-        }
-        *n += 1;
-    }
-    ws.on_upgrade(move |sock| ws_session(sock, state)).into_response()
-}
-
-#[derive(Deserialize)]
-struct AuthMsg {
-    auth: String,
-}
-
-async fn ws_session(mut sock: WebSocket, state: Arc<RemoteState>) {
-    let authed = match sock.recv().await {
-        Some(Ok(Message::Text(txt))) => match serde_json::from_str::<AuthMsg>(&txt) {
-            Ok(m) => device_token_valid(&state, m.auth.as_bytes()),
-            Err(_) => false,
-        },
-        _ => false,
-    };
-
-    if !authed {
-        let _ = sock
-            .send(Message::Text(r#"{"error":"not_authenticated"}"#.into()))
-            .await;
-        let _ = sock.send(Message::Close(None)).await;
-        *state.connections.lock().unwrap() -= 1;
-        return;
-    }
-
-    info!("remote client authenticated");
-    let _ = sock
-        .send(Message::Text(r#"{"event":"state","playing":false}"#.into()))
-        .await;
-
-    // TODO: route into engine — for scaffold, echo parsed commands.
-    while let Some(Ok(msg)) = sock.recv().await {
-        if let Message::Text(txt) = msg {
-            if let Ok(cmd) = serde_json::from_str::<PlayerCommand>(&txt) {
-                let _ = sock
-                    .send(Message::Text(
-                        serde_json::json!({"ok":true,"got":cmd}).to_string().into(),
-                    ))
-                    .await;
+    /// SPAKE2 → XXpsk3 → pin client static → encrypted command loop.
+    async fn do_pair(
+        &self,
+        sock: &mut TcpStream,
+        addr: SocketAddr,
+        hello: &serde_json::Value,
+    ) -> Result<(), LyraError> {
+        {
+            let mut t = self.throttle.lock().unwrap();
+            if t.check(addr).is_err() {
+                warn!(%addr, "pair throttled");
+                return Ok(());
             }
         }
+        let code = self
+            .pairing
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|p| p.code.clone());
+        let Some(code) = code else {
+            write_frame(sock, br#"{"error":"pairing_closed"}"#).await?;
+            return Ok(());
+        };
+        let name = hello["name"].as_str().unwrap_or("device").to_string();
+        let client_spake = read_frame(sock).await?;
+
+        let (b_side, b_msg) = Spake2::<Ed25519Group>::start_b(
+            &Password::new(code.as_bytes()),
+            &Identity::new(b"lyra-remote"),
+            &Identity::new(name.as_bytes()),
+        );
+        write_frame(sock, &b_msg).await?;
+        let psk: [u8; 32] = match b_side.finish(&client_spake) {
+            Ok(k) => {
+                let mut p = [0u8; 32];
+                p.copy_from_slice(&Sha256::digest(&k)[..32]);
+                p
+            }
+            Err(_) => {
+                self.throttle.lock().unwrap().fail(addr);
+                write_frame(sock, br#"{"error":"bad_code"}"#).await?;
+                return Ok(());
+            }
+        };
+
+        let hs = Builder::new(params(PAIR_PATTERN))
+            .local_private_key(&self.key.private)
+            .map_err(|e| LyraError::Remote(e.to_string()))?
+            .psk(3, &psk)
+            .map_err(|e| LyraError::Remote(e.to_string()))?
+            .build_responder()
+            .map_err(|e| LyraError::Remote(e.to_string()))?;
+
+        let ts = match noise_handshake_responder(sock, hs).await {
+            Ok(t) => t,
+            Err(e) => {
+                self.throttle.lock().unwrap().fail(addr);
+                return Err(e);
+            }
+        };
+        let client_static = ts
+            .get_remote_static()
+            .ok_or_else(|| LyraError::Remote("no client static".into()))?
+            .to_vec();
+        self.devices
+            .lock()
+            .unwrap()
+            .register(&client_static, name.clone());
+        info!(%addr, %name, "device paired");
+        self.command_loop(sock, ts, "paired").await
     }
-    *state.connections.lock().unwrap() -= 1;
+
+    /// Plain XX — client static must already be pinned.
+    async fn do_connect(&self, sock: &mut TcpStream, addr: SocketAddr) -> Result<(), LyraError> {
+        let hs = Builder::new(params(CONN_PATTERN))
+            .local_private_key(&self.key.private)
+            .map_err(|e| LyraError::Remote(e.to_string()))?
+            .build_responder()
+            .map_err(|e| LyraError::Remote(e.to_string()))?;
+        let ts = noise_handshake_responder(sock, hs).await?;
+        let client_static = ts
+            .get_remote_static()
+            .ok_or_else(|| LyraError::Remote("no client static".into()))?
+            .to_vec();
+        if !self.devices.lock().unwrap().contains(&client_static) {
+            warn!(%addr, "unknown device key — closing");
+            return Ok(());
+        }
+        info!(%addr, "paired device connected");
+        self.command_loop(sock, ts, "connected").await
+    }
+
+    /// Encrypted JSON command loop until EOF.
+    async fn command_loop(
+        &self,
+        sock: &mut TcpStream,
+        mut ts: TransportState,
+        hello: &str,
+    ) -> Result<(), LyraError> {
+        send_enc(sock, &mut ts, &serde_json::json!({"event": hello, "fp": self.fingerprint()})).await?;
+        loop {
+            let ct = match read_frame(sock).await {
+                Ok(f) => f,
+                Err(_) => return Ok(()), // clean close
+            };
+            let mut pt = vec![0u8; ct.len()];
+            let n = ts
+                .read_message(&ct, &mut pt)
+                .map_err(|_| LyraError::Remote("decrypt".into()))?;
+            let cmd: PlayerCommand = match serde_json::from_slice(&pt[..n]) {
+                Ok(c) => c,
+                Err(_) => {
+                    send_enc(sock, &mut ts, &serde_json::json!({"error":"bad_command"})).await?;
+                    continue;
+                }
+            };
+            let resp = self.sink.handle(&cmd);
+            send_enc(sock, &mut ts, &resp).await?;
+        }
+    }
 }
 
-fn device_token_valid(state: &RemoteState, token: &[u8]) -> bool {
-    let hash: [u8; 32] = Sha256::digest(token).into();
-    state
-        .devices
-        .lock()
-        .unwrap()
-        .devices
-        .values()
-        .any(|stored| stored.ct_eq(&hash).into())
+/// Drive the responder side of an XX handshake over framed TCP.
+async fn noise_handshake_responder(
+    sock: &mut TcpStream,
+    mut hs: HandshakeState,
+) -> Result<TransportState, LyraError> {
+    let mut buf = vec![0u8; MAX_FRAME];
+    // XX: ->e / <-e,ee,s,es / ->s,se
+    let m1 = read_frame(sock).await?;
+    hs.read_message(&m1, &mut buf)
+        .map_err(|e| LyraError::Remote(format!("hs1: {e}")))?;
+    let n = hs
+        .write_message(&[], &mut buf)
+        .map_err(|e| LyraError::Remote(format!("hs2w: {e}")))?;
+    write_frame(sock, &buf[..n]).await?;
+    let m3 = read_frame(sock).await?;
+    hs.read_message(&m3, &mut buf)
+        .map_err(|e| LyraError::Remote(format!("hs3: {e}")))?;
+    hs.into_transport_mode()
+        .map_err(|e| LyraError::Remote(e.to_string()))
 }
 
-/// Binds all interfaces — LAN reachability is the feature. The security
-/// boundary is the pairing protocol, not the bind address. Optional: restrict
-/// to a user-picked interface later.
-pub async fn serve(port: u16) -> Result<(), lyra_core::LyraError> {
-    let state = Arc::new(RemoteState {
-        devices: Mutex::new(DeviceStore::default()),
-        throttle: Mutex::new(Throttle::default()),
-        connections: Mutex::new(0),
-        pairing_secret: Mutex::new(None),
-    });
-    let app = router(state);
-    let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))
+async fn send_enc(
+    sock: &mut TcpStream,
+    ts: &mut TransportState,
+    v: &serde_json::Value,
+) -> Result<(), LyraError> {
+    let pt = serde_json::to_vec(v).map_err(|e| LyraError::Remote(e.to_string()))?;
+    let mut buf = vec![0u8; pt.len() + 64];
+    let n = ts
+        .write_message(&pt, &mut buf)
+        .map_err(|e| LyraError::Remote(e.to_string()))?;
+    write_frame(sock, &buf[..n]).await
+}
+
+// ── Client ───────────────────────────────────────────────────────────────
+// The phone-side implementation in Rust — doubles as the test driver and
+// the reference for the eventual iOS companion app's protocol layer.
+
+pub struct Client {
+    key: StaticKey,
+}
+
+impl Default for Client {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Client {
+    pub fn new() -> Self {
+        Self {
+            key: StaticKey::generate().expect("keygen"),
+        }
+    }
+
+    /// Pair with `code` → encrypted session. `name` is the display claim.
+    pub async fn pair(
+        &self,
+        addr: SocketAddr,
+        name: &str,
+        code: &str,
+    ) -> Result<Session, LyraError> {
+        let mut sock = TcpStream::connect(addr).await?;
+        write_frame(&mut sock, &serde_json::json!({"op":"pair","name":name}).to_string().into_bytes())
+            .await?;
+
+        let (a_side, a_msg) = Spake2::<Ed25519Group>::start_a(
+            &Password::new(code.as_bytes()),
+            &Identity::new(b"lyra-remote"),
+            &Identity::new(name.as_bytes()),
+        );
+        write_frame(&mut sock, &a_msg).await?;
+        let b_msg = read_frame(&mut sock).await?;
+        // server may refuse inline
+        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&b_msg) {
+            if v.get("error").is_some() {
+                return Err(LyraError::Remote(
+                    v["error"].as_str().unwrap_or("pair refused").into(),
+                ));
+            }
+        }
+        let k = a_side
+            .finish(&b_msg)
+            .map_err(|_| LyraError::Remote("spake failed".into()))?;
+        let mut psk = [0u8; 32];
+        psk.copy_from_slice(&Sha256::digest(&k)[..32]);
+
+        let mut hs = Builder::new(params(PAIR_PATTERN))
+            .local_private_key(&self.key.private)
+            .map_err(|e| LyraError::Remote(e.to_string()))?
+            .psk(3, &psk)
+            .map_err(|e| LyraError::Remote(e.to_string()))?
+            .build_initiator()
+            .map_err(|e| LyraError::Remote(e.to_string()))?;
+        let ts = noise_handshake_initiator(&mut sock, hs).await?;
+        Ok(Session { sock, ts })
+    }
+
+    /// Reconnect with the pinned static — no code needed.
+    pub async fn connect(&self, addr: SocketAddr) -> Result<Session, LyraError> {
+        let mut sock = TcpStream::connect(addr).await?;
+        write_frame(&mut sock, br#"{"op":"connect"}"#).await?;
+        let mut hs = Builder::new(params(CONN_PATTERN))
+            .local_private_key(&self.key.private)
+            .map_err(|e| LyraError::Remote(e.to_string()))?
+            .build_initiator()
+            .map_err(|e| LyraError::Remote(e.to_string()))?;
+        let ts = noise_handshake_initiator(&mut sock, hs).await?;
+        Ok(Session { sock, ts })
+    }
+
+    /// Reconnect but verify the host is still the pinned key (TOFU check
+    /// client-side: pass the fingerprint learned at pairing time).
+    pub async fn connect_verify(
+        &self,
+        addr: SocketAddr,
+        expected_host_pub: &[u8; 32],
+    ) -> Result<Session, LyraError> {
+        let mut sock = TcpStream::connect(addr).await?;
+        write_frame(&mut sock, br#"{"op":"connect"}"#).await?;
+        let mut hs = Builder::new(params(CONN_PATTERN))
+            .local_private_key(&self.key.private)
+            .map_err(|e| LyraError::Remote(e.to_string()))?
+            .remote_public_key(expected_host_pub)
+            .map_err(|e| LyraError::Remote(e.to_string()))?
+            .build_initiator()
+            .map_err(|e| LyraError::Remote(e.to_string()))?;
+        let ts = noise_handshake_initiator(&mut sock, hs).await?;
+        Ok(Session { sock, ts })
+    }
+}
+
+/// Drive the initiator side of an XX handshake.
+async fn noise_handshake_initiator(
+    sock: &mut TcpStream,
+    mut hs: HandshakeState,
+) -> Result<TransportState, LyraError> {
+    let mut buf = vec![0u8; MAX_FRAME];
+    let n = hs
+        .write_message(&[], &mut buf)
+        .map_err(|e| LyraError::Remote(format!("hs1w: {e}")))?;
+    write_frame(sock, &buf[..n]).await?;
+    let m2 = read_frame(sock).await?;
+    hs.read_message(&m2, &mut buf)
+        .map_err(|e| LyraError::Remote(format!("hs2: {e}")))?;
+    let n = hs
+        .write_message(&[], &mut buf)
+        .map_err(|e| LyraError::Remote(format!("hs3w: {e}")))?;
+    write_frame(sock, &buf[..n]).await?;
+    hs.into_transport_mode()
+        .map_err(|e| LyraError::Remote(e.to_string()))
+}
+
+/// An established encrypted session — post-pairing or post-connect.
+pub struct Session {
+    sock: TcpStream,
+    ts: TransportState,
+}
+
+impl Session {
+    /// The host's pinned static, learned during the handshake (pin it).
+    pub fn host_static(&self) -> Option<[u8; 32]> {
+        let s = self.ts.get_remote_static()?;
+        let mut k = [0u8; 32];
+        k.copy_from_slice(&s[..32]);
+        Some(k)
+    }
+
+    /// Read the server's first frame ({event:"paired"|"connected",fp}).
+    pub async fn hello(&mut self) -> Result<serde_json::Value, LyraError> {
+        self.recv().await
+    }
+
+    pub async fn send(&mut self, cmd: &PlayerCommand) -> Result<serde_json::Value, LyraError> {
+        send_enc(&mut self.sock, &mut self.ts, &serde_json::to_value(cmd).map_err(|e| LyraError::Remote(e.to_string()))?)
+            .await?;
+        self.recv().await
+    }
+
+    pub async fn recv(&mut self) -> Result<serde_json::Value, LyraError> {
+        let ct = read_frame(&mut self.sock).await?;
+        let mut pt = vec![0u8; ct.len()];
+        let n = self
+            .ts
+            .read_message(&ct, &mut pt)
+            .map_err(|_| LyraError::Remote("decrypt".into()))?;
+        serde_json::from_slice(&pt[..n]).map_err(|e| LyraError::Remote(e.to_string()))
+    }
+}
+
+// ── Serve ────────────────────────────────────────────────────────────────
+
+/// Binds all interfaces — LAN reachability is the feature; the security
+/// boundary is the handshake, not the bind address.
+pub async fn serve(host: Arc<Host>, port: u16) -> Result<(), LyraError> {
+    let listener = TcpListener::bind(("0.0.0.0", port))
         .await
-        .map_err(lyra_core::LyraError::Io)?;
+        .map_err(LyraError::Io)?;
     info!(port, "lyra-remote listening");
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .await
-    .map_err(lyra_core::LyraError::Io)
+    loop {
+        let (sock, addr) = listener.accept().await.map_err(LyraError::Io)?;
+        let h = Arc::clone(&host);
+        tokio::spawn(async move { h.handle_conn(sock, addr).await });
+    }
+}
+
+/// Default host on loopback-friendly config for tests/examples.
+pub fn host_with_echo(key_path: PathBuf) -> Result<Arc<Host>, LyraError> {
+    Host::new(&key_path, Arc::new(EchoSink)).map(Arc::new)
 }

@@ -314,26 +314,113 @@ pub unsafe extern "C" fn lyra_engine_free(e: *mut lyra_engine::Engine) {
     }
 }
 
-/// Start the remote-control server on `port` in a background runtime.
-/// Returns 0 on success, 1 if the port is taken, 2 for other failures.
-/// NOTE: pairing/transport-encryption per BLUEPRINT.md land before this is
-/// safe to expose — scaffold binds the skeleton only.
+// ── Remote control ───────────────────────────────────────────────────────
+// One global Host; commands route into the engine via EngineSink.
+
+static REMOTE: std::sync::OnceLock<
+    Result<std::sync::Arc<lyra_remote::Host>, String>,
+> = std::sync::OnceLock::new();
+
+/// Engine pointer is app-lifetime (freed only at exit) — the sink calls
+/// channel/atomic methods, all safe to invoke from any thread.
+struct EngineSink(usize);
+unsafe impl Send for EngineSink {}
+unsafe impl Sync for EngineSink {}
+
+impl lyra_remote::CommandSink for EngineSink {
+    fn handle(&self, cmd: &lyra_core::PlayerCommand) -> serde_json::Value {
+        use lyra_core::PlayerCommand as C;
+        let e = unsafe { &*(self.0 as *const lyra_engine::Engine) };
+        match cmd {
+            C::Toggle => {
+                if e.is_playing() { e.pause() } else { e.resume() }
+            }
+            C::StopAfterCurrent => e.stop(),
+            C::Seek { position_secs } => e.seek(*position_secs),
+            C::Volume { value } => e.set_volume(*value),
+            C::Mute { on } => e.set_volume(if *on { 0.0 } else { 1.0 }),
+            _ => return serde_json::json!({"ok": false, "error": "unhandled"}),
+        }
+        serde_json::json!({
+            "ok": true,
+            "playing": e.is_playing(),
+            "position": e.position_secs(),
+        })
+    }
+}
+
+fn remote() -> Result<&'static std::sync::Arc<lyra_remote::Host>, c_int> {
+    match REMOTE.get() {
+        Some(Ok(h)) => Ok(h),
+        _ => Err(2),
+    }
+}
+
+/// Create the remote host bound to `e`. `key_path` persists the pinned
+/// X25519 identity. Call once at app start. 0 ok, 1 init failed.
+#[no_mangle]
+pub unsafe extern "C" fn lyra_remote_init(
+    e: *mut lyra_engine::Engine,
+    key_path: *const c_char,
+) -> c_int {
+    if e.is_null() {
+        return 2;
+    }
+    let kp = match unsafe { CStr::from_ptr(key_path) }.to_str() {
+        Ok(p) => PathBuf::from(p),
+        Err(_) => return 2,
+    };
+    let res = lyra_remote::Host::new(&kp, std::sync::Arc::new(EngineSink(e as usize)))
+        .map(std::sync::Arc::new)
+        .map_err(|e| e.to_string());
+    let _ = REMOTE.set(res);
+    match REMOTE.get() {
+        Some(Ok(_)) => 0,
+        _ => 1,
+    }
+}
+
+/// Start the Noise listener on `port` in a background runtime. 0 ok.
 #[no_mangle]
 pub extern "C" fn lyra_remote_start(port: u16) -> c_int {
     init_logging();
+    let host = match remote() {
+        Ok(h) => std::sync::Arc::clone(h),
+        Err(c) => return c,
+    };
     std::thread::spawn(move || {
         let rt = match tokio::runtime::Runtime::new() {
             Ok(rt) => rt,
             Err(_) => return 2,
         };
         rt.block_on(async move {
-            match lyra_remote::serve(port).await {
+            match lyra_remote::serve(host, port).await {
                 Ok(()) => 0,
                 Err(_) => 1,
             }
         })
     });
     0
+}
+
+/// Open a pairing window → JSON {"code":"123456","fp":"AA BB .."}.
+/// Null if remote not initialized. Free with lyra_string_free.
+#[no_mangle]
+pub extern "C" fn lyra_remote_open_pairing() -> *mut c_char {
+    match remote() {
+        Ok(h) => {
+            let code = h.open_pairing();
+            let j = serde_json::json!({"code": code, "fp": h.fingerprint()});
+            CString::new(j.to_string()).unwrap().into_raw()
+        }
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+/// Number of pinned devices.
+#[no_mangle]
+pub extern "C" fn lyra_remote_paired_count() -> c_int {
+    remote().map(|h| h.paired_count() as c_int).unwrap_or(-1)
 }
 
 // ── Torrents ─────────────────────────────────────────────────────────────
