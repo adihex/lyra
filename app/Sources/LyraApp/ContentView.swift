@@ -646,7 +646,8 @@ final class ViewModel: ObservableObject {
 
     func publishNowPlaying(_ t: Track) {
         MediaKeys.shared.publish(title: t.title, artist: t.artist,
-                                 album: t.album, duration: t.duration)
+                                 album: t.album, duration: t.duration,
+                                 artworkHash: t.artworkHash)
     }
 
     func fmt(_ s: Double) -> String {

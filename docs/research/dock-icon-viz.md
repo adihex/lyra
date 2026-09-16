@@ -229,3 +229,7 @@ Lifecycle rules:
 - **Double-pump hazard:** calling `pump()` from the dock tick while the window's mini surface also pumps double-eases the compositor. Solved by `pumpIfStale` — do not skip that change.
 - **Don't mix icon APIs:** `applicationIconImage` + `contentView` together flicker (bad-dock). `contentView` only.
 - **Resist scope creep:** no NSDockTilePlugin (MAS-banned, pointless), no badgeLabel ticker, no per-frame `applicationIconImage`. The whole feature is ~250 lines: one scene struct, one CG painter, one NSView, one 12 Hz driver, one enum case + Canvas painter for the pane mode.
+
+---
+
+*See also `desktop-pet.md` — same Cosmos scene popped out of the Dock onto the desktop as a roaming pet (borderless NSPanel per body, the icon literally empties while it's out).*

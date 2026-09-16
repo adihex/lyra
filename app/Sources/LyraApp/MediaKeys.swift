@@ -39,7 +39,8 @@ final class MediaKeys {
 
     /// Publish track metadata + live state — call on track change, seek,
     /// and play/pause transitions.
-    func publish(title: String, artist: String, album: String, duration: Double) {
+    func publish(title: String, artist: String, album: String, duration: Double,
+                 artworkHash: String? = nil) {
         let (playing, pos) = getState?() ?? (false, 0)
         var info: [String: Any] = [
             MPMediaItemPropertyTitle: title,
@@ -50,6 +51,10 @@ final class MediaKeys {
             MPNowPlayingInfoPropertyPlaybackRate: playing ? 1.0 : 0.0,
         ]
         info[MPMediaItemPropertyMediaType] = MPNowPlayingInfoMediaType.audio.rawValue
+        if let img = Artwork.image(artworkHash, size: 256) {
+            info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(
+                boundsSize: img.size) { _ in img }
+        }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
         // THE line that makes macOS hand us the media keys:
         MPNowPlayingInfoCenter.default().playbackState = playing ? .playing : .paused

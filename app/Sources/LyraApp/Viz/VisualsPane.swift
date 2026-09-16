@@ -76,7 +76,7 @@ struct VisualsPane: View {
                 ArtImage(hash: vm.current?.artworkHash,
                          label: vm.current?.album ?? "♪",
                          size: side, px: 0)
-                Text(vm.current.map { "\($0.artist ?? "Unknown") — \($0.album)" }
+                Text(vm.current.map { "\($0.artist) — \($0.album)" }
                      ?? "No track selected")
                     .font(.uiCaption).foregroundStyle(Ui.inkSoft)
                     .lineLimit(1)
