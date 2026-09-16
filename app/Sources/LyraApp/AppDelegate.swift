@@ -23,7 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate,
                 os_log("LYRA_AUTOPLAY %{public}@ → %{public}@", auto, ok ? "ok" : "FAILED")
             }
         }
-        // LYRA_DEBUG_PANE=visuals|library|eq|remote — lane select for
+        // LYRA_DEBUG_PANE=visuals|library|discover|eq|remote — lane select for
         // headless QA runs; combined with LYRA_AUTOPLAY it gives a
         // deterministic "playing on the visuals pane" state.
         if let pane = ProcessInfo.processInfo.environment["LYRA_DEBUG_PANE"] {

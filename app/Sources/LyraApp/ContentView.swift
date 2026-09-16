@@ -145,6 +145,15 @@ final class ViewModel: ObservableObject {
     @Published var pairedDevices: [(id: String, name: String)] = []
     @Published var exclusiveOutput = false
 
+    // discover — lossless-first legal torrent indexes
+    @Published var discoverQuery = ""
+    @Published var discoverResults: [DiscoverResult] = []
+    @Published var discoverIssues: [String] = []
+    @Published var discoverBusy = false
+    @Published var discoverExpanded: String?
+    @Published var discoverDetail: [String: [String: Any]] = [:]
+    @Published var discoverResolving = false
+
     // now playing
     @Published var hoveredTrack: String?
     @Published var current: Track?
@@ -464,6 +473,81 @@ final class ViewModel: ObservableObject {
         }
     }
 
+    /// Lossless-first search over the legal indexes. Blocks on network —
+    /// runs off-main; results arrive pre-sorted lossless-first and get one
+    /// defensive local re-sort (verified-lossless, then seeds).
+    func runDiscover() {
+        let q = discoverQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty, !discoverBusy else { return }
+        discoverBusy = true
+        discoverIssues = []
+        DispatchQueue.global(qos: .userInitiated).async {
+            let (rows, issues) = LyraSearch.shared.search(q)
+            var results = rows.map(DiscoverResult.init)
+            results.sort {
+                let l = ($0.lossless == true) != ($1.lossless == true)
+                if l { return $0.lossless == true }
+                return ($0.seeds ?? 0) > ($1.seeds ?? 0)
+            }
+            let msgs = issues.compactMap { $0["error"] as? String ?? $0["message"] as? String }
+            DispatchQueue.main.async {
+                self.discoverResults = results
+                self.discoverIssues = msgs
+                self.discoverExpanded = nil
+                self.discoverDetail = [:]
+                self.discoverBusy = false
+                if results.isEmpty && msgs.isEmpty {
+                    self.discoverIssues = ["No results — try a broader query"]
+                }
+            }
+        }
+    }
+
+    /// Row expansion fetches the full file list + addable spec once and
+    /// caches it in discoverDetail keyed by result id.
+    func expandDiscover(_ r: DiscoverResult) {
+        if discoverExpanded == r.id { discoverExpanded = nil; return }
+        discoverExpanded = r.id
+        guard discoverDetail[r.id] == nil, !discoverResolving else { return }
+        discoverResolving = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let detail = LyraSearch.shared.resolve(r.raw)
+            DispatchQueue.main.async {
+                self.discoverResolving = false
+                if let detail { self.discoverDetail[r.id] = detail }
+            }
+        }
+    }
+
+    /// Resolved result → addable spec → the shared torrent-add path, which
+    /// materializes playable rows in the library table.
+    func addDiscover(_ r: DiscoverResult) {
+        let cached = discoverDetail[r.id]
+        let apply: ([String: Any]) -> Void = { detail in
+            guard let spec = LyraSearch.addableSpec(detail) else {
+                self.lastError = "No addable torrent spec for \(r.name)"
+                return
+            }
+            self.magnetInput = spec
+            self.addTorrent()
+        }
+        if let cached { apply(cached); return }
+        guard !discoverResolving else { return }
+        discoverResolving = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let detail = LyraSearch.shared.resolve(r.raw)
+            DispatchQueue.main.async {
+                self.discoverResolving = false
+                guard let detail else {
+                    self.lastError = "Resolve failed for \(r.name)"
+                    return
+                }
+                self.discoverDetail[r.id] = detail
+                apply(detail)
+            }
+        }
+    }
+
     /// Fill in durations for fresh torrent rows — each probe reads the
     /// file's header region only (piece 0 fetches on demand), serially in
     /// the background so a 20-file album doesn't hammer the swarm.
@@ -749,6 +833,7 @@ enum StageFace: Int { case viz, art }
 
 enum SidebarItem: String, CaseIterable, Identifiable {
     case library = "Library"
+    case discover = "Discover"
     case eq = "Equalizer"
     case visuals = "Visuals"
     case remote = "Remote"
@@ -756,6 +841,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
     var icon: String {
         switch self {
         case .library: "music.note.list"
+        case .discover: "sparkle.magnifyingglass"
         case .eq: "slider.horizontal.3"
         case .visuals: "waveform"
         case .remote: "iphone.radiowaves.left.and.right"
@@ -812,6 +898,7 @@ struct ContentView: View {
     @ViewBuilder private var detailView: some View {
         switch vm.selection {
         case .library: libraryPane
+        case .discover: discoverPane
         case .eq: eqPane
         case .visuals: VisualsPane()
         case .remote: remotePane
@@ -1298,6 +1385,142 @@ struct ContentView: View {
 
     private func freqLabel(_ f: Float) -> String {
         f >= 1000 ? String(format: "%gk", f / 1000) : String(format: "%g", f)
+    }
+
+    // ── Discover ─────────────────────────────────────────────────────────
+    private var discoverPane: some View {
+        VStack(alignment: .leading, spacing: Ui.s16) {
+            HStack {
+                Text("Discover").font(.uiTitle).foregroundStyle(Ui.ink)
+                HStack(spacing: 4) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(Ui.inkSoft)
+                    TextField("Live music, artists, labels…", text: $vm.discoverQuery)
+                        .textFieldStyle(.plain)
+                        .onSubmit { vm.runDiscover() }
+                }
+                .padding(.horizontal, 10).padding(.vertical, 6)
+                .background(Ui.surface)
+                .overlay(Rectangle().stroke(Ui.border, lineWidth: 1))
+                .frame(minWidth: 120, idealWidth: 260, maxWidth: 360)
+                Button(vm.discoverBusy ? "Searching…" : "Search") { vm.runDiscover() }
+                    .disabled(vm.discoverBusy || vm.discoverQuery.isEmpty)
+                    .buttonStyle(.sharpProminent)
+                if vm.discoverBusy { ProgressView().controlSize(.small) }
+                Spacer()
+            }
+            Text("Lossless-first over legal indexes — archive.org etree live recordings, academic torrents. FLAC ahead of lossy, swarm health visible before you commit.")
+                .font(.uiCaption).foregroundStyle(Ui.inkSoft)
+            ForEach(vm.discoverIssues, id: \.self) { issue in
+                Label(issue, systemImage: "exclamationmark.triangle")
+                    .font(.uiCaption).foregroundStyle(.orange)
+            }
+            ScrollView {
+                LazyVStack(spacing: Ui.s8) {
+                    ForEach(vm.discoverResults) { r in
+                        discoverRow(r)
+                    }
+                }
+            }
+            if !vm.discoverBusy && vm.discoverResults.isEmpty && vm.discoverIssues.isEmpty {
+                Text("Search to see results").foregroundStyle(Ui.inkSoft)
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(Ui.s20)
+    }
+
+    private func discoverRow(_ r: DiscoverResult) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(r.name).font(.uiBodyStrong).foregroundStyle(Ui.ink)
+                    .lineLimit(2).layoutPriority(1)
+                Spacer(minLength: 4)
+                if r.lossless == true {
+                    Text("LOSSLESS").font(.uiMicro)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(Ui.mint)
+                } else if r.lossless == false {
+                    Text("LOSSY").font(.uiMicro)
+                        .foregroundStyle(Ui.inkSoft)
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .overlay(Rectangle().stroke(Ui.border, lineWidth: 1))
+                }
+                Text(r.provider).font(.uiMicro).foregroundStyle(Ui.inkSoft)
+            }
+            HStack(spacing: 12) {
+                if !r.qualityLabel.isEmpty {
+                    Text(r.qualityLabel).font(.uiCaption).foregroundStyle(Ui.accent)
+                }
+                if !r.sizeLabel.isEmpty {
+                    Text(r.sizeLabel).font(.uiCaption).foregroundStyle(Ui.inkSoft)
+                }
+                if let s = r.seeds {
+                    Label("\(s)", systemImage: "arrow.up.circle")
+                        .font(.uiCaption).foregroundStyle(Ui.inkSoft)
+                }
+                if let d = r.downloads {
+                    Label("\(d)", systemImage: "arrow.down.circle")
+                        .font(.uiCaption).foregroundStyle(Ui.inkSoft)
+                }
+                if let n = r.fileCount {
+                    Text("\(n) files").font(.uiCaption).foregroundStyle(Ui.inkSoft)
+                }
+                if let lic = r.license, !lic.isEmpty {
+                    Text(lic).font(.uiMicro).foregroundStyle(Ui.inkSoft.opacity(0.7))
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+            if vm.discoverExpanded == r.id {
+                discoverDetailView(r)
+            }
+        }
+        .padding(Ui.s12)
+        .background(Ui.surface)
+        .overlay(Rectangle().stroke(Ui.border, lineWidth: 1))
+        .contentShape(Rectangle())
+        .onTapGesture { vm.expandDiscover(r) }
+    }
+
+    @ViewBuilder
+    private func discoverDetailView(_ r: DiscoverResult) -> some View {
+        if let detail = vm.discoverDetail[r.id],
+           let files = detail["files"] as? [[String: Any]] {
+            VStack(alignment: .leading, spacing: 3) {
+                ForEach(Array(files.prefix(12).enumerated()), id: \.offset) { _, f in
+                    HStack(spacing: 8) {
+                        Text(f["path"] as? String ?? "?")
+                            .font(.uiMono).foregroundStyle(Ui.inkSoft).lineLimit(1)
+                        Spacer(minLength: 4)
+                        if let sz = (f["size"] as? NSNumber)?.uint64Value {
+                            Text(ByteCountFormatter.string(fromByteCount: Int64(sz), countStyle: .file))
+                                .font(.uiMicro).foregroundStyle(Ui.inkSoft.opacity(0.7))
+                        }
+                    }
+                }
+                if files.count > 12 {
+                    Text("… \(files.count - 12) more").font(.uiMicro)
+                        .foregroundStyle(Ui.inkSoft.opacity(0.7))
+                }
+                HStack {
+                    Button("Add to library") { vm.addDiscover(r) }
+                        .buttonStyle(.sharpProminent)
+                        .disabled(vm.addingTorrent)
+                    if vm.addingTorrent { ProgressView().controlSize(.small) }
+                    Spacer()
+                }
+                .padding(.top, 4)
+            }
+            .padding(.top, 4)
+        } else {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Resolving file list…").font(.uiCaption).foregroundStyle(Ui.inkSoft)
+            }
+            .padding(.top, 4)
+        }
     }
 
     // ── Remote ───────────────────────────────────────────────────────────
