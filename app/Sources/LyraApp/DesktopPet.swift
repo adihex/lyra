@@ -126,6 +126,21 @@ final class DesktopPet: ObservableObject {
         case .always:
             if !isOut { pop() }
         }
+        // lost-pet rescue — the drive loop can be stopped (settled sleep)
+        // while a body sits fully off the live screen; policyTick always
+        // runs, so it owns the last-resort re-seat
+        if isOut, case .roaming = phase {
+            let vb = lyraScreen().visibleFrame
+            var lost = false
+            for (b, c) in world.bodies
+            where !vb.insetBy(dx: -20, dy: -20).contains(c) {
+                world.bodies[b] = CGPoint(
+                    x: min(max(c.x, vb.minX + 70), vb.maxX - 70),
+                    y: vb.minY + 76)
+                lost = true
+            }
+            if lost { ensureDrive() }
+        }
         // keep the drive loop alive while roaming (it parks itself in
         // sleep; stall-wake needs it back)
         if isOut, case .roaming = phase,
@@ -249,6 +264,17 @@ final class DesktopPet: ObservableObject {
             phase = .recalling(t + CGFloat(dt) / 0.7)
         }
 
+        // stale-bounds rescue: bodies fully outside the live screen's
+        // visible frame (slept on a detached display, clamp-free phases)
+        // get walked back to the bottom edge — roam() only clamps while
+        // it's running, and the drive loop can sleep with a lost body
+        let vb = lyraScreen().visibleFrame
+        for (b, c) in world.bodies
+        where !vb.insetBy(dx: -20, dy: -20).contains(c) {
+            world.bodies[b] = CGPoint(
+                x: min(max(c.x, vb.minX + 70), vb.maxX - 70),
+                y: vb.minY + 76)
+        }
         for (b, p) in panels {
             if let c = world.bodies[b] { placePanel(p, center: c) }
             views[b]?.needsDisplay = true
@@ -415,8 +441,15 @@ final class DesktopPet: ObservableObject {
     }
 
     private func placePanel(_ p: NSPanel, center c: CGPoint) {
-        p.setFrameOrigin(CGPoint(x: c.x - p.frame.width / 2,
-                                 y: c.y - p.frame.height / 2))
+        // Lost-pet guard: keep ≥40pt of the panel reachable on the live
+        // screen no matter what the world state says (stale perch rects,
+        // a disconnected display's coords, pop/recall arcs all funnel
+        // through here — this is the last line of defense).
+        let v = (p.screen ?? lyraScreen()).visibleFrame
+        let half = p.frame.width / 2
+        let cx = min(max(c.x, v.minX - half + 40), v.maxX + half - 40)
+        let cy = min(max(c.y, v.minY - half + 40), v.maxY + half - 40)
+        p.setFrameOrigin(CGPoint(x: cx - half, y: cy - p.frame.height / 2))
     }
 
     /// Panels orderOut, `away` clears on the shared scene — the dock

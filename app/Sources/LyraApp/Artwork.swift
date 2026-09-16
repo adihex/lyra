@@ -86,7 +86,12 @@ struct ArtImage: View {
         }
         .frame(width: size, height: size)
         .overlay(Ui.border.frame(width: 1))
-        .onAppear { loader.load(hash, px: px) }
+        .onAppear {
+            // hop off the update pass — load() publishes `image` and a
+            // sync write here faults "publishing during view updates"
+            let l = loader, h = hash, p = px
+            DispatchQueue.main.async { l.load(h, px: p) }
+        }
         .onChange(of: hash) { _, h in loader.load(h, px: px) }
     }
 }

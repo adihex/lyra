@@ -61,7 +61,11 @@ struct LyraApp: App {
         // Menu-bar mini player — .window style hosts arbitrary SwiftUI
         // (sliders/gestures work; `.menu` style kills them). isInserted
         // is our own toggle, independent of Tahoe's kill switch.
-        MenuBarExtra(isInserted: $prefs.menuBarExtra) {
+        // The setter hops a runloop tick — writing an @Published through
+        // the binding mid-update resonated into a publish-in-update loop.
+        MenuBarExtra(isInserted: Binding(
+            get: { prefs.menuBarExtra },
+            set: { v in DispatchQueue.main.async { prefs.menuBarExtra = v } })) {
             MiniPlayerView()
                 .preferredColorScheme(.light)
         } label: {
