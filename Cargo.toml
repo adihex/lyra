@@ -18,6 +18,9 @@ rusqlite_migration = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 sha2 = "0.10"
+rustfft = "6"
+zstd = "0.14"
+blake3 = "1"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
 
 [profile.release]
@@ -71,4 +74,5 @@ opt-level = 3
 opt-level = 3
 [profile.release.package.lyra-fs]
 opt-level = 3
-
+[profile.release.package.lyra-map]
+opt-level = 3

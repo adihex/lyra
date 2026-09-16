@@ -106,6 +106,22 @@ CREATE TABLE artwork_fetch (
     next_retry_at INTEGER            -- NULL = never
 );
 "#,
+    // v4: song-map registry (§4.5 of the transcription-pipeline spec).
+    // One row per analyzed recording, keyed by BLAKE3 of the source bytes
+    // so identical files share maps across local/torrent/remote copies.
+    // `tracks.audio_hash` joins tracks to their map (NULL = never hashed).
+    r#"
+CREATE TABLE track_maps (
+    audio_hash    TEXT PRIMARY KEY,  -- BLAKE3 of source bytes
+    map_path      TEXT NOT NULL,     -- maps/<audio_hash>.lyramap
+    pipeline_ver  TEXT NOT NULL,     -- e.g. "mapgen-0.1|beat_this-1.0|bp-icassp22"
+    status        TEXT NOT NULL,     -- pending|grid|chords|notes|done|unsupported|failed
+    overall_conf  REAL,
+    updated_at    INTEGER NOT NULL
+);
+CREATE INDEX idx_track_maps_status ON track_maps(status);
+ALTER TABLE tracks ADD COLUMN audio_hash TEXT;
+"#,
 ];
 
 /// AudioFormat <-> its serde-lowercase string ("flac", "m4a", …).
@@ -791,6 +807,114 @@ impl Library {
         }
         Ok(Some((rate, spb as u64, peaks)))
     }
+
+    // ── Song-map registry (track_maps, v4) ──────────────────────────────
+
+    /// Upsert a map row (keyed on audio_hash). Re-running the pipeline at
+    /// a new `pipeline_ver` replaces the row; the old .lyramap is orphaned
+    /// by content hash, never mutated in place.
+    pub fn upsert_map(&self, m: &TrackMapRow) -> Result<(), LyraError> {
+        self.conn.execute(
+            "INSERT INTO track_maps
+                 (audio_hash, map_path, pipeline_ver, status, overall_conf, updated_at)
+             VALUES (?1,?2,?3,?4,?5,?6)
+             ON CONFLICT(audio_hash) DO UPDATE SET
+                 map_path=excluded.map_path,
+                 pipeline_ver=excluded.pipeline_ver,
+                 status=excluded.status,
+                 overall_conf=excluded.overall_conf,
+                 updated_at=excluded.updated_at",
+            params![
+                m.audio_hash,
+                m.map_path,
+                m.pipeline_ver,
+                m.status,
+                m.overall_conf,
+                m.updated_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Map row for one recording, if analyzed.
+    pub fn map_for_hash(&self, hash: &str) -> Result<Option<TrackMapRow>, LyraError> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT audio_hash, map_path, pipeline_ver, status, overall_conf, updated_at
+                 FROM track_maps WHERE audio_hash=?1",
+                params![hash],
+                |r| {
+                    Ok(TrackMapRow {
+                        audio_hash: r.get(0)?,
+                        map_path: r.get(1)?,
+                        pipeline_ver: r.get(2)?,
+                        status: r.get(3)?,
+                        overall_conf: r.get(4)?,
+                        updated_at: r.get(5)?,
+                    })
+                },
+            )
+            .ok();
+        Ok(row)
+    }
+
+    /// All maps in a tier — drives the "ready for strum mode" queue
+    /// (`status >= 'chords'`) and the regeneration backlog.
+    pub fn maps_by_status(&self, status: &str) -> Result<Vec<TrackMapRow>, LyraError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT audio_hash, map_path, pipeline_ver, status, overall_conf, updated_at
+             FROM track_maps WHERE status=?1 ORDER BY updated_at DESC",
+        )?;
+        let rows = stmt
+            .query_map(params![status], |r| {
+                Ok(TrackMapRow {
+                    audio_hash: r.get(0)?,
+                    map_path: r.get(1)?,
+                    pipeline_ver: r.get(2)?,
+                    status: r.get(3)?,
+                    overall_conf: r.get(4)?,
+                    updated_at: r.get(5)?,
+                })
+            })?
+            .collect::<Result<_, _>>()?;
+        Ok(rows)
+    }
+
+    /// Join a track row to its analyzed bytes (NULL = never hashed).
+    pub fn set_track_audio_hash(&self, path: &str, hash: &str) -> Result<(), LyraError> {
+        self.conn.execute(
+            "UPDATE tracks SET audio_hash=?1 WHERE path=?2",
+            params![hash, path],
+        )?;
+        Ok(())
+    }
+
+    pub fn track_audio_hash(&self, path: &str) -> Result<Option<String>, LyraError> {
+        let h: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT audio_hash FROM tracks WHERE path=?1",
+                params![path],
+                |r| r.get(0),
+            )
+            .ok()
+            .flatten();
+        Ok(h)
+    }
+}
+
+/// One `track_maps` row (§4.5): the content-addressed registry entry for a
+/// generated `.lyramap`. `status` is one of
+/// pending|grid|chords|notes|done|unsupported|failed.
+#[derive(Debug, Clone)]
+pub struct TrackMapRow {
+    pub audio_hash: String,
+    pub map_path: String,
+    pub pipeline_ver: String,
+    pub status: String,
+    pub overall_conf: Option<f32>,
+    pub updated_at: i64,
 }
 
 #[cfg(test)]
@@ -1009,5 +1133,46 @@ mod tests {
         assert!(rows.iter().all(|t| !t.codec.is_empty()));
         assert!(rows.iter().any(|t| t.format == AudioFormat::Aiff));
         assert_eq!(lib.sources().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn track_maps_registry() {
+        let lib = Library::open_memory().unwrap();
+        let row = TrackMapRow {
+            audio_hash: "deadbeef".into(),
+            map_path: "maps/deadbeef.lyramap".into(),
+            pipeline_ver: "mapgen-0.1".into(),
+            status: "done".into(),
+            overall_conf: Some(0.82),
+            updated_at: 1700000000,
+        };
+        assert!(lib.map_for_hash("deadbeef").unwrap().is_none());
+        lib.upsert_map(&row).unwrap();
+        let back = lib.map_for_hash("deadbeef").unwrap().unwrap();
+        assert_eq!(back.map_path, "maps/deadbeef.lyramap");
+        assert_eq!(back.status, "done");
+        assert_eq!(back.overall_conf, Some(0.82));
+
+        // Re-run at a new pipeline version replaces the row.
+        let mut row2 = row.clone();
+        row2.status = "grid".into();
+        row2.pipeline_ver = "mapgen-0.2".into();
+        lib.upsert_map(&row2).unwrap();
+        assert_eq!(
+            lib.map_for_hash("deadbeef").unwrap().unwrap().status,
+            "grid"
+        );
+        assert!(lib.maps_by_status("done").unwrap().is_empty());
+        assert_eq!(lib.maps_by_status("grid").unwrap().len(), 1);
+
+        // Track ↔ map join via audio_hash (NULL = never hashed).
+        lib.upsert_track(&track("/a/one.flac", "One", "A"), 100, 100)
+            .unwrap();
+        assert_eq!(lib.track_audio_hash("/a/one.flac").unwrap(), None);
+        lib.set_track_audio_hash("/a/one.flac", "deadbeef").unwrap();
+        assert_eq!(
+            lib.track_audio_hash("/a/one.flac").unwrap(),
+            Some("deadbeef".into())
+        );
     }
 }
