@@ -602,6 +602,20 @@ pub extern "C" fn lyra_torrent_files(id: c_int) -> *mut c_char {
     }
 }
 
+/// Remove torrent `id` from the session. `delete_files != 0` also deletes
+/// its downloaded data from disk. 0 ok, 1 unknown torrent, 2+ engine error.
+#[no_mangle]
+pub extern "C" fn lyra_torrent_remove(id: c_int, delete_files: c_int) -> c_int {
+    let e = match torrent() {
+        Ok(e) => e,
+        Err(c) => return 2 + c,
+    };
+    match e.remove(id as usize, delete_files != 0) {
+        Ok(()) => 0,
+        Err(_) => 1,
+    }
+}
+
 /// JSON stats snapshot {progress_bytes,total_bytes,finished}. Null on failure.
 #[no_mangle]
 pub extern "C" fn lyra_torrent_stats(id: c_int) -> *mut c_char {

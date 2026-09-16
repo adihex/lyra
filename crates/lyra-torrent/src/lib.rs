@@ -215,6 +215,19 @@ impl TorrentEngine {
         }))
     }
 
+    /// Remove a torrent from the session. `delete_files` also wipes its
+    /// downloaded data from disk — the disk-space reclaim path.
+    pub fn remove(&self, id: usize, delete_files: bool) -> Result<(), LyraError> {
+        self.rt
+            .block_on(self.session.delete(
+                librqbit::api::TorrentIdOrHash::Id(id),
+                delete_files,
+            ))
+            .map_err(|e| LyraError::Remote(format!("remove torrent: {e}")))?;
+        info!(id, delete_files, "torrent removed");
+        Ok(())
+    }
+
     /// Create a .torrent (v1) for a local file or directory — e.g. seeding
     /// your own library to another Lyra instance. Returns torrent bytes.
     pub fn create_torrent_bytes(&self, path: &std::path::Path) -> Result<Vec<u8>, LyraError> {

@@ -193,6 +193,13 @@ final class LyraTorrent {
             as? [String: Any]
     }
 
+    /// Remove a torrent from the session. deleteFiles=true also wipes its
+    /// downloaded data from disk — the disk-space reclaim path.
+    @discardableResult
+    func remove(_ id: Int, deleteFiles: Bool) -> Bool {
+        lyra_torrent_remove(Int32(id), deleteFiles ? 1 : 0) == 0
+    }
+
     /// {progress_bytes,total_bytes,finished}
     func stats(_ id: Int) -> [String: Any]? {
         guard let raw = lyra_torrent_stats(Int32(id)) else { return nil }
