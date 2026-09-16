@@ -18,11 +18,7 @@ pub struct SectionTrack {
     pub conf: f32,
 }
 
-pub fn segment_sections(
-    chroma: &[[f32; 12]],
-    hop_s: f32,
-    grid: &BeatGrid,
-) -> SectionTrack {
+pub fn segment_sections(chroma: &[[f32; 12]], hop_s: f32, grid: &BeatGrid) -> SectionTrack {
     if grid.beats.len() < 8 || chroma.is_empty() {
         return SectionTrack {
             sections: Vec::new(),
@@ -156,9 +152,8 @@ fn pick_peaks(novelty: &[f32], min_gap: usize) -> Vec<usize> {
         return Vec::new();
     }
     let mean = novelty.iter().sum::<f32>() / novelty.len() as f32;
-    let std = (novelty.iter().map(|v| (v - mean).powi(2)).sum::<f32>()
-        / novelty.len() as f32)
-        .sqrt();
+    let std =
+        (novelty.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / novelty.len() as f32).sqrt();
     let thresh = mean + 0.5 * std;
     let mut peaks = Vec::new();
     let mut last = 0usize.wrapping_sub(min_gap);
@@ -193,11 +188,7 @@ fn snap_to_bar(grid: &BeatGrid, b: usize) -> usize {
     best.min(grid.beats.len().saturating_sub(1))
 }
 
-fn label_segments(
-    beat_chroma: &[[f32; 12]],
-    bounds: &[usize],
-    grid: &BeatGrid,
-) -> Vec<Section> {
+fn label_segments(beat_chroma: &[[f32; 12]], bounds: &[usize], grid: &BeatGrid) -> Vec<Section> {
     // Mean chroma per segment → greedy repetition clusters (cos > 0.85).
     let mut centroids: Vec<[f32; 12]> = Vec::new();
     let mut seg_cluster: Vec<usize> = Vec::new();
@@ -240,9 +231,11 @@ fn label_segments(
         .map(|(i, w)| {
             let (a, b) = (w[0], w[1]);
             let t0 = grid.beats[a].t_s;
-            let t1 = grid.beats.get(b).map(|x| x.t_s).unwrap_or_else(|| {
-                grid.beats.last().map(|x| x.t_s + 0.5).unwrap_or(0.0)
-            });
+            let t1 = grid
+                .beats
+                .get(b)
+                .map(|x| x.t_s)
+                .unwrap_or_else(|| grid.beats.last().map(|x| x.t_s + 0.5).unwrap_or(0.0));
             let dur = t1 - t0;
             let label = if i == 0 && dur < 15.0 {
                 SectionLabel::Intro
@@ -269,7 +262,11 @@ fn label_segments(
                 grid0: grid_pos_at(grid, t0),
                 grid1: grid_pos_at(grid, t1),
                 label,
-                conf: if cnt == 0 { 0.3 } else { (coh / cnt as f32).clamp(0.0, 1.0) },
+                conf: if cnt == 0 {
+                    0.3
+                } else {
+                    (coh / cnt as f32).clamp(0.0, 1.0)
+                },
             }
         })
         .collect()
@@ -301,7 +298,10 @@ mod tests {
         }
         let mut grid = BeatGrid::empty(StageStatus::Degraded);
         for i in 0..64 {
-            grid.beats.push(BeatPt { t_s: i as f32 * 0.5, conf: 1.0 });
+            grid.beats.push(BeatPt {
+                t_s: i as f32 * 0.5,
+                conf: 1.0,
+            });
         }
         grid.downbeats = (0..64u32).step_by(4).collect();
         (chroma, 0.1, grid)
@@ -315,8 +315,7 @@ mod tests {
         assert!(track.sections.len() >= 3, "got {:?}", track.sections.len());
         // A-texture (32 beats) outranks B (32 beats tie → first-seen wins
         // rank 0); either way both labels appear.
-        let labels: Vec<SectionLabel> =
-            track.sections.iter().map(|s| s.label).collect();
+        let labels: Vec<SectionLabel> = track.sections.iter().map(|s| s.label).collect();
         assert!(
             labels.contains(&SectionLabel::Chorus) && labels.contains(&SectionLabel::Verse),
             "labels: {labels:?}"

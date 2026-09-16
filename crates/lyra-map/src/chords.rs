@@ -59,7 +59,11 @@ pub fn transcribe_chords(stereo_44100: &[f32], grid: &BeatGrid) -> ChordTrack {
     ChordTrack {
         segments,
         strums,
-        status: if conf > 0.0 { StageStatus::Ok } else { StageStatus::Failed },
+        status: if conf > 0.0 {
+            StageStatus::Ok
+        } else {
+            StageStatus::Failed
+        },
         conf,
     }
 }
@@ -80,7 +84,10 @@ pub fn chroma_track(mono_44100: &[f32]) -> (Vec<[f32; 12]>, Vec<[f32; 12]>, f32)
     let mut pos = 0usize;
     while pos + FFT_N <= mono_44100.len() {
         for i in 0..FFT_N {
-            buf[i] = Complex { re: mono_44100[pos + i] * window[i], im: 0.0 };
+            buf[i] = Complex {
+                re: mono_44100[pos + i] * window[i],
+                im: 0.0,
+            };
         }
         fft.process(&mut buf);
         let mut c = [0f32; 12];
@@ -150,7 +157,11 @@ pub fn viterbi(chroma: &[[f32; 12]]) -> Vec<usize> {
     for (i, c) in chroma.iter().enumerate() {
         let silent = c.iter().all(|v| *v == 0.0);
         for s in 0..24 {
-            emit[i][s] = if silent { 0.0 } else { cosine(c, &templates[s]) };
+            emit[i][s] = if silent {
+                0.0
+            } else {
+                cosine(c, &templates[s])
+            };
         }
         emit[i][24] = if silent { 0.9 } else { NC_SCORE };
     }
@@ -190,7 +201,11 @@ fn state_label(s: usize) -> (Option<u8>, ChordQuality) {
         (None, ChordQuality::Nc)
     } else {
         let root = (s / 2) as u8;
-        let q = if s % 2 == 0 { ChordQuality::Maj } else { ChordQuality::Min };
+        let q = if s % 2 == 0 {
+            ChordQuality::Maj
+        } else {
+            ChordQuality::Min
+        };
         (Some(root), q)
     }
 }
@@ -300,11 +315,7 @@ fn to_segments(
 
 /// Strum onsets: RMS-envelope flux peak-picked, kept when they fall inside
 /// (or near) a chord segment, aligned to the grid at detection time.
-fn detect_strums(
-    mono_44100: &[f32],
-    segments: &[ChordEvent],
-    grid: &BeatGrid,
-) -> Vec<StrumEvent> {
+fn detect_strums(mono_44100: &[f32], segments: &[ChordEvent], grid: &BeatGrid) -> Vec<StrumEvent> {
     const HOP: usize = 512;
     let rms: Vec<f32> = mono_44100
         .chunks(HOP)
@@ -313,13 +324,9 @@ fn detect_strums(
     if rms.len() < 8 {
         return Vec::new();
     }
-    let flux: Vec<f32> = rms
-        .windows(2)
-        .map(|w| (w[1] - w[0]).max(0.0))
-        .collect();
+    let flux: Vec<f32> = rms.windows(2).map(|w| (w[1] - w[0]).max(0.0)).collect();
     let mean = flux.iter().sum::<f32>() / flux.len() as f32;
-    let std = (flux.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / flux.len() as f32)
-        .sqrt();
+    let std = (flux.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / flux.len() as f32).sqrt();
     let thresh = mean + 0.8 * std;
     let hop_s = HOP as f32 / SR;
     let mut strums = Vec::new();
@@ -337,7 +344,9 @@ fn detect_strums(
         }
         last = i;
         let t = i as f32 * hop_s;
-        let inside = segments.iter().any(|s| t >= s.t0 - 0.06 && t <= s.t1 + 0.06);
+        let inside = segments
+            .iter()
+            .any(|s| t >= s.t0 - 0.06 && t <= s.t1 + 0.06);
         if inside {
             strums.push(StrumEvent {
                 t,
@@ -367,7 +376,10 @@ mod tests {
                 let t = i as f32 / sr;
                 // Percussive-ish attack + sustain so strums also fire.
                 let env = (-t * 4.0).exp() * 0.6 + 0.4;
-                let s: f32 = chord.iter().map(|f| (2.0 * std::f32::consts::PI * f * t).sin()).sum();
+                let s: f32 = chord
+                    .iter()
+                    .map(|f| (2.0 * std::f32::consts::PI * f * t).sin())
+                    .sum();
                 mono.push(env * s / chord.len() as f32 * 0.8);
             }
         }

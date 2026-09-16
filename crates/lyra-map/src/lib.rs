@@ -22,27 +22,24 @@ mod tab;
 mod tuning;
 
 pub use audio::{
-    hash_source, mixdown_mono, resample_linear, AudioBuses, OfflineDecode,
-    CHROMA_RATE, NOTE_RATE,
+    hash_source, mixdown_mono, resample_linear, AudioBuses, OfflineDecode, CHROMA_RATE, NOTE_RATE,
 };
 pub use chords::{chroma_fps, transcribe_chords, ChordTrack};
 pub use format::{decode as decode_map_bytes, decode_value, encode as encode_map, MapCodec};
-pub use grid::{
-    grid_pos_at, models_dir as grid_models_dir, nearest_beat_idx, BeatTracker,
-    GridEstimate, NullBeatTracker,
-};
 #[cfg(feature = "onnx")]
 pub use grid::OnnxBeatTracker;
-pub use map::*;
-pub use notes::{
-    assemble_notes, fuse_notes, AssemblyOpts, NoteSet, NoteTranscriber,
-    NullNoteTranscriber, RawNote,
+pub use grid::{
+    grid_pos_at, models_dir as grid_models_dir, nearest_beat_idx, BeatTracker, GridEstimate,
+    NullBeatTracker,
 };
+pub use map::*;
 #[cfg(feature = "onnx")]
 pub use notes::OnnxNoteTranscriber;
-pub use pipeline::{
-    record_for, registry_status, MapGen, MapOptions, MapRecord, Stage, StageSet,
+pub use notes::{
+    assemble_notes, fuse_notes, AssemblyOpts, NoteSet, NoteTranscriber, NullNoteTranscriber,
+    RawNote,
 };
+pub use pipeline::{record_for, registry_status, MapGen, MapOptions, MapRecord, Stage, StageSet};
 pub use quantize::{assign_layers, dim_reason, quantize_time, QuantizedNote};
 pub use sections::{segment_sections, SectionTrack};
 pub use tab::{solve_tab, TabOpts, TabSolution};

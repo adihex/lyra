@@ -152,7 +152,11 @@ fn bend_from_contour(
     offs.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let med = offs[offs.len() / 2];
     let cents = (med * 100.0).round() as i16;
-    if cents.abs() >= 70 { Some(cents) } else { None }
+    if cents.abs() >= 70 {
+        Some(cents)
+    } else {
+        None
+    }
 }
 
 // ── Fusion: mix × stem agreement ─────────────────────────────────────────
@@ -161,10 +165,7 @@ fn bend_from_contour(
 /// class → conf × 1.0 (`Fused`); single-source → × 0.6; octave disagreement
 /// → × 0.4 (§5.1). P0 has no stem stage, so mix-only maps carry the honest
 /// 0.6 single-source factor.
-pub fn fuse_notes(
-    mix: Vec<RawNote>,
-    stem: Vec<RawNote>,
-) -> Vec<(RawNote, Provenance)> {
+pub fn fuse_notes(mix: Vec<RawNote>, stem: Vec<RawNote>) -> Vec<(RawNote, Provenance)> {
     const TOL: f32 = 0.03;
     let mut used = vec![false; stem.len()];
     let mut out = Vec::with_capacity(mix.len() + stem.len());
@@ -174,8 +175,7 @@ pub fn fuse_notes(
             if used[i] {
                 continue;
             }
-            if (s.onset_s - m.onset_s).abs() <= TOL
-                && (s.midi.round() - m.midi.round()).abs() < 6.0
+            if (s.onset_s - m.onset_s).abs() <= TOL && (s.midi.round() - m.midi.round()).abs() < 6.0
             {
                 best = Some(i);
                 break;
@@ -235,7 +235,11 @@ impl NoteTranscriber for NullNoteTranscriber {
         const HOP: usize = 256;
         const SR: f32 = 22_050.0;
         if mono_22050.len() < N * 2 {
-            return Ok(NoteSet { notes: Vec::new(), status: StageStatus::Failed, conf: 0.0 });
+            return Ok(NoteSet {
+                notes: Vec::new(),
+                status: StageStatus::Failed,
+                conf: 0.0,
+            });
         }
         let mut planner = FftPlanner::<f32>::new();
         let fft = planner.plan_fft_forward(N);
@@ -248,7 +252,10 @@ impl NoteTranscriber for NullNoteTranscriber {
         let mut pos = 0usize;
         while pos + N <= mono_22050.len() {
             for i in 0..N {
-                buf[i] = Complex { re: mono_22050[pos + i] * window[i], im: 0.0 };
+                buf[i] = Complex {
+                    re: mono_22050[pos + i] * window[i],
+                    im: 0.0,
+                };
             }
             fft.process(&mut buf);
             mags.push(buf[..N / 2].iter().map(|v| v.norm()).collect());
@@ -258,7 +265,10 @@ impl NoteTranscriber for NullNoteTranscriber {
         let flux: Vec<f32> = mags
             .windows(2)
             .map(|w| {
-                w[0].iter().zip(w[1].iter()).map(|(a, b)| (b - a).max(0.0)).sum::<f32>()
+                w[0].iter()
+                    .zip(w[1].iter())
+                    .map(|(a, b)| (b - a).max(0.0))
+                    .sum::<f32>()
             })
             .collect();
         let fmean = flux.iter().sum::<f32>() / flux.len().max(1) as f32;
@@ -330,9 +340,7 @@ impl NoteTranscriber for NullNoteTranscriber {
                     None => {
                         let harmonic = active.iter().any(|a| {
                             let d = (midi - a.midi).abs();
-                            [12.0, 7.0, 19.0, 5.0]
-                                .iter()
-                                .any(|iv| (d - iv).abs() < 0.4)
+                            [12.0, 7.0, 19.0, 5.0].iter().any(|iv| (d - iv).abs() < 0.4)
                         });
                         if !harmonic && armed[t] {
                             active.push(Active {
@@ -385,13 +393,21 @@ impl NoteTranscriber for NullNoteTranscriber {
             }
         }
         notes.sort_by(|a, b| a.onset_s.partial_cmp(&b.onset_s).unwrap());
-        let status = if notes.is_empty() { StageStatus::Failed } else { StageStatus::Degraded };
+        let status = if notes.is_empty() {
+            StageStatus::Failed
+        } else {
+            StageStatus::Degraded
+        };
         let conf = if notes.is_empty() {
             0.0
         } else {
             notes.iter().map(|n| n.conf).sum::<f32>() / notes.len() as f32
         };
-        Ok(NoteSet { notes, status, conf })
+        Ok(NoteSet {
+            notes,
+            status,
+            conf,
+        })
     }
 }
 
@@ -411,8 +427,8 @@ pub struct OnnxNoteTranscriber {
 impl OnnxNoteTranscriber {
     pub const MODEL_FILE: &'static str = "basic_pitch.onnx";
 
-    pub fn discover(models_dir: Option<std::path::PathBuf>) -> Option<Self> {
-        let dir = models_dir.or_else(crate::grid::models_dir)?;
+    pub fn discover(explicit: Option<std::path::PathBuf>) -> Option<Self> {
+        let dir = explicit.or_else(crate::grid::models_dir)?;
         let p = dir.join(Self::MODEL_FILE);
         p.is_file().then(|| Self { model_path: p })
     }
@@ -458,7 +474,10 @@ mod tests {
         // Sub-threshold blip on p0: must not become a note.
         fr[20][0] = 0.2;
         on[20][0] = 0.4;
-        let opts = AssemblyOpts { midi_base: 60, ..AssemblyOpts::default() };
+        let opts = AssemblyOpts {
+            midi_base: 60,
+            ..AssemblyOpts::default()
+        };
         (fr, on, opts)
     }
 
@@ -494,12 +513,34 @@ mod tests {
     #[test]
     fn fusion_rewards_agreement() {
         let mix = vec![
-            RawNote { onset_s: 1.0, offset_s: 1.4, midi: 69.0, bend_cents: None, onset_strength: 0.9, frame_strength: 0.8, conf: 0.72 },
-            RawNote { onset_s: 2.0, offset_s: 2.3, midi: 71.0, bend_cents: None, onset_strength: 0.8, frame_strength: 0.7, conf: 0.56 },
+            RawNote {
+                onset_s: 1.0,
+                offset_s: 1.4,
+                midi: 69.0,
+                bend_cents: None,
+                onset_strength: 0.9,
+                frame_strength: 0.8,
+                conf: 0.72,
+            },
+            RawNote {
+                onset_s: 2.0,
+                offset_s: 2.3,
+                midi: 71.0,
+                bend_cents: None,
+                onset_strength: 0.8,
+                frame_strength: 0.7,
+                conf: 0.56,
+            },
         ];
-        let stem = vec![
-            RawNote { onset_s: 1.01, offset_s: 1.4, midi: 69.1, bend_cents: None, onset_strength: 0.9, frame_strength: 0.9, conf: 0.81 },
-        ];
+        let stem = vec![RawNote {
+            onset_s: 1.01,
+            offset_s: 1.4,
+            midi: 69.1,
+            bend_cents: None,
+            onset_strength: 0.9,
+            frame_strength: 0.9,
+            conf: 0.81,
+        }];
         let fused = fuse_notes(mix, stem);
         assert_eq!(fused.len(), 2);
         assert_eq!(fused[0].1, Provenance::Fused);
@@ -521,9 +562,7 @@ mod tests {
                     break;
                 }
                 let t = i as f32 / sr;
-                x[n0 + i] += (-t * 6.0).exp()
-                    * (2.0 * std::f32::consts::PI * freq * t).sin()
-                    * 0.9;
+                x[n0 + i] += (-t * 6.0).exp() * (2.0 * std::f32::consts::PI * freq * t).sin() * 0.9;
             }
         }
         let set = NullNoteTranscriber.transcribe(&x).unwrap();

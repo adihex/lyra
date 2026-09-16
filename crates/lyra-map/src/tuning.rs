@@ -137,7 +137,6 @@ fn score_fretboard(midis: &[f32], strings: &[i8; 6], capo: u8) -> f32 {
 mod tests {
     use super::*;
 
-
     #[test]
     fn standard_chords_detect_standard() {
         // Dm7–G7–Cmaj7–A7 (ii–V–I–VI with chromatic extensions): eight
@@ -165,11 +164,15 @@ mod tests {
         // D2 pedal + B3/E4 open content: drop-D voices all three open;
         // DADGAD frets B and E; standard can't play D2 at all.
         let midis = vec![
-            38.0, 38.0, 59.0, 64.0, 59.0, 64.0, 38.0, 55.0, 57.0, 59.0, 62.0,
-            64.0,
+            38.0, 38.0, 59.0, 64.0, 59.0, 64.0, 38.0, 55.0, 57.0, 59.0, 62.0, 64.0,
         ];
         let t = estimate_tuning(&midis);
-        assert_eq!(t.strings, [38, 45, 50, 55, 59, 64], "alternatives: {:?}", t.alternatives);
+        assert_eq!(
+            t.strings,
+            [38, 45, 50, 55, 59, 64],
+            "alternatives: {:?}",
+            t.alternatives
+        );
         assert!(!t.alternatives.is_empty());
     }
 

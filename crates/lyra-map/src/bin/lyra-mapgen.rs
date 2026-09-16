@@ -42,12 +42,8 @@ fn parse_args() -> Args {
             "--models-dir" => {
                 a.models_dir = Some(PathBuf::from(it.next().unwrap_or_else(|| usage())))
             }
-            "--stages" => {
-                a.stages = StageSet::parse(&it.next().unwrap_or_else(|| usage()))
-            }
-            "--maps-dir" => {
-                a.maps_dir = Some(PathBuf::from(it.next().unwrap_or_else(|| usage())))
-            }
+            "--stages" => a.stages = StageSet::parse(&it.next().unwrap_or_else(|| usage())),
+            "--maps-dir" => a.maps_dir = Some(PathBuf::from(it.next().unwrap_or_else(|| usage()))),
             "--db" => a.db = Some(PathBuf::from(it.next().unwrap_or_else(|| usage()))),
             s if s.starts_with('-') => usage(),
             s => a.inputs.push(PathBuf::from(s)),
@@ -122,14 +118,12 @@ fn main() {
                                 overall_conf: rec.overall_conf,
                                 updated_at: rec.updated_at,
                             };
-                            if let Err(e) = lib.upsert_map(&row)
-                                .and_then(|_| {
-                                    lib.set_track_audio_hash(
-                                        &input.display().to_string(),
-                                        &rec.audio_hash,
-                                    )
-                                })
-                            {
+                            if let Err(e) = lib.upsert_map(&row).and_then(|_| {
+                                lib.set_track_audio_hash(
+                                    &input.display().to_string(),
+                                    &rec.audio_hash,
+                                )
+                            }) {
                                 eprintln!("  registry failed: {e}");
                             }
                         }

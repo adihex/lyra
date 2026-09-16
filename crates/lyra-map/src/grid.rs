@@ -9,9 +9,7 @@
 //! Inference is env-gated for tests: integration tests only touch weights
 //! when `LYRA_TEST_MODELS` (or `LYRA_MODELS_DIR`) points at a models dir.
 
-use crate::map::{
-    BeatGrid, BeatPt, GridPos, MeterChange, StageStatus, TempoMark, TICKS_PER_BEAT,
-};
+use crate::map::{BeatGrid, BeatPt, GridPos, MeterChange, StageStatus, TempoMark, TICKS_PER_BEAT};
 use lyra_core::LyraError;
 use std::path::PathBuf;
 
@@ -97,10 +95,7 @@ impl BeatTracker for NullBeatTracker {
 
         // First beat: earliest strong envelope attack (top-decile onset).
         let peak = env.iter().fold(f32::NEG_INFINITY, |a, e| a.max(*e));
-        let t0_frame = env
-            .iter()
-            .position(|e| *e > peak * 0.5)
-            .unwrap_or(0);
+        let t0_frame = env.iter().position(|e| *e > peak * 0.5).unwrap_or(0);
         let t0 = t0_frame as f32 * HOP as f32 / SR as f32;
         let dur = mono_22050.len() as f32 / SR as f32;
 
@@ -119,7 +114,10 @@ impl BeatTracker for NullBeatTracker {
         Ok(GridEstimate {
             beats,
             downbeats,
-            meter: vec![MeterChange { bar: 0, beats_per_bar: 4 }],
+            meter: vec![MeterChange {
+                bar: 0,
+                beats_per_bar: 4,
+            }],
             tempi: vec![TempoMark { bar: 0, bpm }],
             conf: 0.35,
             status: StageStatus::Degraded,
@@ -167,9 +165,7 @@ pub fn nearest_beat_idx(beats: &[BeatPt], t: f32) -> usize {
         }
     }
     // Snap to the actually-nearest of the bracket.
-    if lo + 1 < beats.len()
-        && (beats[lo + 1].t_s - t).abs() < (t - beats[lo].t_s).abs()
-    {
+    if lo + 1 < beats.len() && (beats[lo + 1].t_s - t).abs() < (t - beats[lo].t_s).abs() {
         lo + 1
     } else {
         lo
@@ -194,7 +190,11 @@ pub fn bar_of(grid: &BeatGrid, beat_idx: usize) -> (u32, u8) {
 /// interpolation within the beat (clamped to the track ends).
 pub fn grid_pos_at(grid: &BeatGrid, t: f32) -> GridPos {
     if grid.beats.is_empty() {
-        return GridPos { bar: 0, beat: 0, tick: 0 };
+        return GridPos {
+            bar: 0,
+            beat: 0,
+            tick: 0,
+        };
     }
     let i = nearest_beat_idx(&grid.beats, t);
     let (bar, beat) = bar_of(grid, i);
@@ -211,7 +211,11 @@ pub fn grid_pos_at(grid: &BeatGrid, t: f32) -> GridPos {
     } else {
         (bar, beat, phase)
     };
-    GridPos { bar, beat, tick: (phase * TICKS_PER_BEAT as f32).round() as u16 }
+    GridPos {
+        bar,
+        beat,
+        tick: (phase * TICKS_PER_BEAT as f32).round() as u16,
+    }
 }
 
 // ── ONNX adapter (beat_this) ─────────────────────────────────────────────
@@ -236,8 +240,8 @@ impl OnnxBeatTracker {
     pub const MODEL_FILE: &'static str = "beat_this.onnx";
 
     /// None when no weights are present — the pipeline then uses Null.
-    pub fn discover(models_dir: Option<PathBuf>) -> Option<Self> {
-        let dir = models_dir.or_else(models_dir)?;
+    pub fn discover(explicit: Option<PathBuf>) -> Option<Self> {
+        let dir = explicit.or_else(models_dir)?;
         let p = dir.join(Self::MODEL_FILE);
         p.is_file().then(|| Self { model_path: p })
     }
@@ -301,7 +305,11 @@ mod tests {
         let bpm = est.tempi[0].bpm;
         assert!((bpm - 120.0).abs() < 3.0, "got {bpm}");
         // ~16 beats in 8 s at 120 BPM.
-        assert!((est.beats.len() as i32 - 16).abs() <= 2, "{}", est.beats.len());
+        assert!(
+            (est.beats.len() as i32 - 16).abs() <= 2,
+            "{}",
+            est.beats.len()
+        );
         assert_eq!(est.downbeats, vec![0, 4, 8, 12]);
     }
 
@@ -330,10 +338,16 @@ mod tests {
     #[test]
     fn onnx_smoke_if_models_present() {
         let Some(dir) = models_dir() else { return };
-        assert!(dir.join("beat_this.onnx").is_file(), "no beat_this.onnx in {}", dir.display());
+        assert!(
+            dir.join("beat_this.onnx").is_file(),
+            "no beat_this.onnx in {}",
+            dir.display()
+        );
         #[cfg(feature = "onnx")]
         {
-            let t = OnnxBeatTracker { model_path: dir.join("beat_this.onnx") };
+            let t = OnnxBeatTracker {
+                model_path: dir.join("beat_this.onnx"),
+            };
             let _ = t.track(&click_track(120.0, 4.0));
         }
     }

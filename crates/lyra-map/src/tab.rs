@@ -71,7 +71,10 @@ fn candidates(midi: f32, tuning: &Tuning, opts: &TabOpts) -> Vec<Pos> {
     for (s, open) in tuning.strings.iter().enumerate() {
         let fret = target - (*open as i32 + tuning.capo as i32);
         if (0..=opts.max_fret as i32).contains(&fret) {
-            out.push(Pos { string: s as u8, fret: fret as u8 });
+            out.push(Pos {
+                string: s as u8,
+                fret: fret as u8,
+            });
         }
     }
     // Prefer low positions for ties: sort by fret, then string.
@@ -110,21 +113,18 @@ fn transition(a: Pos, b: Pos, overlap: bool, opts: &TabOpts) -> f32 {
 /// Cost of opening a path at `p` (no predecessor): open-string bias +
 /// reach cost, so barren starts prefer playable low positions too.
 fn entry_cost(p: Pos, opts: &TabOpts) -> f32 {
-    (if p.fret == 0 { opts.open_penalty } else { 0.0 })
-        + opts.position_w * p.fret as f32
+    (if p.fret == 0 { opts.open_penalty } else { 0.0 }) + opts.position_w * p.fret as f32
 }
 
 /// Viterbi over the candidate lattice. `onsets` parallels `midis` and
 /// drives the overlap constraint.
-pub fn solve_tab(
-    midis: &[f32],
-    onsets: &[f32],
-    tuning: &Tuning,
-    opts: &TabOpts,
-) -> TabSolution {
+pub fn solve_tab(midis: &[f32], onsets: &[f32], tuning: &Tuning, opts: &TabOpts) -> TabSolution {
     let n = midis.len();
     if n == 0 || onsets.len() != n {
-        return TabSolution { frettings: Vec::new(), margins: Vec::new() };
+        return TabSolution {
+            frettings: Vec::new(),
+            margins: Vec::new(),
+        };
     }
     let cands: Vec<Vec<Pos>> = midis.iter().map(|m| candidates(*m, tuning, opts)).collect();
     // Unplayable notes (outside every string's range) stay None; the DP
@@ -135,7 +135,11 @@ pub fn solve_tab(
         let mut row = vec![f32::INFINITY; c.len().max(1)];
         let mut brow = vec![0usize; c.len().max(1)];
         if c.is_empty() {
-            row[0] = if i == 0 { 0.0 } else { dp[i - 1].iter().fold(f32::INFINITY, |a, &v| a.min(v)) };
+            row[0] = if i == 0 {
+                0.0
+            } else {
+                dp[i - 1].iter().fold(f32::INFINITY, |a, &v| a.min(v))
+            };
         } else if i == 0 || dp[i - 1].iter().all(|v| !v.is_finite()) {
             for (j, p) in c.iter().enumerate() {
                 row[j] = entry_cost(*p, opts);
@@ -147,7 +151,11 @@ pub fn solve_tab(
                 let mut bj = 0;
                 for (k, &a) in cands[i - 1].iter().enumerate() {
                     // Bridge over unplayable predecessors at no cost.
-                    let prev = if cands[i - 1].is_empty() { 0.0 } else { dp[i - 1][k] };
+                    let prev = if cands[i - 1].is_empty() {
+                        0.0
+                    } else {
+                        dp[i - 1][k]
+                    };
                     let v = prev + transition(a, b, overlap, opts);
                     if v < best {
                         best = v;
@@ -191,7 +199,11 @@ pub fn solve_tab(
             }
         }
         if let Some(l) = last {
-            let (j, _) = dp[l].iter().enumerate().min_by(|a, b| a.1.partial_cmp(b.1).unwrap()).unwrap();
+            let (j, _) = dp[l]
+                .iter()
+                .enumerate()
+                .min_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+                .unwrap();
             choice[l] = Some(j);
             for i in (1..=l).rev() {
                 if let Some(j) = choice[i] {
@@ -207,30 +219,31 @@ pub fn solve_tab(
         .iter()
         .zip(choice.iter())
         .map(|(c, ch)| {
-            ch.and_then(|j| c.get(j)).map(|p| Fretting { string: p.string, fret: p.fret })
+            ch.and_then(|j| c.get(j)).map(|p| Fretting {
+                string: p.string,
+                fret: p.fret,
+            })
         })
         .collect();
     // Margins: gap between the chosen state's path cost and the best path
     // forced through any other candidate at that note (local re-decode).
     let margins: Vec<f32> = (0..n)
-        .map(|i| {
-            match (choice[i], cands[i].len()) {
-                (Some(j), m) if m > 1 => {
-                    let chosen = dp[i][j];
-                    let runner = dp[i]
-                        .iter()
-                        .enumerate()
-                        .filter(|(k, _)| *k != j)
-                        .map(|(_, v)| *v)
-                        .fold(f32::INFINITY, |a, v| a.min(v));
-                    if chosen.is_finite() && runner.is_finite() {
-                        (runner - chosen).max(0.0)
-                    } else {
-                        0.0
-                    }
+        .map(|i| match (choice[i], cands[i].len()) {
+            (Some(j), m) if m > 1 => {
+                let chosen = dp[i][j];
+                let runner = dp[i]
+                    .iter()
+                    .enumerate()
+                    .filter(|(k, _)| *k != j)
+                    .map(|(_, v)| *v)
+                    .fold(f32::INFINITY, |a, v| a.min(v));
+                if chosen.is_finite() && runner.is_finite() {
+                    (runner - chosen).max(0.0)
+                } else {
+                    0.0
                 }
-                _ => 0.0,
             }
+            _ => 0.0,
         })
         .collect();
     TabSolution { frettings, margins }
@@ -252,10 +265,7 @@ mod tests {
         let sol = solve_tab(&midis, &onsets, &std(), &TabOpts::default());
         assert!(sol.frettings.iter().all(|f| f.is_some()));
         // Low E must be string 0 fret 0 (only position for 40).
-        assert_eq!(
-            sol.frettings[0],
-            Some(Fretting { string: 0, fret: 0 })
-        );
+        assert_eq!(sol.frettings[0], Some(Fretting { string: 0, fret: 0 }));
         // A2 (45): open A string preferred over 5th-fret E.
         assert_eq!(sol.frettings[1], Some(Fretting { string: 1, fret: 0 }));
     }

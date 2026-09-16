@@ -253,11 +253,20 @@ mod tests {
     fn hash_is_stable_and_content_addressed() {
         let a = mem_wav(44_100, 2);
         let b = mem_wav(44_100, 2);
-        assert_eq!(hash_source(a.as_ref()).unwrap(), hash_source(b.as_ref()).unwrap());
+        assert_eq!(
+            hash_source(a.as_ref()).unwrap(),
+            hash_source(b.as_ref()).unwrap()
+        );
         let mut other = wav_bytes(44_100, 2, 1.0, 880.0);
         other.push(0);
-        let c = Arc::new(MemSource { data: other, desc: "x".into() });
-        assert_ne!(hash_source(a.as_ref()).unwrap(), hash_source(c.as_ref()).unwrap());
+        let c = Arc::new(MemSource {
+            data: other,
+            desc: "x".into(),
+        });
+        assert_ne!(
+            hash_source(a.as_ref()).unwrap(),
+            hash_source(c.as_ref()).unwrap()
+        );
     }
 
     #[test]

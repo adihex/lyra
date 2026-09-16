@@ -39,17 +39,19 @@ impl Default for MapCodec {
 
 impl MapCodec {
     fn flags(self) -> u16 {
-        if self.compressed { FLAG_ZSTD } else { 0 }
+        if self.compressed {
+            FLAG_ZSTD
+        } else {
+            0
+        }
     }
 
     /// Serialize + frame. Stamps `map.map_id` before returning.
     pub fn encode(self, map: &mut SongMap) -> Result<Vec<u8>, LyraError> {
         map.map_id.clear();
-        let canonical =
-            serde_json::to_vec(map).map_err(|e| LyraError::Decode(e.to_string()))?;
+        let canonical = serde_json::to_vec(map).map_err(|e| LyraError::Decode(e.to_string()))?;
         map.map_id = blake3::hash(&canonical).to_hex().to_string();
-        let payload_json =
-            serde_json::to_vec(map).map_err(|e| LyraError::Decode(e.to_string()))?;
+        let payload_json = serde_json::to_vec(map).map_err(|e| LyraError::Decode(e.to_string()))?;
         let payload = if self.compressed {
             zstd::encode_all(payload_json.as_slice(), 3)
                 .map_err(|e| LyraError::Decode(e.to_string()))?
@@ -130,15 +132,25 @@ mod tests {
     fn sample_map() -> SongMap {
         let mut m = SongMap::new("abc123".into(), 237.5);
         m.grid.beats = vec![
-            BeatPt { t_s: 0.5, conf: 0.9 },
-            BeatPt { t_s: 1.0, conf: 0.8 },
+            BeatPt {
+                t_s: 0.5,
+                conf: 0.9,
+            },
+            BeatPt {
+                t_s: 1.0,
+                conf: 0.8,
+            },
         ];
         m.grid.downbeats = vec![0];
         m.notes.push(NoteEvent {
             onset_s: 0.5,
             offset_s: 0.9,
             raw_onset_s: 0.51,
-            grid: GridPos { bar: 0, beat: 0, tick: 0 },
+            grid: GridPos {
+                bar: 0,
+                beat: 0,
+                tick: 0,
+            },
             midi: 69.0,
             bend_cents: None,
             techniques: TechFlags(0),
@@ -194,8 +206,15 @@ mod tests {
             n.onset_s += i as f32 * 0.5;
             m.notes.push(n);
         }
-        let raw = MapCodec { compressed: false }.encode(&mut m.clone()).unwrap();
+        let raw = MapCodec { compressed: false }
+            .encode(&mut m.clone())
+            .unwrap();
         let z = MapCodec { compressed: true }.encode(&mut m).unwrap();
-        assert!(z.len() < raw.len() / 2, "z {} vs raw {}", z.len(), raw.len());
+        assert!(
+            z.len() < raw.len() / 2,
+            "z {} vs raw {}",
+            z.len(),
+            raw.len()
+        );
     }
 }

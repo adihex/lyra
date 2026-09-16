@@ -10,13 +10,9 @@ use crate::audio::{hash_source, mixdown_mono, OfflineDecode, CHROMA_RATE};
 use crate::chords::{chroma_track, transcribe_chords};
 use crate::format::encode as encode_map;
 use crate::grid::{apply_estimate, BeatTracker, NullBeatTracker};
-use crate::map::{
-    MapStatus, NoteEvent, Provenance, SongMap, StageStatus, TabEvent,
-};
+use crate::map::{MapStatus, NoteEvent, Provenance, SongMap, StageStatus, TabEvent};
 use crate::notes::{fuse_notes, NoteTranscriber, NullNoteTranscriber};
-use crate::quantize::{
-    assign_layers, is_rubato, quantize_time, subdivision_vote, swing_ratio,
-};
+use crate::quantize::{assign_layers, is_rubato, quantize_time, subdivision_vote, swing_ratio};
 use crate::sections::segment_sections;
 use crate::tab::{solve_tab, TabOpts};
 use crate::tuning::estimate_tuning;
@@ -85,7 +81,13 @@ pub struct StageSet {
 
 impl Default for StageSet {
     fn default() -> Self {
-        Self { grid: true, sections: true, chords: true, notes: true, tab: true }
+        Self {
+            grid: true,
+            sections: true,
+            chords: true,
+            notes: true,
+            tab: true,
+        }
     }
 }
 
@@ -156,13 +158,13 @@ pub struct MapGen {
 
 impl MapGen {
     pub fn new(opts: MapOptions) -> Self {
-        Self { opts, progress: None }
+        Self {
+            opts,
+            progress: None,
+        }
     }
 
-    pub fn on_progress(
-        mut self,
-        f: impl Fn(Stage, f32) + Send + Sync + 'static,
-    ) -> Self {
+    pub fn on_progress(mut self, f: impl Fn(Stage, f32) + Send + Sync + 'static) -> Self {
         self.progress = Some(Arc::new(f));
         self
     }
@@ -210,8 +212,7 @@ impl MapGen {
 
         // Shared chroma for sections + chords (one STFT over the track).
         let mono44: Vec<f32> = mixdown_mono(&buses.stereo_44100, 2);
-        let (chroma, _bass, hop_s) = if self.opts.stages.sections || self.opts.stages.chords
-        {
+        let (chroma, _bass, hop_s) = if self.opts.stages.sections || self.opts.stages.chords {
             chroma_track(&mono44)
         } else {
             (Vec::new(), Vec::new(), HOP_FALLBACK)
@@ -249,7 +250,11 @@ impl MapGen {
                             onset_s: r.onset_s,
                             offset_s: r.offset_s,
                             raw_onset_s: r.onset_s,
-                            grid: crate::map::GridPos { bar: 0, beat: 0, tick: 0 },
+                            grid: crate::map::GridPos {
+                                bar: 0,
+                                beat: 0,
+                                tick: 0,
+                            },
                             midi: r.midi,
                             bend_cents: r.bend_cents,
                             techniques: crate::map::TechFlags(0),
@@ -278,8 +283,11 @@ impl MapGen {
         // QUANTIZE: snap to grid, subdivision vote, swing, rubato flag.
         self.emit(Stage::Quantize);
         if !map.notes.is_empty() && !map.grid.beats.is_empty() {
-            let qs: Vec<_> =
-                map.notes.iter().map(|n| quantize_time(&map.grid, n.raw_onset_s)).collect();
+            let qs: Vec<_> = map
+                .notes
+                .iter()
+                .map(|n| quantize_time(&map.grid, n.raw_onset_s))
+                .collect();
             for (n, q) in map.notes.iter_mut().zip(qs.iter()) {
                 n.grid = q.grid;
                 n.onset_s = q.quantized_s;
@@ -324,12 +332,7 @@ impl MapGen {
 
         // LAYERS + QUALITY rollup.
         self.emit(Stage::Layers);
-        assign_layers(
-            &mut map.notes,
-            &map.grid,
-            &map.chords,
-            self.opts.tau_melody,
-        );
+        assign_layers(&mut map.notes, &map.grid, &map.chords, self.opts.tau_melody);
         rollup_quality(&mut map);
 
         self.emit(Stage::Write);
@@ -337,13 +340,9 @@ impl MapGen {
         Ok(map)
     }
 
-    fn track_grid(
-        &self,
-        mono_22050: &[f32],
-    ) -> Result<crate::grid::GridEstimate, LyraError> {
+    fn track_grid(&self, mono_22050: &[f32]) -> Result<crate::grid::GridEstimate, LyraError> {
         #[cfg(feature = "onnx")]
-        if let Some(onnx) = crate::grid::OnnxBeatTracker::discover(self.opts.models_dir.clone())
-        {
+        if let Some(onnx) = crate::grid::OnnxBeatTracker::discover(self.opts.models_dir.clone()) {
             match onnx.track(mono_22050) {
                 Ok(est) => return Ok(est),
                 Err(_) => {} // P1 adapter: fall through to Null, status-marked.
@@ -358,7 +357,8 @@ impl MapGen {
         mono_22050: &[f32],
     ) -> Result<Vec<(crate::notes::RawNote, Provenance)>, LyraError> {
         #[cfg(feature = "onnx")]
-        if let Some(onnx) = crate::notes::OnnxNoteTranscriber::discover(self.opts.models_dir.clone())
+        if let Some(onnx) =
+            crate::notes::OnnxNoteTranscriber::discover(self.opts.models_dir.clone())
         {
             match onnx.transcribe(mono_22050) {
                 Ok(set) => return Ok(fuse_notes(set.notes, Vec::new())),
@@ -372,7 +372,9 @@ impl MapGen {
 
     /// Incremental write-back: every layer lands on disk as it completes.
     fn write_back(&self, map: &mut SongMap) {
-        let Some(dir) = &self.opts.maps_dir else { return };
+        let Some(dir) = &self.opts.maps_dir else {
+            return;
+        };
         let _ = std::fs::create_dir_all(dir);
         let path = dir.join(format!("{}.lyramap", map.audio_hash));
         if let Ok(bytes) = encode_map(map) {
@@ -411,7 +413,11 @@ fn rollup_quality(map: &mut SongMap) {
         let mut all: Vec<f32> = map.notes.iter().map(|n| n.conf).collect();
         all.extend(map.chords.iter().map(|c| c.conf));
         all.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let overall = if all.is_empty() { 0.0 } else { all[all.len() / 4] };
+        let overall = if all.is_empty() {
+            0.0
+        } else {
+            all[all.len() / 4]
+        };
         map.quality.overall = overall;
     } else {
         let mut sorted = per_section.clone();

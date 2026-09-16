@@ -6,8 +6,8 @@
 
 use crate::grid::{grid_pos_at, nearest_beat_idx};
 use crate::map::{
-    BeatGrid, ChordEvent, GridPos, NoteEvent, TAU_LO, L0_ANCHOR, L1_STAB,
-    L2_SKELETON, L3_MELODY, L4_FULL, TICKS_PER_BEAT,
+    BeatGrid, ChordEvent, GridPos, NoteEvent, L0_ANCHOR, L1_STAB, L2_SKELETON, L3_MELODY, L4_FULL,
+    TAU_LO, TICKS_PER_BEAT,
 };
 
 /// Quantized placement of one onset: grid position, grid-derived time,
@@ -38,7 +38,10 @@ pub fn quantize_time(grid: &BeatGrid, t: f32) -> QuantizedNote {
     let b1 = grid.beats.get(i + 1).map(|b| b.t_s).unwrap_or(b0 + 0.5);
     // Re-anchor backwards snaps to the previous beat (matches grid_pos_at).
     let (base, span) = if t < b0 && i > 0 {
-        (grid.beats[i - 1].t_s, (b0 - grid.beats[i - 1].t_s).max(1e-3))
+        (
+            grid.beats[i - 1].t_s,
+            (b0 - grid.beats[i - 1].t_s).max(1e-3),
+        )
     } else {
         (b0, (b1 - b0).max(1e-3))
     };
@@ -50,7 +53,12 @@ pub fn quantize_time(grid: &BeatGrid, t: f32) -> QuantizedNote {
     // snaps, so it can't measure rubato).
     let k = (phase * 4.0).round();
     let grid_residual_s = t - (base + k / 4.0 * span);
-    QuantizedNote { grid: grid_pos, quantized_s, residual_s: t - quantized_s, grid_residual_s }
+    QuantizedNote {
+        grid: grid_pos,
+        quantized_s,
+        residual_s: t - quantized_s,
+        grid_residual_s,
+    }
 }
 
 /// Subdivision vote from tick residues: are off-beat onsets duple (8ths,
@@ -107,8 +115,7 @@ pub fn is_rubato(quantized: &[QuantizedNote]) -> bool {
     if quantized.len() < 8 {
         return false;
     }
-    let mut res: Vec<f32> =
-        quantized.iter().map(|q| q.grid_residual_s.abs()).collect();
+    let mut res: Vec<f32> = quantized.iter().map(|q| q.grid_residual_s.abs()).collect();
     res.sort_by(|a, b| a.partial_cmp(b).unwrap());
     res[res.len() / 2] > 0.035
 }
@@ -116,12 +123,7 @@ pub fn is_rubato(quantized: &[QuantizedNote]) -> bool {
 /// Assign the cumulative difficulty mask (§4.4). A note's max level sets it
 /// and every level below (NLD subsets); ghosts (conf < τ_lo) stay out of
 /// every level — ghosts stay ghosts.
-pub fn assign_layers(
-    notes: &mut [NoteEvent],
-    grid: &BeatGrid,
-    chords: &[ChordEvent],
-    tau: f32,
-) {
+pub fn assign_layers(notes: &mut [NoteEvent], grid: &BeatGrid, chords: &[ChordEvent], tau: f32) {
     let bounds: Vec<f32> = chords.iter().map(|c| c.t0).collect();
     for n in notes.iter_mut() {
         let top = max_layer(n, grid, &bounds, tau);
@@ -186,7 +188,10 @@ mod tests {
     fn grid_120() -> BeatGrid {
         let mut g = BeatGrid::empty(StageStatus::Degraded);
         for i in 0..32 {
-            g.beats.push(BeatPt { t_s: i as f32 * 0.5, conf: 1.0 });
+            g.beats.push(BeatPt {
+                t_s: i as f32 * 0.5,
+                conf: 1.0,
+            });
         }
         g.downbeats = vec![0, 4, 8, 12, 16, 20, 24, 28];
         g
@@ -197,7 +202,11 @@ mod tests {
             onset_s: t,
             offset_s: t + 0.4,
             raw_onset_s: t,
-            grid: GridPos { bar: 0, beat: 0, tick: 0 },
+            grid: GridPos {
+                bar: 0,
+                beat: 0,
+                tick: 0,
+            },
             midi: 69.0,
             bend_cents: None,
             techniques: TechFlags(0),
@@ -218,7 +227,11 @@ mod tests {
         // Snapped to the tick grid: sub-millisecond tick residual, but the
         // full 20 ms of musical slop is preserved in grid_residual_s.
         assert!(q.residual_s.abs() < 1e-3, "{}", q.residual_s);
-        assert!((q.grid_residual_s - 0.02).abs() < 1e-3, "{}", q.grid_residual_s);
+        assert!(
+            (q.grid_residual_s - 0.02).abs() < 1e-3,
+            "{}",
+            q.grid_residual_s
+        );
         assert!((q.quantized_s - 1.0198).abs() < 1e-3, "{}", q.quantized_s);
         // Eighth off-beat → tick ≈ 240.
         let q = quantize_time(&g, 1.25);
@@ -229,7 +242,9 @@ mod tests {
     fn swing_and_subdivision_votes() {
         let g = grid_120();
         // Straight eighths.
-        let qs: Vec<_> = (0..16).map(|i| quantize_time(&g, i as f32 * 0.25)).collect();
+        let qs: Vec<_> = (0..16)
+            .map(|i| quantize_time(&g, i as f32 * 0.25))
+            .collect();
         let (sub, _) = subdivision_vote(&qs);
         assert_eq!(sub, 2);
         let swing = swing_ratio(&qs).unwrap();
@@ -261,8 +276,16 @@ mod tests {
         let chords = vec![ChordEvent {
             t0: 4.5,
             t1: 8.0,
-            grid0: GridPos { bar: 2, beat: 1, tick: 0 },
-            grid1: GridPos { bar: 4, beat: 0, tick: 0 },
+            grid0: GridPos {
+                bar: 2,
+                beat: 1,
+                tick: 0,
+            },
+            grid1: GridPos {
+                bar: 4,
+                beat: 0,
+                tick: 0,
+            },
             root: Some(9),
             quality: crate::map::ChordQuality::Maj,
             bass: Some(9),

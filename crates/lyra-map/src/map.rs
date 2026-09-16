@@ -165,7 +165,8 @@ pub enum ChordQuality {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChordEvent {    pub t0: f32,
+pub struct ChordEvent {
+    pub t0: f32,
     pub t1: f32,
     pub grid0: GridPos,
     pub grid1: GridPos,
