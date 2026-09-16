@@ -322,6 +322,7 @@ final class ViewModel: ObservableObject {
         DispatchQueue.global(qos: .userInitiated).async {
             let id = LyraTorrent.shared.add(spec)
             let rows = id >= 0 ? LyraTorrent.shared.files(id) : []
+            let tname = LyraTorrent.shared.list().first { $0.id == id }?.name ?? ""
             DispatchQueue.main.async {
                 self.addingTorrent = false
                 if id < 0 {
@@ -330,9 +331,15 @@ final class ViewModel: ObservableObject {
                 }
                 self.magnetInput = ""
                 self.showMagnetEntry = false
-                let newTracks = rows
+                var newTracks = rows
                     .map { Track(torrentId: id, file: $0) }
                     .filter(\.isAudio)
+                // Sequential numbering — file idx can skip (nfo/jpg filtered),
+                // and the torrent name is the closest thing to an album tag.
+                for i in newTracks.indices {
+                    newTracks[i].trackNumber = i + 1
+                    newTracks[i].album = tname
+                }
                 if newTracks.isEmpty {
                     self.lastError = "Torrent #\(id): no playable audio files (\(rows.count) total)"
                 } else {
@@ -387,9 +394,14 @@ final class ViewModel: ObservableObject {
                 }
                 for info in list where !known.contains(info.id) {
                     let rows = LyraTorrent.shared.files(info.id)
-                    newRows.append(contentsOf: rows
+                    var ts = rows
                         .map { Track(torrentId: info.id, file: $0) }
-                        .filter(\.isAudio))
+                        .filter(\.isAudio)
+                    for i in ts.indices {
+                        ts[i].trackNumber = i + 1
+                        ts[i].album = info.name
+                    }
+                    newRows.append(contentsOf: ts)
                 }
             }
             DispatchQueue.main.async {
@@ -632,13 +644,18 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 2) {
                 ForEach(SidebarItem.allCases) { item in
                     Button { vm.selection = item } label: {
-                        Label(item.rawValue, systemImage: item.icon)
-                            .font(.uiBodyStrong)
-                            .foregroundStyle(vm.selection == item ? .white : Ui.ink)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, Ui.s12)
-                            .padding(.vertical, 7)
-                            .background(vm.selection == item ? Ui.accent : Color.clear)
+                        HStack(spacing: 8) {
+                            Image(systemName: item.icon)
+                                .frame(width: 18)
+                            Text(item.rawValue)
+                        }
+                        .font(.uiBodyStrong)
+                        .foregroundStyle(vm.selection == item ? .white : Ui.ink)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, Ui.s12)
+                        .padding(.vertical, 7)
+                        .background(vm.selection == item ? Ui.accent : Color.clear)
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                 }
@@ -656,6 +673,8 @@ struct ContentView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Ui.bg)
             .tint(Ui.accent)
+            .toolbarBackground(Ui.bg, for: .windowToolbar)
+            .toolbarBackground(.visible, for: .windowToolbar)
         }
         .tint(Ui.accent)
         .frame(minWidth: 780, minHeight: 560)
@@ -687,11 +706,13 @@ struct ContentView: View {
                 .padding(.horizontal, 10).padding(.vertical, 6)
                 .background(Ui.surface)
                 .overlay(Rectangle().stroke(Ui.border, lineWidth: 1))
-                .frame(minWidth: 140, idealWidth: 200, maxWidth: 260)
+                .frame(minWidth: 90, idealWidth: 200, maxWidth: 260)
                 Spacer()
                 if let root = vm.libraryRoot {
                     Text(URL(fileURLWithPath: root).lastPathComponent)
                         .foregroundStyle(Ui.inkSoft)
+                        .lineLimit(1)
+                        .layoutPriority(-1) // truncates first when narrow
                 }
                 Button {
                     vm.showMagnetEntry.toggle()
@@ -921,7 +942,7 @@ struct ContentView: View {
                     if editing { vm.scrubbing = true } else { vm.scrubEnded() }
                 }
             )
-            HStack(spacing: 14) {
+            HStack(spacing: 10) {
                 VStack(alignment: .leading) {
                     Text(vm.current?.title ?? "Nothing playing").font(.uiHeadline).lineLimit(1)
                         .foregroundStyle(vm.current == nil ? Ui.inkSoft : Ui.ink)
@@ -930,7 +951,7 @@ struct ContentView: View {
                         .foregroundStyle(vm.lastError != nil ? .red : Ui.inkSoft)
                         .lineLimit(1)
                 }
-                .frame(minWidth: 160, alignment: .leading)
+                .frame(minWidth: 60, maxWidth: 200, alignment: .leading)
                 Spacer()
                 Button { vm.prev() } label: {
                     Image(systemName: "backward.fill").sharpIconBox()
@@ -960,11 +981,11 @@ struct ContentView: View {
                 if vm.clip {
                     Text("CLIP").font(.uiMicro.bold()).foregroundStyle(.red)
                 }
-                spectrumMini
+                spectrumMini // flexes to 0 when the window gets narrow
                 Image(systemName: "speaker.wave.2.fill").foregroundStyle(Ui.inkSoft)
-                Slider(value: $vm.volume, in: 0...1.42).frame(width: 110) // 1.42² ≈ 2x gain
+                Slider(value: $vm.volume, in: 0...1.42).frame(maxWidth: 100) // 1.42² ≈ 2x gain
             }
-            .padding(.horizontal, 12)
+            .padding(.horizontal, 10)
             .padding(.bottom, 8)
         }
         .background(Ui.surface)
@@ -985,7 +1006,8 @@ struct ContentView: View {
                 )
             }
         }
-        .frame(width: 120, height: 28)
+        .frame(minWidth: 0, maxWidth: 120)
+        .frame(height: 28)
     }
 
     // ── EQ ───────────────────────────────────────────────────────────────
