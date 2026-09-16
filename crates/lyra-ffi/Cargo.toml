@@ -17,6 +17,7 @@ lyra-store = { path = "../lyra-store" }
 lyra-torrent = { path = "../lyra-torrent" }
 lyra-search = { path = "../lyra-search" }
 lyra-ipc = { path = "../lyra-ipc" }
+lyra-coach = { path = "../lyra-coach" }
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true

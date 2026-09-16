@@ -402,6 +402,10 @@ impl Session {
         self.follower.position()
     }
 
+    pub fn set_feedback_mode(&mut self, mode: crate::judge::FeedbackMode) {
+        self.judge.set_feedback_mode(mode);
+    }
+
     /// Wait-for-me gate for the transport (identity unless enabled).
     pub fn gate_chart_time(&self, song_t: f64) -> f64 {
         self.follower.gate_chart_time(song_t)

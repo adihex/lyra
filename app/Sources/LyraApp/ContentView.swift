@@ -339,6 +339,7 @@ final class ViewModel: ObservableObject {
                 // even at rest — `lyra play` must work on an idle app.
                 for cmd in LyraIPC.shared.drainCommands() { self.execIPC(cmd) }
                 self.publishIPCStateIfChanged()
+                if self.coachOn { self.pollCoach() }
                 // Volatile state only moves while playing (or mid-scrub).
                 // At rest we skip the FFI reads entirely — no publishes, no
                 // churn; the viz surfaces self-drive via VizTicker.
@@ -518,6 +519,58 @@ final class ViewModel: ObservableObject {
                 }
             }
         }
+    }
+
+    // ── Coach (live input lane) ──────────────────────────────────────────
+    @Published var coachOn = false
+    @Published var coachBpm = "100"
+    @Published var coachScore: [String: Any]?
+    @Published var coachVerdicts: [(grade: String, ms: Double?)] = []
+    @Published var coachNote = ""
+
+    /// Chug practice — a graded onset grid, 8 bars of 4/4 after a 2 s
+    /// lead-in. Chart events are timing-only; pitch lands when a map does.
+    func coachStartPractice() {
+        guard let bpm = Double(coachBpm), bpm > 30, bpm < 400 else {
+            coachNote = "bpm 30–400"
+            return
+        }
+        let beat = 60.0 / bpm
+        let leadIn = 2.0
+        let chart = (0..<32).map { i in
+            ["t_secs": leadIn + Double(i) * beat] as [String: Any]
+        }
+        if LyraCoach.shared.start(chart: chart) {
+            coachOn = true
+            coachVerdicts = []
+            coachScore = nil
+            coachNote = "strum on the grid — \(Int(bpm)) bpm"
+        } else {
+            coachNote = "input tap failed — check mic permission"
+        }
+    }
+
+    func coachStop() {
+        LyraCoach.shared.stop()
+        coachOn = false
+        coachNote = ""
+    }
+
+    /// Runs inside the 30 Hz poll while a session is live.
+    func pollCoach() {
+        for e in LyraCoach.shared.events() {
+            if e["type"] as? String == "verdict" {
+                coachVerdicts.append((
+                    e["grade"] as? String ?? "?",
+                    e["error_ms"] as? Double
+                ))
+                if coachVerdicts.count > 24 { coachVerdicts.removeFirst() }
+            } else if e["type"] as? String == "calibration",
+                      let off = e["offset_ms"] as? Double {
+                coachNote = String(format: "calibrated — input latency %.0f ms", off)
+            }
+        }
+        coachScore = LyraCoach.shared.score()
     }
 
     /// Accepts a magnet URI or a local .torrent path. Blocks in the FFI on
@@ -1009,6 +1062,7 @@ enum StageFace: Int { case viz, art }
 enum SidebarItem: String, CaseIterable, Identifiable {
     case library = "Library"
     case discover = "Discover"
+    case coach = "Coach"
     case eq = "Equalizer"
     case visuals = "Visuals"
     case remote = "Remote"
@@ -1017,6 +1071,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
         switch self {
         case .library: "music.note.list"
         case .discover: "sparkle.magnifyingglass"
+        case .coach: "metronome"
         case .eq: "slider.horizontal.3"
         case .visuals: "waveform"
         case .remote: "iphone.radiowaves.left.and.right"
@@ -1075,6 +1130,7 @@ struct ContentView: View {
         switch vm.selection {
         case .library: libraryPane
         case .discover: discoverPane
+        case .coach: coachPane
         case .eq: eqPane
         case .visuals: VisualsPane()
         case .remote: remotePane
@@ -1847,5 +1903,82 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(Ui.s20)
         .onAppear { vm.refreshDevices() }
+    }
+
+    // ── Coach ─────────────────────────────────────────────────────────────
+    private var coachPane: some View {
+        VStack(alignment: .leading, spacing: Ui.s16) {
+            Text("Coach").font(.uiTitle).foregroundStyle(Ui.ink)
+            Text("Live input lane — the mic tap feeds onset + pitch detection in the Rust core; verdicts grade timing against the grid. Audio never leaves the machine.")
+                .font(.uiCaption).foregroundStyle(Ui.inkSoft)
+
+            HStack(spacing: Ui.s8) {
+                Text("BPM").font(.uiCaption).foregroundStyle(Ui.inkSoft)
+                TextField("100", text: $vm.coachBpm)
+                    .textFieldStyle(.plain)
+                    .frame(width: 44)
+                    .padding(.horizontal, 8).padding(.vertical, 5)
+                    .background(Ui.surface)
+                    .overlay(Rectangle().stroke(Ui.border, lineWidth: 1))
+                    .disabled(vm.coachOn)
+                if vm.coachOn {
+                    Button("Stop") { vm.coachStop() }
+                        .buttonStyle(.sharpProminent)
+                } else {
+                    Button("Start chug practice") { vm.coachStartPractice() }
+                        .buttonStyle(.sharpProminent)
+                }
+                if !vm.coachNote.isEmpty {
+                    Text(vm.coachNote).font(.uiCaption).foregroundStyle(Ui.inkSoft)
+                }
+                Spacer()
+            }
+
+            if let s = vm.coachScore {
+                HStack(spacing: Ui.s16) {
+                    coachStat("ACCURACY", (s["accuracy"] as? Double).map { String(format: "%.0f%%", $0 * 100) } ?? "—")
+                    coachStat("STREAK", "\(s["streak"] as? Int ?? 0)")
+                    coachStat("BEST", "\(s["best_streak"] as? Int ?? 0)")
+                    coachStat("POSITION", "\(s["position"] as? Int ?? 0)/32")
+                }
+            }
+
+            if !vm.coachVerdicts.isEmpty {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 64), spacing: 6)], spacing: 6) {
+                    ForEach(Array(vm.coachVerdicts.enumerated()), id: \.offset) { _, v in
+                        Text(v.ms.map { String(format: "%@ %+.0f", v.grade, $0) } ?? v.grade)
+                            .font(.uiMicro)
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 6).padding(.vertical, 3)
+                            .background(coachGradeColor(v.grade))
+                    }
+                }
+            }
+
+            if !vm.coachOn && vm.coachVerdicts.isEmpty {
+                Text("Plug in or play near the mic — strum on the beat to get graded.")
+                    .foregroundStyle(Ui.inkSoft)
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(Ui.s20)
+    }
+
+    private func coachStat(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label).font(.uiMicro).foregroundStyle(Ui.inkSoft)
+            Text(value).font(.uiBodyStrong).foregroundStyle(Ui.ink)
+        }
+    }
+
+    private func coachGradeColor(_ g: String) -> Color {
+        switch g {
+        case "perfect": Ui.mint
+        case "good": Ui.accent
+        case "ok": .orange
+        case "miss", "off_grid": .red.opacity(0.7)
+        default: Ui.border
+        }
     }
 }

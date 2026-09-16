@@ -94,6 +94,18 @@ char *lyra_remlib_test(const char *profile_json);             /* {ok,files,elaps
 int   lyra_remlib_pin(const char *profile_json, const char *remote_dir,
                       const char *local_dir);                 /* rsync stage; 0 ok */
 
+/* ── coach (lyra-coach): live input lane — feed mono f32 from an
+ *    AVAudioEngine tap; events/score polled from the UI thread ── */
+int   lyra_coach_new(const char *chart_json, const char *config_json); /* 0 ok */
+int   lyra_coach_push(const float *samples, unsigned long len, double t_first);
+char *lyra_coach_events(void);                /* JSON array or NULL — free me */
+char *lyra_coach_score(void);                 /* JSON snapshot or NULL — free me */
+int   lyra_coach_start_calibration(double t0, double bpm);
+char *lyra_coach_complete_calibration(void);  /* {offset_ms,mad_ms} or NULL */
+int   lyra_coach_count_in(unsigned long first_index);
+int   lyra_coach_feedback(const char *mode);  /* full|coarse|end_of_phrase|silent */
+void  lyra_coach_stop(void);
+
 /* ── IPC (lyra-ipc): NDJSON unix socket for `lyra` CLI / lyra-mcp ── */
 int   lyra_ipc_start(const char *db_path, const char *sock_dir); /* bind sock_dir/control.sock; 0 ok */
 void  lyra_ipc_stop(void);

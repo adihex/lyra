@@ -14,6 +14,7 @@
     <key>LSMinimumSystemVersion</key><string>15.0</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSPrincipalClass</key><string>NSApplication</string>
+    <key>NSMicrophoneUsageDescription</key><string>Lyra's coach listens to your instrument to grade timing and pitch. Audio never leaves the machine.</string>
     <key>CFBundleDocumentTypes</key>
     <array>
         <dict>

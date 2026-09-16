@@ -18,6 +18,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 static INIT: Once = Once::new();
 
+mod coach;
 mod ipc;
 mod remote_fs;
 

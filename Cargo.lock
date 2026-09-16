@@ -3027,6 +3027,7 @@ dependencies = [
 name = "lyra-ffi"
 version = "0.1.0"
 dependencies = [
+ "lyra-coach",
  "lyra-core",
  "lyra-engine",
  "lyra-formats",
