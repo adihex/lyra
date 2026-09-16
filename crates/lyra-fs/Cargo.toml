@@ -6,7 +6,10 @@ license.workspace = true
 
 [dependencies]
 lyra-core = { path = "../lyra-core" }
+lyra-formats = { path = "../lyra-formats" }
+lyra-store = { path = "../lyra-store" }
 symphonia-core = "0.6"
+ssh2 = { workspace = true }
 thiserror.workspace = true
 tracing.workspace = true
 serde.workspace = true

@@ -11,9 +11,15 @@
 //!  - `SshExecFile`     — v0 bootstrap: `ssh <host> dd …` per block (any ssh
 //!                        config alias works: adi-linux, jiopc). Simple,
 //!                        correct, per-call latency absorbed by BlockCache.
-//!  - (next) SftpSource — openssh-sftp-client multiplexed channel
-//!  - (next) RusshFile  — in-process SSH; the sandbox-safe path (key file
-//!                        via security-scoped bookmark, no ~/.ssh access)
+//!  - `SftpSource`      — random-access reads over SFTP (ssh2, session per
+//!                        source, agent/key/password auth, one reconnect).
+//!                        Wrap in `CachingSource` for playback.
+//!  - `RsyncSource`     — progressive `rsync -e ssh` staging to a spool
+//!                        dir; readable before the transfer finishes,
+//!                        child reaped on drop.
+//!  - `RemoteScanner`   — SFTP walk → audio filter → header-only probe →
+//!                        upsert into lyra-store. Batched, cancellable,
+//!                        resumable via a store cursor.
 //!
 //! `scan()` enumerates a remote root via `ssh host find …` — fast metadata
 //! listing without walking SFTP. `pin()` = rsync subtree → local cache for
@@ -27,6 +33,21 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use symphonia_core::io::MediaSource;
 use tracing::debug;
+
+pub mod config;
+pub mod rsync;
+pub mod scan;
+pub mod sftp;
+
+pub use config::{AuthCallback, AuthMethod, RemoteProfile};
+pub use rsync::RsyncSource;
+pub use scan::{
+    is_remote_audio, Cancel, HeaderProbe, ProbeHint, ProbedFile, RemoteOpen, RemoteProbe,
+    RemoteScanner, RemoteWalk, ScanOptions, ScanProgress, ScanStats, SftpOpener, SftpWalk,
+};
+pub use sftp::{SftpBackend, SftpHandle, SftpSource, Ssh2Backend, Ssh2Handle};
+
+use config::{shell_quote, ssh_cmd};
 
 const BLOCK_SIZE: u64 = 1 << 20; // 1 MiB
 const CACHE_BUDGET: u64 = 256 << 20; // 256 MiB default
@@ -67,7 +88,11 @@ impl LocalFile {
     pub fn open(path: &Path) -> io::Result<Self> {
         let file = std::fs::File::open(path)?;
         let len = file.metadata()?.len();
-        Ok(Self { file, len, path: path.display().to_string() })
+        Ok(Self {
+            file,
+            len,
+            path: path.display().to_string(),
+        })
     }
 }
 
@@ -76,8 +101,12 @@ impl ByteSource for LocalFile {
         use std::os::unix::fs::FileExt;
         self.file.read_at(buf, offset)
     }
-    fn len(&self) -> u64 { self.len }
-    fn describe(&self) -> String { self.path.clone() }
+    fn len(&self) -> u64 {
+        self.len
+    }
+    fn describe(&self) -> String {
+        self.path.clone()
+    }
 }
 
 // ── SSH exec (v0 bootstrap) ───────────────────────────────────────────────
@@ -95,40 +124,55 @@ impl SshExecFile {
     /// `host` is anything ssh(1) resolves — config alias, user@host:port via
     /// config, tailnet name. `len` comes from a remote `stat`.
     pub fn open(host: &str, path: &str) -> Result<Self, LyraError> {
-        let out = Command::new("ssh")
-            .args([host, "stat", "-c", "%s", "--"])
+        Self::open_via(host, 22, path)
+    }
+
+    /// Profile-based open: honors the port (and `user@host` target shape).
+    pub fn open_profile(profile: &RemoteProfile, path: &str) -> Result<Self, LyraError> {
+        Self::open_via(&profile.ssh_target(), profile.port, path)
+    }
+
+    fn open_via(target: &str, port: u16, path: &str) -> Result<Self, LyraError> {
+        let out = ssh_cmd(target, port)
+            .args(["stat", "-c", "%s", "--"])
             .arg(path)
             .stderr(Stdio::null())
             .output()?;
         if !out.status.success() {
-            return Err(LyraError::Remote(format!("stat failed: {host}:{path}")));
+            return Err(LyraError::Remote(format!("stat failed: {target}:{path}")));
         }
         let len = String::from_utf8_lossy(&out.stdout)
             .trim()
             .parse::<u64>()
-            .map_err(|_| LyraError::Remote(format!("bad stat output for {host}:{path}")))?;
-        Ok(Self { host: host.into(), path: path.into(), len })
+            .map_err(|_| LyraError::Remote(format!("bad stat output for {target}:{path}")))?;
+        Ok(Self {
+            host: target.into(),
+            path: path.into(),
+            len,
+        })
     }
 
     fn fetch(&self, offset: u64, len: u64) -> io::Result<Vec<u8>> {
         // GNU dd on the Linux remotes: byte-granular skip/count.
         let cmd = format!(
             "dd if={} bs={} skip={} count={} iflag=skip_bytes,count_bytes status=none",
-            shell_quote(&self.path), BLOCK_SIZE, offset, len
+            shell_quote(&self.path),
+            BLOCK_SIZE,
+            offset,
+            len
         );
-        let out = Command::new("ssh")
-            .args([&self.host, &cmd])
+        let out = ssh_cmd(&self.host, 22)
+            .arg(&cmd)
             .stderr(Stdio::null())
             .output()?;
         if !out.status.success() {
-            return Err(io::Error::other(format!("ssh dd failed: {}", self.describe())));
+            return Err(io::Error::other(format!(
+                "ssh dd failed: {}",
+                self.describe()
+            )));
         }
         Ok(out.stdout)
     }
-}
-
-fn shell_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 impl ByteSource for SshExecFile {
@@ -138,8 +182,12 @@ impl ByteSource for SshExecFile {
         buf[..data.len()].copy_from_slice(&data);
         Ok(data.len())
     }
-    fn len(&self) -> u64 { self.len }
-    fn describe(&self) -> String { format!("ssh://{}/{}", self.host, self.path) }
+    fn len(&self) -> u64 {
+        self.len
+    }
+    fn describe(&self) -> String {
+        format!("ssh://{}/{}", self.host, self.path)
+    }
 }
 
 // ── Block cache ──────────────────────────────────────────────────────────
@@ -214,7 +262,9 @@ impl<S: ByteSource + 'static> CachingSource<S> {
         let mut got = 0usize;
         while (got as u64) < want {
             let n = self.inner.read_at(offset + got as u64, &mut data[got..])?;
-            if n == 0 { break; }
+            if n == 0 {
+                break;
+            }
             got += n;
         }
         data.truncate(got);
@@ -245,19 +295,27 @@ impl<S: ByteSource + 'static> ByteSource for CachingSource<S> {
         let mut done = 0usize;
         while done < buf.len() {
             let pos = offset + done as u64;
-            if pos >= self.inner.len() { break; }
+            if pos >= self.inner.len() {
+                break;
+            }
             let idx = pos / BLOCK_SIZE;
             let blk = self.block(idx)?;
             let start = (pos % BLOCK_SIZE) as usize;
             let n = (blk.len() - start).min(buf.len() - done);
             buf[done..done + n].copy_from_slice(&blk[start..start + n]);
             done += n;
-            if start + n >= blk.len() && n == 0 { break; }
+            if start + n >= blk.len() && n == 0 {
+                break;
+            }
         }
         Ok(done)
     }
-    fn len(&self) -> u64 { self.inner.len() }
-    fn describe(&self) -> String { format!("cached:{}", self.inner.describe()) }
+    fn len(&self) -> u64 {
+        self.inner.len()
+    }
+    fn describe(&self) -> String {
+        format!("cached:{}", self.inner.describe())
+    }
 }
 
 // ── Symphonia adapter ────────────────────────────────────────────────────
@@ -292,7 +350,10 @@ impl Seek for SourceMediaSource {
             SeekFrom::Current(d) => self.pos as i128 + d as i128,
         };
         if next < 0 {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "seek before start"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "seek before start",
+            ));
         }
         self.pos = next.min(len as i128) as u64;
         Ok(self.pos)
@@ -300,8 +361,12 @@ impl Seek for SourceMediaSource {
 }
 
 impl MediaSource for SourceMediaSource {
-    fn is_seekable(&self) -> bool { true }
-    fn byte_len(&self) -> Option<u64> { Some(self.src.len()) }
+    fn is_seekable(&self) -> bool {
+        true
+    }
+    fn byte_len(&self) -> Option<u64> {
+        Some(self.src.len())
+    }
 }
 
 // ── Remote scan + offline pin ────────────────────────────────────────────
@@ -323,8 +388,8 @@ pub fn scan(host: &str, root: &str) -> Result<Vec<RemoteEntry>, LyraError> {
          -o -iname '*.cue' \\) -printf '%s\\t%T@\\t%p\\n'",
         shell_quote(root)
     );
-    let out = Command::new("ssh")
-        .args([host, &find])
+    let out = ssh_cmd(host, 22)
+        .arg(&find)
         .stderr(Stdio::null())
         .output()?;
     if !out.status.success() {
