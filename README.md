@@ -10,15 +10,23 @@ for the per-layer research and improvement deltas).
 crates/
   lyra-core     domain model — Track, AudioFormat, PlayerCommand/Event
   lyra-formats  probe/decode/tags — symphonia + lofty + ape-decoder + cue-rw
-  lyra-fs       byte sources — local + SSH/SFTP remote, block cache, rsync pin
+  lyra-store    SQLite/WAL library — FTS search, artwork, track_maps registry
+  lyra-fs       byte sources — local + SSH (SFTP or exec fallback), rsync pin
   lyra-torrent  librqbit engine — download→import + stream-while-downloading
+  lyra-search   lossless-first search — archive.org etree + Academic Torrents
   lyra-dsp      render-thread-safe DSP — biquad EQ, limiter (alloc-free)
   lyra-viz      spectrum/spectrogram/waveform/meters — draw-ready data
   lyra-engine   decode→DSP→ring→cpal output — plays any ByteSource
+  lyra-hal      CoreAudio output — exclusive/hog mode follows playback state
   lyra-remote   axum HTTP+WS LAN remote — pairing auth, hashed tokens
+  lyra-ipc      NDJSON unix-socket control — the `lyra` CLI / lyra-mcp surface
+  lyra-coach    live input lane — onset/pitch/judge/follower + calibration
+  lyra-map      offline song maps — grid/sections/chords/notes/tab → .lyramap
   lyra-net      last.fm / musicbrainz / lrclib / cover-art clients
+  lyra-cli      `lyra` CLI + `lyra-mcp` — agent-native control of a live app
   lyra-ffi      staticlib C ABI → Swift (uniffi migration path in blueprint)
-app/            SwiftUI shell (NSOpenPanel probe demo + remote toggle)
+app/            SwiftUI shell — library, discover, coach, map, EQ, visuals,
+                remote panes + menu-bar player + desktop pet
 modules/        C module map + header for the FFI boundary
 ```
 
@@ -29,6 +37,7 @@ mise install          # project-local rust (mise.toml), no global pollution
 make                  # cargo build → swiftc → .build/Lyra.app → ad-hoc codesign
 make run              # open it
 make check            # cargo check --workspace
+cargo test --workspace  # ~150 unit/integration tests (all green on macOS)
 ```
 
 The Makefile path is the dev loop: no `.xcodeproj` needed. Release packaging
@@ -37,7 +46,8 @@ The Makefile path is the dev loop: no `.xcodeproj` needed. Release packaging
 ## Security posture (deltas vs BitMuse)
 
 - **Sandboxed**: app-sandbox + user-selected read-write + app-scope bookmarks +
-  network client/server. Nothing else.
+  music-library read + network client/server + mic input (coach lane only).
+  Nothing else.
 - **No AppleEvents**: no `mount volume` AppleScript, no Finder shutdowns.
 - **Memory-safe parsers**: decoders/taggers are Rust; the only C is libopus
   behind the official Symphonia adapter.
