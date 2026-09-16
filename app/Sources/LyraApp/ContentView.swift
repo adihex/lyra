@@ -17,6 +17,7 @@ struct Track: Identifiable, Hashable {
     var format: String
     var codec: String
     var trackNumber: Int
+    var artworkHash: String?
     var source: Source = .file
 
     init(_ d: [String: Any]) {
@@ -30,6 +31,7 @@ struct Track: Identifiable, Hashable {
         format = (d["format"] as? String ?? "?").uppercased()
         codec = d["codec"] as? String ?? format
         trackNumber = d["trackNumber"] as? Int ?? 0
+        artworkHash = d["artworkHash"] as? String
     }
 
     /// A file inside a torrent — playable via stream-while-downloading.
@@ -114,6 +116,14 @@ final class ViewModel: ObservableObject {
     // viz — raw buffer path, no JSON at 60Hz
     @Published var bands: [Float] = Array(repeating: 0, count: 48)
     @Published var clip = false
+
+    // viz surface — frame compositor + mode catalogue state (Viz/).
+    // Selected mode persists across launches; rawValue 0 (unset) → Bars.
+    let viz = VizRuntime()
+    @Published var vizMode: VizMode = VizMode(
+        rawValue: UserDefaults.standard.integer(forKey: "vizMode")) ?? .bars {
+        didSet { UserDefaults.standard.set(vizMode.rawValue, forKey: "vizMode") }
+    }
 
     private var timer: Timer?
     private var vizBuf: UnsafeMutableBufferPointer<Float>
@@ -273,25 +283,44 @@ final class ViewModel: ObservableObject {
 
     func scanFolder() {
         let panel = NSOpenPanel()
-        panel.canChooseFiles = false
+        panel.canChooseFiles = true
         panel.canChooseDirectories = true
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        storeBookmark(for: url)
-        libraryRoot = url.path
+        panel.allowsMultipleSelection = true
+        panel.message = "Pick folders or audio files"
+        guard panel.runModal() == .OK else { return }
+        let urls = panel.urls
+        guard !urls.isEmpty else { return }
+        var dirs: [String] = []
+        var files: [String] = []
+        for url in urls {
+            storeBookmark(for: url)
+            if url.hasDirectoryPath { dirs.append(url.path) } else { files.append(url.path) }
+        }
+        if let dir = dirs.first { libraryRoot = dir }
         scanning = true
         scanStatus = ""
         DispatchQueue.global(qos: .userInitiated).async {
             // Incremental sync into the persistent DB — only mtime-changed
-            // files get re-probed; then reload all rows.
-            let stats = LyraLibrary.shared.syncDir(url.path)
+            // files get re-probed; then reload all rows. File picks go through
+            // sync_files which never prunes.
+            var probed = 0, skipped = 0, pruned = 0
+            for dir in dirs {
+                if let s = LyraLibrary.shared.syncDir(dir) {
+                    probed += s["probed"] as? Int ?? 0
+                    skipped += s["skipped"] as? Int ?? 0
+                    pruned += s["pruned"] as? Int ?? 0
+                }
+            }
+            if !files.isEmpty, let s = LyraLibrary.shared.syncFiles(files) {
+                probed += s["probed"] as? Int ?? 0
+                skipped += s["skipped"] as? Int ?? 0
+            }
             let ts = LyraLibrary.shared.tracks.map(Track.init)
             DispatchQueue.main.async {
                 self.tracks = ts
                 self.contentID = UUID() // force no-diff Table rebuild
                 self.scanning = false
-                if let s = stats {
-                    self.scanStatus = "\(ts.count) tracks — probed \(s["probed"] ?? 0), skipped \(s["skipped"] ?? 0), pruned \(s["pruned"] ?? 0) in \(s["elapsedMs"] ?? s["elapsed_ms"] ?? 0)ms"
-                }
+                self.scanStatus = "\(ts.count) tracks — probed \(probed), skipped \(skipped), pruned \(pruned)"
             }
         }
     }
@@ -623,12 +652,14 @@ final class ViewModel: ObservableObject {
 enum SidebarItem: String, CaseIterable, Identifiable {
     case library = "Library"
     case eq = "Equalizer"
+    case visuals = "Visuals"
     case remote = "Remote"
     var id: String { rawValue }
     var icon: String {
         switch self {
         case .library: "music.note.list"
         case .eq: "slider.horizontal.3"
+        case .visuals: "waveform"
         case .remote: "iphone.radiowaves.left.and.right"
         }
     }
@@ -684,6 +715,7 @@ struct ContentView: View {
         switch vm.selection {
         case .library: libraryPane
         case .eq: eqPane
+        case .visuals: VisualsPane()
         case .remote: remotePane
         case .none: Text("Select a section").foregroundStyle(Ui.inkSoft)
         }
@@ -746,6 +778,7 @@ struct ContentView: View {
                     }
                 }
                 .uiCard()
+                .uiElevated()
             }
             if !vm.torrents.isEmpty {
                 HStack(spacing: 8) {
@@ -880,7 +913,13 @@ struct ContentView: View {
         return HStack(spacing: 0) {
             cell(t.trackNumber > 0 ? "\(t.trackNumber)" : "—", w[0], .uiCaption,
                  sel ? .white.opacity(0.8) : Ui.inkSoft)
-            cell(t.title, w[1], .uiBody, sel ? .white : Ui.ink)
+            HStack(spacing: 6) {
+                ArtImage(hash: t.artworkHash, label: t.album, size: 18)
+                Text(t.title).font(.uiBody).foregroundStyle(sel ? .white : Ui.ink)
+                    .lineLimit(1)
+            }
+            .frame(width: w[1] - 16, alignment: .leading)
+            .padding(.horizontal, 8)
             cell(t.artist, w[2], .uiBody, soft)
             cell(t.album, w[3], .uiBody, soft)
             cell(vm.fmt(t.duration), w[4], .uiMono, soft)
@@ -943,6 +982,8 @@ struct ContentView: View {
                 }
             )
             HStack(spacing: 10) {
+                ArtImage(hash: vm.current?.artworkHash,
+                         label: vm.current?.album ?? "", size: 34, px: 256)
                 VStack(alignment: .leading) {
                     Text(vm.current?.title ?? "Nothing playing").font(.uiHeadline).lineLimit(1)
                         .foregroundStyle(vm.current == nil ? Ui.inkSoft : Ui.ink)
@@ -992,22 +1033,20 @@ struct ContentView: View {
         .overlay(alignment: .top) { Ui.border.frame(height: 1) }
     }
 
+    /// Transport-bar viz: live thumbnail of the selected mode — clicking
+    /// expands into the Visuals pane. This surface is the compositor pump.
     private var spectrumMini: some View {
-        Canvas { ctx, size in
-            guard !vm.bands.isEmpty else { return }
-            let n = vm.bands.count
-            let w = size.width / CGFloat(n)
-            for (i, v) in vm.bands.enumerated() {
-                let h = size.height * CGFloat(v)
-                ctx.fill(
-                    Path(CGRect(x: CGFloat(i) * w, y: size.height - h,
-                                width: w * 0.75, height: h)),
-                    with: .color(Ui.mint.opacity(0.85))
-                )
-            }
+        Button { vm.selection = .visuals } label: {
+            VizSurfaceView(mode: vm.vizMode, compact: true)
+                .frame(minWidth: 0, maxWidth: 120)
+                .frame(height: 28)
+                .contentShape(Rectangle())
         }
-        .frame(minWidth: 0, maxWidth: 120)
-        .frame(height: 28)
+        .buttonStyle(.plain)
+        .onHover { h in
+            if h { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+        }
+        .help("Visuals — \(vm.vizMode.displayName)")
     }
 
     // ── EQ ───────────────────────────────────────────────────────────────
@@ -1164,9 +1203,10 @@ struct ContentView: View {
                             Button("Revoke") { vm.revokeDevice(d.id) }
                                 .buttonStyle(.sharp)
                         }
+                        .uiCard(padding: 8)
+                        .uiElevated()
                     }
                 }
-                .uiCard()
             }
             if let code = vm.pairCode {
                 VStack(alignment: .leading, spacing: 8) {
@@ -1180,6 +1220,7 @@ struct ContentView: View {
                         .font(.uiMono).foregroundStyle(Ui.inkSoft)
                 }
                 .uiCard(padding: 16)
+                .uiElevated()
             }
             Text("SPAKE2(code) → Noise XXpsk3 → pinned X25519 keys. Reconnects use plain XX — the pinned key is the identity.")
                 .font(.uiMicro).foregroundStyle(Ui.inkSoft.opacity(0.7))

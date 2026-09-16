@@ -1,0 +1,93 @@
+import AppKit
+import SwiftUI
+
+/// Content-addressed artwork cache reader. Rust writes
+/// `Application Support/Lyra/artwork/<h[..2]>/<h>/{full.<ext>,256.jpg,64.jpg}`
+/// during scan; Swift composes paths and loads files — no pixel FFI.
+enum Artwork {
+    /// Same root derivation as `LyraLibrary` (db's parent + "artwork").
+    /// Excluded from backup — it's a rebuildable cache.
+    static let root: URL = {
+        let u = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Lyra/artwork", isDirectory: true)
+        try? FileManager.default.createDirectory(at: u, withIntermediateDirectories: true)
+        try? (u as NSURL).setResourceValue(true, forKey: .isExcludedFromBackupKey)
+        return u
+    }()
+
+    private static let cache = NSCache<NSString, NSImage>()
+
+    /// `size` = 64 (table rows) or 256 (hero). full.<ext> needs a glob —
+    /// thumbs are the fast path.
+    static func url(_ hash: String, size: Int = 64) -> URL {
+        root.appendingPathComponent("\(hash.prefix(2))/\(hash)/\(size).jpg")
+    }
+
+    /// Sync load with NSCache — thumbs are small; safe on any thread.
+    static func image(_ hash: String?, size: Int = 64) -> NSImage? {
+        guard let hash, !hash.isEmpty else { return nil }
+        let key = "\(hash)@\(size)" as NSString
+        if let hit = cache.object(forKey: key) { return hit }
+        let u = url(hash, size: size)
+        guard let img = NSImage(contentsOfFile: u.path) else { return nil }
+        cache.setObject(img, forKey: key)
+        return img
+    }
+
+    static func imageAsync(_ hash: String?, size: Int = 64,
+                           _ done: @escaping (NSImage?) -> Void) {
+        guard let hash, !hash.isEmpty else { done(nil); return }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let img = image(hash, size: size)
+            DispatchQueue.main.async { done(img) }
+        }
+    }
+}
+
+/// Square art tile with async load + album-initial placeholder — sits on
+/// the sharp-editorial chrome (hairline border, no rounding).
+struct ArtImage: View {
+    let hash: String?
+    /// Placeholder seed — album name initial.
+    var label: String = ""
+    var size: CGFloat = 32
+    /// 64 for rows, 256 for the now-playing hero.
+    var px: Int = 64
+    @ObservedObject private var loader = ArtLoader()
+
+    var body: some View {
+        ZStack {
+            if let img = loader.image {
+                Image(nsImage: img)
+                    .resizable()
+                    .interpolation(.high)
+            } else {
+                Ui.bg
+                Text(label.prefix(1).uppercased())
+                    .font(.uiTitle)
+                    .foregroundStyle(Ui.inkSoft)
+            }
+        }
+        .frame(width: size, height: size)
+        .overlay(Ui.border.frame(width: 1))
+        .onAppear { loader.load(hash, px: px) }
+        .onChange(of: hash) { _, h in loader.load(h, px: px) }
+    }
+}
+
+/// @State is unavailable under CLT swiftc — the HoverState pattern again.
+final class ArtLoader: ObservableObject {
+    @Published var image: NSImage?
+    private var lastKey: String?
+
+    func load(_ hash: String?, px: Int) {
+        let key = "\(hash ?? "")@\(px)"
+        guard key != lastKey else { return }
+        lastKey = key
+        image = nil
+        Artwork.imageAsync(hash, size: px) { [weak self] img in
+            self?.image = img
+        }
+    }
+}

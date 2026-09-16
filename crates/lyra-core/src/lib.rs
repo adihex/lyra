@@ -65,6 +65,9 @@ pub struct LibraryTrack {
     pub sample_rate: Option<u32>,
     pub channels: Option<u32>,
     pub bits_per_sample: Option<u32>,
+    /// sha256 of the cached artwork row (artwork table); Swift composes
+    /// cache paths from it — no pixel data crosses FFI.
+    pub artwork_hash: Option<String>,
 }
 
 /// Commands the UI / remote can send to the engine.

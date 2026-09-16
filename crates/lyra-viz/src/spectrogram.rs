@@ -7,7 +7,7 @@ pub struct Spectrogram {
     analyzer: SpectrumAnalyzer,
     rows: VecDeque<Vec<f32>>, // normalized rows
     capacity: usize,
-    accum: Vec<f32>,
+    bands: usize,
 }
 
 impl Spectrogram {
@@ -19,27 +19,24 @@ impl Spectrogram {
             ),
             rows: VecDeque::with_capacity(width),
             capacity: width,
-            accum: Vec::with_capacity(fft_size * 2),
+            bands,
         }
     }
 
     /// Feed interleaved stereo; appends one waterfall column per full window.
-    pub fn push(&mut self, interleaved: &mut [f32]) -> usize {
+    pub fn push(&mut self, interleaved: &[f32]) -> usize {
+        self.analyzer.accumulate(interleaved);
         let mut added = 0;
-        // push() may complete multiple windows if the block is big.
-        loop {
-            match self.analyzer.push(interleaved, &mut self.accum) {
-                Some(frame) => {
-                    self.rows
-                        .push_front(SpectrumAnalyzer::normalized(&frame));
-                    if self.rows.len() > self.capacity {
-                        self.rows.pop_back();
-                    }
-                    added += 1;
-                }
-                None => return added,
+        while self.analyzer.next() {
+            let mut row = vec![0.0; self.bands];
+            self.analyzer.normalized_into(&mut row);
+            self.rows.push_front(row);
+            if self.rows.len() > self.capacity {
+                self.rows.pop_back();
             }
+            added += 1;
         }
+        added
     }
 
     /// Oldest→newest columns of normalized band values for the canvas.

@@ -19,7 +19,7 @@ use lyra_core::LyraError;
 use lyra_dsp::{Biquad, EqBand, ParametricEq, SafetyLimiter};
 use lyra_formats::TrackDecoder;
 use lyra_fs::ByteSource;
-use lyra_viz::{Levels, SpectrumAnalyzer};
+use lyra_viz::{BeatDetect, Levels, Oscilloscope, SpectrumAnalyzer};
 use ringbuf::traits::{Consumer, Producer, Split};
 use ringbuf::{HeapProd, HeapRb};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,6 +28,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use tracing::warn;
+
+pub use lyra_viz::VizFrame;
 
 /// Ring depth: ~1s of stereo f32 at 192k worst case — covers decode jitter
 /// and remote-read latency without pre-buffer stalls.
@@ -58,10 +60,76 @@ pub struct BandSpec {
 }
 
 /// Shared viz state — worker writes, UI polls (FFI reads it as a snapshot).
+/// `frame` is always fully formed: push() refreshes every field so the
+/// FFI read path stays lock + memcpy + seq.
 pub struct VizTap {
-    pub levels: Levels,
-    pub spectrum: SpectrumAnalyzer,
-    pub fft_accum: Vec<f32>,
+    levels: Levels,
+    spectrum: SpectrumAnalyzer,
+    osc: Oscilloscope,
+    beat: BeatDetect,
+    /// Per-channel clip hold timer (~1.5s) — the frame's sticky bits.
+    clip_hold: [f32; 2],
+    rate: f32,
+    frame: VizFrame,
+}
+
+/// dBFS → 0..1 display scale (-60..0 dB → 0..1).
+fn db01(db: f32) -> f32 {
+    ((db + 60.0) / 60.0).clamp(0.0, 1.0)
+}
+
+impl VizTap {
+    pub fn new(rate: f32) -> Self {
+        Self {
+            levels: Levels::new(0.85),
+            spectrum: SpectrumAnalyzer::new(
+                rate, 4096, 64, 20.0, 20_000.0, -80.0, 0.6, 0.12,
+            ),
+            // ~20 ms scope window, strided to 256 points
+            osc: Oscilloscope::new(256, (rate * 0.02 / 256.0).round().max(1.0) as u32),
+            beat: BeatDetect::new(rate),
+            clip_hold: [0.0; 2],
+            rate,
+            frame: VizFrame::default(),
+        }
+    }
+
+    /// Audio-thread update — no alloc after init: fixed rings, in-place FFT.
+    pub fn push(&mut self, pcm: &[f32]) {
+        self.levels.push(pcm);
+        self.osc.push(pcm);
+        self.beat.push(pcm);
+        self.spectrum.feed(pcm);
+
+        let (peak_db, rms_db) = self.levels.read();
+        self.spectrum.normalized_into(&mut self.frame.bands);
+        self.osc
+            .copy_into(&mut self.frame.wave_l, &mut self.frame.wave_r);
+        for ch in 0..2 {
+            self.frame.peak[ch] = db01(peak_db[ch]);
+            self.frame.rms[ch] = db01(rms_db[ch]);
+        }
+        self.frame.bass = self.frame.bands[..4].iter().sum::<f32>() * 0.25;
+        self.frame.beat = self.beat.pulse();
+        self.frame.level = (self.frame.rms[0] + self.frame.rms[1]) * 0.5;
+        let bc = self.levels.last_clip();
+        let dt = (pcm.len() / 2) as f32 / self.rate;
+        for ch in 0..2 {
+            self.clip_hold[ch] = if bc & (1 << ch) != 0 {
+                1.5
+            } else {
+                (self.clip_hold[ch] - dt).max(0.0)
+            };
+        }
+        self.frame.clip = (self.clip_hold[0] > 0.0) as u32
+            | ((self.clip_hold[1] > 0.0) as u32) << 1;
+        self.frame.seq += 1;
+    }
+
+    /// Latest fully-formed frame (copy is one memcpy at the FFI layer).
+    pub fn frame(&self) -> VizFrame {
+        self.frame
+    }
 }
 
 /// Output path selection.
@@ -241,11 +309,7 @@ impl Engine {
             }
         };
 
-        let viz = Arc::new(Mutex::new(VizTap {
-            levels: Levels::new(0.85),
-            spectrum: SpectrumAnalyzer::new(out_rate, 4096, 48, 20.0, 20_000.0, -80.0, 0.6, 0.12),
-            fft_accum: Vec::with_capacity(8192),
-        }));
+        let viz = Arc::new(Mutex::new(VizTap::new(out_rate)));
         let eq_specs: Arc<Mutex<Vec<Option<BandSpec>>>> =
             Arc::new(Mutex::new(vec![None; EQ_BANDS]));
         let eq_rate = Arc::new(AtomicF32::new(44_100.0));
@@ -328,12 +392,7 @@ impl Engine {
     /// Normalized spectrum bands into a caller buffer — the hot-path FFI
     /// shape (raw f32 fill, no JSON at display rate).
     pub fn viz_bands(&self, out: &mut [f32]) -> usize {
-        let tap = self.viz.lock().unwrap();
-        let frame = tap.spectrum.peek();
-        let bands = SpectrumAnalyzer::normalized(&frame);
-        let n = bands.len().min(out.len());
-        out[..n].copy_from_slice(&bands[..n]);
-        n
+        self.viz.lock().unwrap().spectrum.normalized_into(out)
     }
     pub fn set_volume(&self, v: f32) {
         self.volume.store(v.clamp(0.0, 2.0), Ordering::Relaxed);
@@ -354,6 +413,14 @@ impl Engine {
             peak,
             tap.levels.take_clip(),
         )
+    }
+
+    /// Latest viz frame for the 60 Hz FFI path — short lock, memcpy out.
+    /// Returns seq; the caller skips redraw when seq is unchanged.
+    pub fn viz_frame(&self, out: &mut VizFrame) -> u64 {
+        let tap = self.viz.lock().unwrap();
+        *out = tap.frame;
+        out.seq
     }
 
     pub fn shutdown(&self) { let _ = self.cmd.send(Command::Shutdown); }
@@ -498,9 +565,7 @@ fn worker_loop(
                 eq.process(&mut pcm);
                 limiter.process(&mut pcm);
                 if let Ok(mut tap) = viz.try_lock() {
-                    let VizTap { levels, spectrum, fft_accum } = &mut *tap;
-                    levels.push(&pcm);
-                    let _ = spectrum.push(&mut pcm.clone(), fft_accum);
+                    tap.push(&pcm);
                 }
                 // Push to ring; brief park when full (consumer drains at rate).
                 let mut off = 0;

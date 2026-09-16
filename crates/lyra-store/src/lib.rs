@@ -13,7 +13,7 @@
 use lyra_core::{AudioFormat, LibraryTrack, LyraError};
 use rusqlite::{params, Connection};
 use rusqlite_migration::{M, Migrations};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const MIGRATIONS: &[&str] = &[
     // v1: tracks + FTS + sources + settings
@@ -68,6 +68,44 @@ CREATE TABLE sources (
 );
 CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT);
 "#,
+    // v2: waveform seekbar peaks — O(width) min/max pairs per track,
+    // computed at import time. Cascades with the track row.
+    r#"
+CREATE TABLE waveform_peaks (
+    path               TEXT PRIMARY KEY REFERENCES tracks(path) ON DELETE CASCADE,
+    sample_rate        REAL NOT NULL,
+    samples_per_bucket INTEGER NOT NULL,
+    peaks              BLOB NOT NULL   -- LE f32 pairs [min,max]
+);
+"#,
+    // v3: artwork — content-addressed file cache, hash shared across an
+    // album's tracks. artwork_hash '' = "checked, none" (don't re-probe);
+    // NULL = never checked. artwork_fetch pre-creates the CAA negative
+    // cache for the online-fetch phase.
+    r#"
+CREATE TABLE artwork (
+    hash       TEXT PRIMARY KEY,     -- sha256 hex of encoded bytes
+    rel_path   TEXT NOT NULL,        -- "<ab>/<hash>/full.<ext>" under artwork root
+    source     TEXT NOT NULL,        -- 'embedded'|'file'|'caa'|'remote_ref'
+    mime       TEXT NOT NULL,        -- sniffed, not declared
+    width      INTEGER,
+    height     INTEGER,
+    byte_len   INTEGER NOT NULL,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+-- No FK: artwork rows are shared across tracks and GC'd manually —
+-- a REFERENCES clause would couple lifetimes we deliberately decoupled.
+ALTER TABLE tracks ADD COLUMN artwork_hash TEXT;
+CREATE TABLE artwork_fetch (
+    album_key     TEXT PRIMARY KEY,  -- lower(album_artist)|'\x1f'|lower(album)
+    mbid          TEXT,
+    state         TEXT NOT NULL,     -- 'ok'|'not_found'|'error'|'skipped_no_mbid'
+    http_status   INTEGER,
+    attempts      INTEGER NOT NULL DEFAULT 1,
+    attempted_at  INTEGER NOT NULL,
+    next_retry_at INTEGER            -- NULL = never
+);
+"#,
 ];
 
 /// AudioFormat <-> its serde-lowercase string ("flac", "m4a", …).
@@ -83,6 +121,10 @@ fn format_from(s: &str) -> AudioFormat {
 
 pub struct Library {
     conn: Connection,
+    /// Content-addressed artwork cache root — derived as `<db dir>/artwork`
+    /// (same convention as the torrents dir). None for in-memory libs:
+    /// ingest becomes a no-op.
+    artwork_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -91,17 +133,56 @@ pub struct Source {
     pub kind: String,
 }
 
+/// Image sibling → folder-art rank (lower wins); None = not a cover
+/// candidate. Dotfiles, `._*` AppleDouble, and booklet/back/inlay names
+/// are excluded — they exist but are never the front cover.
+fn folder_art_rank(dir: &Path, p: &Path) -> Option<u8> {
+    let name = p.file_name()?.to_str()?.to_lowercase();
+    if name.starts_with('.') {
+        return None;
+    }
+    let stem = p.file_stem()?.to_str()?.to_lowercase();
+    let ext = p.extension()?.to_str()?.to_lowercase();
+    if !matches!(ext.as_str(), "jpg" | "jpeg" | "png" | "webp" | "gif" | "bmp") {
+        return None;
+    }
+    if matches!(stem.as_str(), "back" | "inlay" | "booklet" | "disc" | "cd")
+        || stem.starts_with("booklet")
+    {
+        return None;
+    }
+    let dir_name = dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n.to_lowercase());
+    let size = p.metadata().ok()?.len();
+    Some(match stem.as_str() {
+        "cover" | "front" => 0,
+        "folder" => 1,
+        "album" | "artwork" | "albumart" | "coverart" => 2,
+        s if Some(s) == dir_name.as_deref() => 3,
+        _ if size >= 10 * 1024 => 4,
+        _ => return None,
+    })
+}
+
 impl Library {
     pub fn open(path: &Path) -> Result<Self, LyraError> {
         let mut conn = Connection::open(path)?;
         Self::init(&mut conn)?;
-        Ok(Self { conn })
+        Ok(Self {
+            conn,
+            artwork_dir: path.parent().map(|d| d.join("artwork")),
+        })
     }
 
     pub fn open_memory() -> Result<Self, LyraError> {
         let mut conn = Connection::open_in_memory()?;
         Self::init(&mut conn)?;
-        Ok(Self { conn })
+        Ok(Self {
+            conn,
+            artwork_dir: None,
+        })
     }
 
     fn init(conn: &mut Connection) -> Result<(), LyraError> {
@@ -124,8 +205,9 @@ impl Library {
         self.conn.execute(
             "INSERT INTO tracks (path, title, artist, album, album_artist,
                  genre, year, track_no, duration_secs, format, codec,
-                 sample_rate, channels, bit_depth, size_bytes, mtime)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)
+                 sample_rate, channels, bit_depth, size_bytes, mtime,
+                 artwork_hash)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
              ON CONFLICT(path) DO UPDATE SET
                  title=excluded.title, artist=excluded.artist,
                  album=excluded.album, album_artist=excluded.album_artist,
@@ -135,7 +217,8 @@ impl Library {
                  format=excluded.format, codec=excluded.codec,
                  sample_rate=excluded.sample_rate,
                  channels=excluded.channels, bit_depth=excluded.bit_depth,
-                 size_bytes=excluded.size_bytes, mtime=excluded.mtime",
+                 size_bytes=excluded.size_bytes, mtime=excluded.mtime,
+                 artwork_hash=excluded.artwork_hash",
             params![
                 t.path,
                 t.title,
@@ -153,6 +236,7 @@ impl Library {
                 t.bits_per_sample.map(|v| v as i64),
                 size_bytes,
                 mtime,
+                t.artwork_hash,
             ],
         )?;
         Ok(())
@@ -169,6 +253,95 @@ impl Library {
             )
             .ok();
         Ok(known != Some(mtime))
+    }
+
+    /// True when the row exists but embedded art was never checked
+    /// (NULL hash) — first scan after the v3 migration, or new tracks
+    /// whose probe somehow skipped art.
+    pub fn needs_art(&self, path: &str) -> Result<bool, LyraError> {
+        let is_null: bool = self
+            .conn
+            .query_row(
+                "SELECT artwork_hash IS NULL FROM tracks WHERE path=?1",
+                params![path],
+                |r| r.get(0),
+            )
+            .unwrap_or(false);
+        Ok(is_null)
+    }
+
+    /// Record the art outcome for a track without touching other columns.
+    /// `None` writes '' — "checked, no embedded art" (sticky marker so
+    /// artless files aren't re-probed every scan).
+    pub fn set_track_artwork(
+        &self,
+        path: &str,
+        hash: Option<&str>,
+    ) -> Result<(), LyraError> {
+        self.conn.execute(
+            "UPDATE tracks SET artwork_hash=?1 WHERE path=?2",
+            params![hash.unwrap_or(""), path],
+        )?;
+        Ok(())
+    }
+
+    /// Cache image bytes → content-addressed file row → hash.
+    /// Writes `full.<ext>` + 64/256 JPEG thumbs once per unique image;
+    /// the `artwork` row is shared across every track that resolves to it.
+    /// Returns None when there's no cache dir (in-memory lib) or the
+    /// bytes fail validation — art must never fail a scan.
+    pub fn ingest_artwork(
+        &self,
+        bytes: &[u8],
+        mime: &str,
+        source: &str,
+    ) -> Option<String> {
+        use sha2::Digest;
+        let root = self.artwork_dir.as_ref()?;
+
+        // Header-only validation first — a corrupt image must not be cached.
+        let probe = image::ImageReader::new(std::io::Cursor::new(bytes))
+            .with_guessed_format()
+            .ok()?;
+        let (w, h) = probe.into_dimensions().ok()?;
+        if u64::from(w) * u64::from(h) > 50_000_000 {
+            return None;
+        }
+
+        let hash = format!("{:x}", sha2::Sha256::digest(bytes));
+        let ext = match mime {
+            "image/png" => "png",
+            "image/gif" => "gif",
+            "image/webp" => "webp",
+            "image/bmp" => "bmp",
+            _ => "jpg",
+        };
+        let rel = format!("{}/{hash}/full.{ext}", &hash[..2]);
+        let dir = root.join(&hash[..2]).join(&hash);
+        let full = dir.join(format!("full.{ext}"));
+        if !full.exists() {
+            std::fs::create_dir_all(&dir).ok()?;
+            std::fs::write(&full, bytes).ok()?;
+            if let Ok(img) = image::load_from_memory(bytes) {
+                let _ = img.thumbnail(64, 64).save_with_format(
+                    dir.join("64.jpg"),
+                    image::ImageFormat::Jpeg,
+                );
+                let _ = img.thumbnail(256, 256).save_with_format(
+                    dir.join("256.jpg"),
+                    image::ImageFormat::Jpeg,
+                );
+            }
+        }
+        self.conn
+            .execute(
+                "INSERT OR IGNORE INTO artwork
+                     (hash, rel_path, source, mime, width, height, byte_len)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                params![hash, rel, source, mime, w, h, bytes.len() as i64],
+            )
+            .ok()?;
+        Some(hash)
     }
 
     /// Drop rows whose path isn't in `alive` — the post-scan prune.
@@ -261,6 +434,9 @@ impl Library {
                     bits_per_sample: r
                         .get::<_, Option<i64>>("bit_depth")?
                         .map(|v| v as u32),
+                    artwork_hash: r
+                        .get::<_, Option<String>>("artwork_hash")?
+                        .filter(|s| !s.is_empty()), // '' = "checked, none"
                 })
             })?
             .collect::<Result<_, _>>()?;
@@ -305,12 +481,21 @@ impl Library {
 
         let mut alive = Vec::new();
         let mut stack = vec![dir.to_path_buf()];
+        // Folder-art pass: image siblings collected during the walk,
+        // assigned after to tracks whose embedded check found nothing.
+        let mut art_candidates: std::collections::HashMap<PathBuf, Vec<(u8, PathBuf)>> =
+            std::collections::HashMap::new();
+        let mut needing_art: Vec<PathBuf> = Vec::new();
         while let Some(d) = stack.pop() {
             for entry in std::fs::read_dir(&d)? {
                 let entry = entry?;
                 let p = entry.path();
                 if p.is_dir() {
                     stack.push(p);
+                    continue;
+                }
+                if let Some(rank) = folder_art_rank(&d, &p) {
+                    art_candidates.entry(d.clone()).or_default().push((rank, p));
                     continue;
                 }
                 let ext = p
@@ -334,17 +519,224 @@ impl Library {
                 alive.push(path_str.clone());
 
                 if self.needs_scan(&path_str, mtime)? {
-                    let track = lyra_formats::probe_track(&p);
+                    let (mut track, art) = lyra_formats::probe_track_full(&p);
+                    track.artwork_hash = art
+                        .and_then(|a| self.ingest_artwork(&a.data, a.mime, "embedded"))
+                        .or_else(|| Some(String::new())); // '' = checked, none
+                    if track.artwork_hash.as_deref() == Some("") {
+                        needing_art.push(p);
+                    }
                     self.upsert_track(&track, mtime, size)?;
                     stats.probed += 1;
+                } else if self.needs_art(&path_str)? {
+                    // Row predates art support — tags-only re-check.
+                    let hash = lyra_formats::read_art(&p)
+                        .and_then(|a| self.ingest_artwork(&a.data, a.mime, "embedded"));
+                    self.set_track_artwork(&path_str, hash.as_deref())?;
+                    if hash.is_none() {
+                        needing_art.push(p);
+                    }
+                    stats.skipped += 1;
                 } else {
                     stats.skipped += 1;
                 }
             }
         }
         stats.pruned = self.prune_missing(&alive)? as u64;
+        self.assign_folder_art(&art_candidates, needing_art, dir)?;
         stats.elapsed_ms = t0.elapsed().as_millis() as u64;
         Ok(stats)
+    }
+
+    /// Folder-art fallback for tracks whose embedded check found nothing:
+    /// best-ranked image in the track's dir, then ≤2 ancestors up.
+    /// Also retried for ''-hash rows under the scanned root so a
+    /// later-added cover.jpg gets picked up on the next sync.
+    fn assign_folder_art(
+        &self,
+        candidates: &std::collections::HashMap<PathBuf, Vec<(u8, PathBuf)>>,
+        mut needing: Vec<PathBuf>,
+        root: &Path,
+    ) -> Result<(), LyraError> {
+        if self.artwork_dir.is_none() {
+            return Ok(());
+        }
+        // Stale '' rows under this scan root get another folder shot.
+        let mut stmt = self
+            .conn
+            .prepare("SELECT path FROM tracks WHERE artwork_hash=''")?;
+        let stale: Vec<String> = stmt
+            .query_map([], |r| r.get(0))?
+            .collect::<Result<_, _>>()?;
+        let root_str = format!("{}/", root.display());
+        for s in stale {
+            if s.starts_with(&root_str) || s == root.display().to_string() {
+                needing.push(PathBuf::from(s));
+            }
+        }
+        for track_path in needing {
+            // Track-stem override: <stem>.{jpg,png,…} beside the file wins.
+            let stem_hit = track_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .and_then(|stem| {
+                    track_path.parent().and_then(|d| {
+                        ["jpg", "jpeg", "png", "webp"]
+                            .iter()
+                            .map(|e| d.join(format!("{stem}.{e}")))
+                            .find(|p| p.is_file())
+                    })
+                });
+            let hit = stem_hit.or_else(|| {
+                let mut d = track_path.parent();
+                for _ in 0..3 {
+                    let dir = d?;
+                    if let Some(cands) = candidates.get(dir) {
+                        if let Some((_, p)) = cands.iter().min_by_key(|(r, _)| r) {
+                            return Some(p.clone());
+                        }
+                    }
+                    d = dir.parent();
+                }
+                None
+            });
+            if let Some(img_path) = hit {
+                if let Ok(bytes) = std::fs::read(&img_path) {
+                    let mime = match img_path
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .map(|s| s.to_lowercase())
+                        .as_deref()
+                    {
+                        Some("png") => "image/png",
+                        Some("webp") => "image/webp",
+                        Some("gif") => "image/gif",
+                        _ => "image/jpeg",
+                    };
+                    if let Some(h) = self.ingest_artwork(&bytes, mime, "file") {
+                        let _ = self
+                            .set_track_artwork(&track_path.display().to_string(), Some(&h));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Sync an explicit list of files (NSOpenPanel multi-pick). Same
+    /// probe/upsert path as sync_dir, but never prunes — a file pick isn't
+    /// authoritative for what's gone from disk.
+    pub fn sync_files(&self, files: &[PathBuf]) -> Result<SyncStats, LyraError> {
+        let t0 = std::time::Instant::now();
+        let mut stats = SyncStats::default();
+        for p in files {
+            if !p.is_file() {
+                continue;
+            }
+            let ext = p
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|s| s.to_lowercase())
+                .unwrap_or_default();
+            if !lyra_formats::is_audio_ext(&ext) {
+                continue;
+            }
+            stats.walked += 1;
+            let path_str = p.display().to_string();
+            let meta = std::fs::metadata(p).ok();
+            let mtime = meta
+                .as_ref()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            let size = meta.map(|m| m.len() as i64).unwrap_or(0);
+            let mut hash: Option<String> = None;
+            // Only tracks whose embedded art was actually re-checked this
+            // pass may take folder art — skipped rows keep theirs.
+            let mut checked_embedded = false;
+            if self.needs_scan(&path_str, mtime)? {
+                let (mut track, art) = lyra_formats::probe_track_full(p);
+                hash = art
+                    .and_then(|a| self.ingest_artwork(&a.data, a.mime, "embedded"));
+                track.artwork_hash = hash.clone().or_else(|| Some(String::new()));
+                self.upsert_track(&track, mtime, size)?;
+                checked_embedded = true;
+                stats.probed += 1;
+            } else if self.needs_art(&path_str)? {
+                hash = lyra_formats::read_art(p)
+                    .and_then(|a| self.ingest_artwork(&a.data, a.mime, "embedded"));
+                self.set_track_artwork(&path_str, hash.as_deref())?;
+                checked_embedded = true;
+                stats.skipped += 1;
+            } else {
+                stats.skipped += 1;
+            }
+            // Folder art: check the picked file's parent dir once.
+            if checked_embedded && hash.is_none() {
+                if let Some(d) = p.parent() {
+                    let mut cands = std::collections::HashMap::new();
+                    if let Ok(rd) = std::fs::read_dir(d) {
+                        for e in rd.flatten() {
+                            if let Some(r) = folder_art_rank(d, &e.path()) {
+                                cands.entry(d.to_path_buf())
+                                    .or_insert_with(Vec::new)
+                                    .push((r, e.path()));
+                            }
+                        }
+                    }
+                    self.assign_folder_art(&cands, vec![p.clone()], d)?;
+                }
+            }
+        }
+        stats.elapsed_ms = t0.elapsed().as_millis() as u64;
+        Ok(stats)
+    }
+
+    /// Store waveform peaks for a track (import-time). `peaks` is the
+    /// min/max pair per display bucket from lyra-viz's WaveformPeaks.
+    pub fn upsert_peaks(
+        &self,
+        path: &str,
+        sample_rate: f32,
+        samples_per_bucket: u64,
+        peaks: &[(f32, f32)],
+    ) -> Result<(), LyraError> {
+        let mut blob = Vec::with_capacity(peaks.len() * 8);
+        for (lo, hi) in peaks {
+            blob.extend_from_slice(&lo.to_le_bytes());
+            blob.extend_from_slice(&hi.to_le_bytes());
+        }
+        self.conn.execute(
+            "INSERT INTO waveform_peaks (path, sample_rate, samples_per_bucket, peaks)
+             VALUES (?1,?2,?3,?4)
+             ON CONFLICT(path) DO UPDATE SET
+                 sample_rate=excluded.sample_rate,
+                 samples_per_bucket=excluded.samples_per_bucket,
+                 peaks=excluded.peaks",
+            params![path, sample_rate, samples_per_bucket as i64, blob],
+        )?;
+        Ok(())
+    }
+
+    /// Fetch stored peaks → (sample_rate, samples_per_bucket, pairs).
+    pub fn peaks_for(&self, path: &str) -> Result<Option<(f32, u64, Vec<(f32, f32)>)>, LyraError> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT sample_rate, samples_per_bucket, peaks FROM waveform_peaks WHERE path=?1",
+                params![path],
+                |r| Ok((r.get::<_, f32>(0)?, r.get::<_, i64>(1)?, r.get::<_, Vec<u8>>(2)?)),
+            )
+            .ok();
+        let Some((rate, spb, blob)) = row else { return Ok(None) };
+        let mut peaks = Vec::with_capacity(blob.len() / 8);
+        for pair in blob.chunks_exact(8) {
+            let lo = f32::from_le_bytes(pair[..4].try_into().unwrap());
+            let hi = f32::from_le_bytes(pair[4..].try_into().unwrap());
+            peaks.push((lo, hi));
+        }
+        Ok(Some((rate, spb as u64, peaks)))
     }
 }
 
@@ -368,6 +760,7 @@ mod tests {
             sample_rate: Some(44100),
             channels: Some(2),
             bits_per_sample: Some(16),
+            artwork_hash: None,
         }
     }
 
@@ -402,6 +795,78 @@ mod tests {
             1
         );
         assert_eq!(lib.all_tracks().unwrap().len(), 1);
+    }
+
+    /// 4×4 PNG built at test time — no fixture files needed.
+    fn test_png() -> Vec<u8> {
+        let img = image::RgbaImage::from_pixel(4, 4, image::Rgba([200, 60, 30, 255]));
+        let mut buf = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(img)
+            .write_to(&mut buf, image::ImageFormat::Png)
+            .unwrap();
+        buf.into_inner()
+    }
+
+    #[test]
+    fn artwork_ingest_writes_cache_and_row() {
+        let dir = std::env::temp_dir().join(format!("lyra-art-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let lib = Library::open(&dir.join("lib.db")).unwrap(); // dir derives artwork/
+
+        let png = test_png();
+        let h = lib.ingest_artwork(&png, "image/png", "embedded").unwrap();
+        let p = dir.join("artwork").join(&h[..2]).join(&h);
+        assert!(p.join("full.png").is_file());
+        assert!(p.join("64.jpg").is_file());
+        assert!(p.join("256.jpg").is_file());
+        // Same bytes dedupe to the same hash; junk never caches.
+        assert_eq!(lib.ingest_artwork(&png, "image/png", "file").unwrap(), h);
+        assert!(lib.ingest_artwork(b"not an image", "image/png", "embedded").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn artwork_hash_markers() {
+        let lib = Library::open_memory().unwrap();
+        lib.upsert_track(&track("/a/one.flac", "One", "A"), 100, 100)
+            .unwrap();
+        // NULL → needs art check; '' → checked, none; hash → done.
+        assert!(lib.needs_art("/a/one.flac").unwrap());
+        lib.set_track_artwork("/a/one.flac", None).unwrap();
+        assert!(!lib.needs_art("/a/one.flac").unwrap());
+        assert_eq!(lib.all_tracks().unwrap()[0].artwork_hash, None); // '' → None out
+        lib.set_track_artwork("/a/one.flac", Some("abc123")).unwrap();
+        assert_eq!(
+            lib.all_tracks().unwrap()[0].artwork_hash,
+            Some("abc123".into())
+        );
+    }
+
+    #[test]
+    fn waveform_peaks_roundtrip_and_cascade() {
+        let lib = Library::open_memory().unwrap();
+        lib.upsert_track(&track("/a/one.flac", "Scarlet Begonias", "Grateful Dead"), 100, 10e6 as i64)
+            .unwrap();
+        let peaks = vec![(-0.5f32, 0.9f32), (-0.2, 0.3), (0.0, 0.0)];
+        lib.upsert_peaks("/a/one.flac", 44100.0, 735, &peaks).unwrap();
+
+        let (rate, spb, back) = lib.peaks_for("/a/one.flac").unwrap().unwrap();
+        assert_eq!(rate, 44100.0);
+        assert_eq!(spb, 735);
+        assert_eq!(back, peaks);
+
+        // upsert overwrites; unknown path yields None; FK must exist
+        lib.upsert_peaks("/a/one.flac", 44100.0, 735, &peaks[..1]).unwrap();
+        assert_eq!(lib.peaks_for("/a/one.flac").unwrap().unwrap().2.len(), 1);
+        assert!(lib.peaks_for("/a/ghost.flac").unwrap().is_none());
+        assert!(lib.upsert_peaks("/a/ghost.flac", 44100.0, 735, &peaks).is_err());
+
+        // pruning the track cascades its peaks
+        lib.upsert_track(&track("/a/two.flac", "Fire", "GD"), 100, 1).unwrap();
+        lib.upsert_peaks("/a/two.flac", 44100.0, 735, &peaks).unwrap();
+        lib.prune_missing(&["/a/two.flac".to_string()]).unwrap();
+        assert!(lib.peaks_for("/a/one.flac").unwrap().is_none());
+        assert!(lib.peaks_for("/a/two.flac").unwrap().is_some());
     }
 
     #[test]

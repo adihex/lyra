@@ -365,10 +365,16 @@ pub fn scan_dir(dir: &Path) -> Result<Vec<LibraryTrack>, LyraError> {
 /// Probe one file → a library row (format probe + stream info + tags).
 /// Single source for both scan_dir and the store's incremental sync.
 pub fn probe_track(p: &Path) -> LibraryTrack {
+    probe_track_full(p).0
+}
+
+/// probe_track plus the embedded cover bytes (one file open — the tag
+/// parse is shared). Art extraction never fails the probe.
+pub fn probe_track_full(p: &Path) -> (LibraryTrack, Option<EmbeddedArt>) {
     let format = probe(p);
     let stream = stream_info(p).ok();
-    let tags = read_tags(p).unwrap_or_default();
-    LibraryTrack {
+    let (tags, art) = read_tagged(p).unwrap_or_default();
+    (LibraryTrack {
         path: p.display().to_string(),
         title: tags.title,
         artist: tags.artist,
@@ -383,7 +389,8 @@ pub fn probe_track(p: &Path) -> LibraryTrack {
         channels: stream.as_ref().and_then(|s| s.channels),
         bits_per_sample: stream.as_ref().and_then(|s| s.bits_per_sample),
         format: stream.map(|s| s.format).unwrap_or(format),
-    }
+        artwork_hash: None, // set by the store once bytes are cached
+    }, art)
 }
 
 /// Extensions the scanner considers audio candidates.
@@ -395,8 +402,57 @@ pub fn is_audio_ext(ext: &str) -> bool {
     )
 }
 
+/// Embedded cover bytes, sniffed — declared MIME lies in the wild.
+pub struct EmbeddedArt {
+    pub data: Vec<u8>,
+    pub mime: &'static str,
+}
+
+/// Magic-byte sniff → canonical mime; None means "not a usable cover"
+/// (also catches ID3v2 APICs whose data is a `-->` URL, not pixels).
+fn sniff_mime(d: &[u8]) -> Option<&'static str> {
+    Some(match d {
+        [0xFF, 0xD8, 0xFF, ..] => "image/jpeg",
+        [0x89, b'P', b'N', b'G', ..] => "image/png",
+        [b'G', b'I', b'F', b'8', ..] => "image/gif",
+        [b'R', b'I', b'F', b'F', ..] => "image/webp", // WEBP rides RIFF
+        [0x42, 0x4D, ..] => "image/bmp",
+        _ => return None,
+    })
+}
+
+/// Cover pick: front cover first, else any picture with real image bytes.
+/// Icons (32×32 junk) and non-image payloads are skipped.
+fn pick_cover(pics: &[lofty::picture::Picture]) -> Option<EmbeddedArt> {
+    use lofty::picture::PictureType;
+    let usable = |p: &lofty::picture::Picture| {
+        !matches!(p.pic_type(), PictureType::Icon | PictureType::OtherIcon)
+            && sniff_mime(p.data()).is_some()
+    };
+    let pic = pics
+        .iter()
+        .find(|p| p.pic_type() == PictureType::CoverFront && usable(p))
+        .or_else(|| pics.iter().find(|p| usable(p)))?;
+    Some(EmbeddedArt {
+        mime: sniff_mime(pic.data())?,
+        data: pic.data().to_vec(),
+    })
+}
+
 /// Read tags via lofty — the Rust-native TagLib replacement.
 pub fn read_tags(path: &Path) -> Result<TagMap, LyraError> {
+    read_tagged(path).map(|(t, _)| t)
+}
+
+/// Just the embedded cover — art-only re-checks on rows that predate
+/// artwork support (no stream probe).
+pub fn read_art(path: &Path) -> Option<EmbeddedArt> {
+    read_tagged(path).ok()?.1
+}
+
+/// Tags + embedded art in a single file open. Art failures never fail
+/// the tag read — a corrupt APIC must not drop the title.
+fn read_tagged(path: &Path) -> Result<(TagMap, Option<EmbeddedArt>), LyraError> {
     use lofty::prelude::{Accessor, TaggedFileExt};
 
     let tagged = lofty::probe::Probe::open(path)
@@ -411,7 +467,8 @@ pub fn read_tags(path: &Path) -> Result<TagMap, LyraError> {
         .or_else(|| tagged.first_tag())
         .ok_or_else(|| LyraError::Tag("no tags".into()))?;
 
-    Ok(TagMap {
+    let art = pick_cover(tag.pictures());
+    Ok((TagMap {
         title: tag.title().map(|s| s.into_owned()),
         artist: tag.artist().map(|s| s.into_owned()),
         album: tag.album().map(|s| s.into_owned()),
@@ -423,5 +480,5 @@ pub fn read_tags(path: &Path) -> Result<TagMap, LyraError> {
             .get_string(lofty::tag::ItemKey::Year)
             .and_then(|s| s.parse().ok()),
         track_number: tag.track(),
-    })
+    }, art))
 }

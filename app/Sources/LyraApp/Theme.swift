@@ -52,6 +52,13 @@ extension View {
         modifier(UiCard(padding: padding))
     }
 
+    /// Hard-offset elevation for interactive cards (VIZ-CONTRACT): at rest
+    /// a 3px/3px zero-blur ink shadow; on hover the card lifts 2pt and the
+    /// shadow deepens to 5px, 120ms easeOut. Square corners unchanged —
+    /// apply to clickable cards (device rows, pairing/magnet cards, viz
+    /// mode chips), not static text.
+    func uiElevated() -> some View { modifier(UiElevated()) }
+
     /// Square icon-button chrome (surface + hairline) — pair with a
     /// `.plain` button style.
     func sharpIconBox(_ size: CGFloat = 28) -> some View {
@@ -82,6 +89,20 @@ struct SharpButtonStyle: ButtonStyle {
 /// on an ObservableObject is a real property wrapper and works.
 private final class HoverState: ObservableObject {
     @Published var hovering = false
+}
+
+/// See `uiElevated()` — hover lift + hard shadow, same HoverState pattern
+/// as SharpButtonLabel (bare @State unavailable under CLT swiftc).
+private struct UiElevated: ViewModifier {
+    @ObservedObject private var hover = HoverState()
+    func body(content: Content) -> some View {
+        content
+            .offset(y: hover.hovering ? -2 : 0)
+            .shadow(color: Ui.ink.opacity(0.15), radius: 0,
+                    x: hover.hovering ? 5 : 3, y: hover.hovering ? 5 : 3)
+            .animation(.easeOut(duration: 0.12), value: hover.hovering)
+            .onHover { hover.hovering = $0 }
+    }
 }
 
 private struct SharpButtonLabel<Label: View>: View {

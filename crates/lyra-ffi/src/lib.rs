@@ -265,6 +265,20 @@ pub unsafe extern "C" fn lyra_engine_viz_bands(
     unsafe { &*e }.viz_bands(std::slice::from_raw_parts_mut(out, n))
 }
 
+/// Copy the latest viz frame into `out` — the 60 Hz path: short lock,
+/// memcpy only, no math. Returns seq; Swift skips redraw when seq is
+/// unchanged. Null-safe: returns 0 without touching `out`.
+#[no_mangle]
+pub unsafe extern "C" fn lyra_engine_viz_frame(
+    e: *const lyra_engine::Engine,
+    out: *mut lyra_engine::VizFrame,
+) -> u64 {
+    if e.is_null() || out.is_null() {
+        return 0;
+    }
+    unsafe { &*e }.viz_frame(&mut *out)
+}
+
 /// EQ response curve as JSON: {"freqs":[…], "db":[…]} — the drawn curve
 /// uses the same biquad coefficients as the audio path. Caller frees.
 #[no_mangle]
@@ -325,6 +339,31 @@ pub unsafe extern "C" fn lyra_lib_sync_dir(
             .into_raw(),
         Err(e) => {
             tracing::error!("sync_dir: {e}");
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Sync an explicit list of files (JSON array of paths) → SyncStats JSON.
+/// Used by the picker's file selection — unlike sync_dir this never prunes.
+#[no_mangle]
+pub unsafe extern "C" fn lyra_lib_sync_files(
+    l: *mut lyra_store::Library,
+    json: *const c_char,
+) -> *mut c_char {
+    if l.is_null() {
+        return std::ptr::null_mut();
+    }
+    let json = unsafe { CStr::from_ptr(json) }.to_str().unwrap_or_default();
+    let files: Vec<PathBuf> = serde_json::from_str::<Vec<String>>(json)
+        .map(|v| v.into_iter().map(PathBuf::from).collect())
+        .unwrap_or_default();
+    match unsafe { &*l }.sync_files(&files) {
+        Ok(stats) => CString::new(serde_json::json!(stats).to_string())
+            .unwrap_or_default()
+            .into_raw(),
+        Err(e) => {
+            tracing::error!("sync_files: {e}");
             std::ptr::null_mut()
         }
     }
@@ -755,5 +794,135 @@ pub extern "C" fn lyra_torrent_probe(id: c_int, file_idx: c_int) -> *mut c_char 
             CString::new(j.to_string()).unwrap().into_raw()
         }
         Err(_) => std::ptr::null_mut(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::mem::{offset_of, size_of};
+
+    /// Rust VizFrame must byte-match the C LyraVizFrame in lyra.h —
+    /// Swift parses raw field offsets, so a drift here is silent corruption.
+    #[test]
+    fn viz_frame_abi_layout() {
+        type F = lyra_engine::VizFrame;
+        assert_eq!(offset_of!(F, bands), 0);
+        assert_eq!(offset_of!(F, wave_l), 256);
+        assert_eq!(offset_of!(F, wave_r), 1280);
+        assert_eq!(offset_of!(F, peak), 2304);
+        assert_eq!(offset_of!(F, rms), 2312);
+        assert_eq!(offset_of!(F, bass), 2320);
+        assert_eq!(offset_of!(F, beat), 2324);
+        assert_eq!(offset_of!(F, level), 2328);
+        assert_eq!(offset_of!(F, clip), 2332);
+        assert_eq!(offset_of!(F, seq), 2336);
+        assert_eq!(size_of::<F>(), 2344);
+    }
+
+    #[test]
+    fn viz_frame_null_safe() {
+        let mut f = lyra_engine::VizFrame::default();
+        assert_eq!(unsafe { lyra_engine_viz_frame(std::ptr::null(), &mut f) }, 0);
+        let seq = unsafe {
+            lyra_engine_viz_frame(std::ptr::null_mut(), std::ptr::null_mut())
+        };
+        assert_eq!(seq, 0);
+    }
+}
+
+// ── Torrent search (lyra-search) ──────────────────────────────────────
+// Lossless-first search over legal indexes (archive.org etree scope,
+// Academic Torrents). Opaque handle + private runtime — same block_on
+// pattern as TorrentEngine. Calls block; Swift runs them off-main.
+
+pub struct LyraSearch {
+    rt: tokio::runtime::Runtime,
+    engine: lyra_search::SearchEngine,
+}
+
+/// `data_dir` backs provider caches (AT database.xml). Created if
+/// missing. Null on failure.
+#[no_mangle]
+pub extern "C" fn lyra_search_new(data_dir: *const c_char) -> *mut LyraSearch {
+    init_logging();
+    let dir = match unsafe { CStr::from_ptr(data_dir) }.to_str() {
+        Ok(p) if !p.is_empty() => PathBuf::from(p),
+        _ => return std::ptr::null_mut(),
+    };
+    if std::fs::create_dir_all(&dir).is_err() {
+        return std::ptr::null_mut();
+    }
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => {
+            tracing::error!("search rt: {e}");
+            return std::ptr::null_mut();
+        }
+    };
+    let engine = lyra_search::SearchEngine::new(vec![
+        std::sync::Arc::new(lyra_search::ArchiveOrgProvider::new()),
+        std::sync::Arc::new(lyra_search::AcademicTorrentsProvider::new(dir)),
+    ]);
+    Box::into_raw(Box::new(LyraSearch { rt, engine }))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn lyra_search_free(s: *mut LyraSearch) {
+    if !s.is_null() {
+        drop(Box::from_raw(s));
+    }
+}
+
+/// `query_json`: a SearchQuery object ({"text":…,"strict":…,"formats":…})
+/// or a bare JSON string → text. Returns SearchResponse JSON
+/// {results:[…], provider_errors:[…]} — free with lyra_string_free.
+/// Blocks; call off the main thread.
+#[no_mangle]
+pub unsafe extern "C" fn lyra_search(s: *mut LyraSearch, query_json: *const c_char) -> *mut c_char {
+    if s.is_null() {
+        return std::ptr::null_mut();
+    }
+    let raw = unsafe { CStr::from_ptr(query_json) }.to_str().unwrap_or_default();
+    let Some(q) = lyra_search::SearchQuery::from_json(raw) else {
+        return CString::new(r#"{"error":"bad query json"}"#)
+            .unwrap_or_default()
+            .into_raw();
+    };
+    let s = unsafe { &*s };
+    let resp = s.rt.block_on(s.engine.search(&q));
+    CString::new(serde_json::json!(resp).to_string())
+        .unwrap_or_default()
+        .into_raw()
+}
+
+/// `result_json`: a SearchResult object from a prior lyra_search call.
+/// Returns ResolvedTorrent JSON {result, files, addable:{kind:magnet|
+/// torrent_url|torrent_b64, …}} or {"error":…}. Blocks; call off-main.
+#[no_mangle]
+pub unsafe extern "C" fn lyra_search_resolve(
+    s: *mut LyraSearch,
+    result_json: *const c_char,
+) -> *mut c_char {
+    if s.is_null() {
+        return std::ptr::null_mut();
+    }
+    let raw = unsafe { CStr::from_ptr(result_json) }.to_str().unwrap_or_default();
+    let r: lyra_search::SearchResult = match serde_json::from_str(raw) {
+        Ok(r) => r,
+        Err(_) => {
+            return CString::new(r#"{"error":"bad result json"}"#)
+                .unwrap_or_default()
+                .into_raw()
+        }
+    };
+    let s = unsafe { &*s };
+    match s.rt.block_on(s.engine.resolve(&r)) {
+        Ok(res) => CString::new(serde_json::json!(res).to_string())
+            .unwrap_or_default()
+            .into_raw(),
+        Err(e) => CString::new(serde_json::json!({"error": e.to_string()}).to_string())
+            .unwrap_or_default()
+            .into_raw(),
     }
 }

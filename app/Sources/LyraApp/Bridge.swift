@@ -60,6 +60,19 @@ final class LyraLibrary {
         return try? JSONSerialization.jsonObject(with: Data(String(cString: raw).utf8)) as? [String: Any]
     }
 
+    /// Sync explicit file picks (panel multi-select) — never prunes.
+    /// Synchronous + blocking — call off the main thread.
+    @discardableResult
+    func syncFiles(_ paths: [String]) -> [String: Any]? {
+        guard let lib,
+              let json = try? JSONSerialization.data(withJSONObject: paths),
+              let js = String(data: json, encoding: .utf8),
+              let raw = js.withCString({ lyra_lib_sync_files(lib, $0) })
+        else { return nil }
+        defer { lyra_string_free(raw) }
+        return try? JSONSerialization.jsonObject(with: Data(String(cString: raw).utf8)) as? [String: Any]
+    }
+
     /// All library rows (LibraryTrack JSON dicts).
     var tracks: [[String: Any]] {
         guard let lib, let raw = lyra_lib_tracks(lib) else { return [] }
@@ -151,6 +164,39 @@ final class LyraPlayer {
         defer { lyra_string_free(raw) }
         let json = String(cString: raw)
         return try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any]
+    }
+}
+
+/// Frame-packed viz snapshot — wraps `lyra_engine_viz_frame` from the
+/// viz-core workstream (docs/VIZ-CONTRACT.md). That symbol ships in the
+/// parallel Rust build, so it is resolved lazily via dlsym: the Swift shell
+/// always links, and callers get nil (→ mock provider) until the real frame
+/// producer lands. Once present, one call = one ~4.6KB struct copy.
+enum LyraEngine {
+    private typealias VizFrameFn =
+        @convention(c) (UnsafeRawPointer?, UnsafeMutableRawPointer?) -> UInt64
+
+    /// dlsym on the main executable — static-lib symbols land in the
+    /// process image's export table, so this resolves without a header
+    /// declaration once viz-core exports the symbol.
+    private static let vizFrameSym: VizFrameFn? = {
+        guard let p = dlsym(dlopen(nil, RTLD_LAZY), "lyra_engine_viz_frame")
+        else { return nil }
+        return unsafeBitCast(p, to: VizFrameFn.self)
+    }()
+
+    /// Scratch sized past the documented ~4.6KB payload so a struct that
+    /// grows with the contract never overflows the buffer.
+    private static let vizBufSize = 8192
+
+    /// Latest viz frame from the live engine, or nil when the symbol or the
+    /// engine is absent. `seq` unchanged between calls = engine stalled.
+    static func vizFrame() -> VizFrame? {
+        guard let sym = vizFrameSym, let e = LyraPlayer.shared.enginePtr
+        else { return nil }
+        var buf = [UInt8](repeating: 0, count: vizBufSize)
+        let seq = buf.withUnsafeMutableBytes { sym(e, $0.baseAddress) }
+        return VizFrame(cBytes: buf, seq: seq)
     }
 }
 

@@ -45,12 +45,18 @@ pub struct AddOpts {
     /// folder" path: rqbit verifies instead of re-downloading.
     pub overwrite: bool,
     pub output_folder: Option<PathBuf>,
+    /// Extra tracker URLs merged into this add (provider-supplied
+    /// extras; session trackers always apply on top).
+    pub trackers: Option<Vec<String>>,
 }
 
 pub struct TorrentEngine {
     rt: Runtime,
     session: Arc<librqbit::Session>,
     download_dir: PathBuf,
+    /// Session-wide trackers resolved at build (always-on for every
+    /// torrent — rqbit has no post-add tracker mutation).
+    session_trackers: Vec<String>,
 }
 
 impl TorrentEngine {
@@ -64,6 +70,10 @@ impl TorrentEngine {
     ) -> Result<Self, LyraError> {
         std::fs::create_dir_all(&download_dir)?;
         let rt = Runtime::new().map_err(|e| LyraError::Remote(e.to_string()))?;
+        // Tracker boost: ngosang/trackerslist best-of, cached under the
+        // session dir, weekly refresh, bundled fallback (§5.5).
+        let session_trackers =
+            TrackerListManager::new(download_dir.join(".session/trackers.txt")).trackers(&rt);
         let opts = librqbit::SessionOptions {
             disable_dht: cfg.disable_dht,
             disable_dht_persistence: cfg.disable_dht,
@@ -75,12 +85,21 @@ impl TorrentEngine {
             persistence: Some(librqbit::SessionPersistenceConfig::Json {
                 folder: Some(download_dir.join(".session")),
             }),
+            trackers: session_trackers
+                .iter()
+                .filter_map(|t| t.parse::<reqwest::Url>().ok())
+                .collect(),
             ..Default::default()
         };
         let session = rt
             .block_on(librqbit::Session::new_with_opts(download_dir.clone(), opts))
             .map_err(|e| LyraError::Remote(format!("rqbit session: {e}")))?;
-        Ok(Self { rt, session, download_dir })
+        Ok(Self { rt, session, download_dir, session_trackers })
+    }
+
+    /// The session-wide tracker list (read-only; fixed at add-time).
+    pub fn session_trackers(&self) -> &[String] {
+        &self.session_trackers
     }
 
     /// This session's inbound peer port, if listening.
@@ -115,7 +134,9 @@ impl TorrentEngine {
                 }
             }
         }
-        let source = if spec.starts_with("magnet:") {
+        // from_url takes magnet: and http(s) .torrent URLs — the search
+        // layer's resolved AddableTorrent::TorrentUrl lands here.
+        let source = if spec.starts_with("magnet:") || spec.starts_with("http") {
             librqbit::AddTorrent::from_url(spec)
         } else {
             librqbit::AddTorrent::from_local_filename(spec)
@@ -124,6 +145,7 @@ impl TorrentEngine {
         let opts = librqbit::AddTorrentOptions {
             initial_peers: add.initial_peers,
             disable_trackers: add.disable_trackers,
+            trackers: add.trackers,
             overwrite: add.overwrite,
             output_folder: add
                 .output_folder
@@ -380,5 +402,166 @@ impl ByteSource for TorrentFileSource {
     }
     fn describe(&self) -> String {
         format!("torrent://{}/{}", self.engine.download_dir.display(), self.file_idx)
+    }
+}
+
+// ── Tracker list management ──────────────────────────────────────────
+// ngosang/trackerslist best-of: fetched → cached on disk → refreshed
+// when >7d stale → deduped → capped at 20. Bundled fallback covers
+// first-run/offline. SessionOptions.trackers applies the list to every
+// torrent; there is no post-add tracker mutation in rqbit.
+
+const TRACKERS_URL: &str =
+    "https://raw.githubusercontent.com/ngosang/trackerslist/master/trackers_best.txt";
+const TRACKER_CAP: usize = 20;
+const TRACKER_STALE: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
+
+/// Last-known-good snapshot of trackers_best.txt — offline/first-run
+/// fallback, refreshed periodically with the upstream list.
+const BUNDLED_TRACKERS: &[&str] = &[
+    "udp://tracker.opentrackr.org:1337/announce",
+    "udp://open.tracker.cl:1337/announce",
+    "udp://open.demonii.com:1337/announce",
+    "udp://tracker.openbittorrent.com:6969/announce",
+    "udp://exodus.desync.com:6969/announce",
+    "udp://open.stealth.si:80/announce",
+    "udp://tracker.torrent.eu.org:451/announce",
+    "udp://tracker.moeking.me:6969/announce",
+    "udp://explodie.org:6969/announce",
+    "udp://tracker.dler.org:6969/announce",
+    "udp://opentracker.i2p.rocks:6969/announce",
+    "udp://uploads.gamecoast.net:6969/announce",
+    "udp://tracker1.bt.moack.co.kr:80/announce",
+    "udp://tracker.theoks.net:6969/announce",
+    "https://tracker.tamersunion.org:443/announce",
+];
+
+pub struct TrackerListManager {
+    cache_path: PathBuf,
+}
+
+impl TrackerListManager {
+    pub fn new(cache_path: PathBuf) -> Self {
+        Self { cache_path }
+    }
+
+    /// Best available list: fresh cache → fetch+cache → stale cache →
+    /// bundled. Runs the fetch on the caller's runtime.
+    pub fn trackers(&self, rt: &Runtime) -> Vec<String> {
+        if let Some(t) = self.cached(false) {
+            return t;
+        }
+        match rt.block_on(self.fetch()) {
+            Ok(t) => {
+                if let Some(d) = self.cache_path.parent() {
+                    let _ = std::fs::create_dir_all(d);
+                }
+                let _ = std::fs::write(&self.cache_path, t.join("\n\n"));
+                t
+            }
+            Err(_) => self
+                .cached(true)
+                .unwrap_or_else(|| Self::parse_list(&BUNDLED_TRACKERS.join("\n"))),
+        }
+    }
+
+    /// Cached list, or None when missing/unparseable — and when
+    /// `allow_stale` is false, when older than TRACKER_STALE.
+    fn cached(&self, allow_stale: bool) -> Option<Vec<String>> {
+        let meta = std::fs::metadata(&self.cache_path).ok()?;
+        if !allow_stale && meta.modified().ok()?.elapsed().ok()? > TRACKER_STALE {
+            return None;
+        }
+        let list = Self::parse_list(&std::fs::read_to_string(&self.cache_path).ok()?);
+        if list.is_empty() {
+            None
+        } else {
+            Some(list)
+        }
+    }
+
+    async fn fetch(&self) -> Result<Vec<String>, LyraError> {
+        let body = reqwest::Client::new()
+            .get(TRACKERS_URL)
+            .timeout(std::time::Duration::from_secs(8))
+            .send()
+            .await
+            .map_err(|e| LyraError::Remote(format!("trackers fetch: {e}")))?
+            .error_for_status()
+            .map_err(|e| LyraError::Remote(format!("trackers fetch: {e}")))?
+            .text()
+            .await
+            .map_err(|e| LyraError::Remote(format!("trackers fetch: {e}")))?;
+        let list = Self::parse_list(&body);
+        if list.is_empty() {
+            Err(LyraError::Remote("trackers fetch: empty list".into()))
+        } else {
+            Ok(list)
+        }
+    }
+
+    /// Blank-line-separated tracker list → dedupe → cap TRACKER_CAP.
+    /// '#' lines are comments; both udp:// and http(s):// pass through.
+    pub fn parse_list(body: &str) -> Vec<String> {
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for line in body.lines() {
+            let t = line.trim();
+            if t.is_empty() || t.starts_with('#') {
+                continue;
+            }
+            if seen.insert(t.to_string()) {
+                out.push(t.to_string());
+                if out.len() == TRACKER_CAP {
+                    break;
+                }
+            }
+        }
+        out
+    }
+}
+
+#[cfg(test)]
+mod tracker_tests {
+    use super::*;
+
+    #[test]
+    fn parse_dedupes_caps_skips_comments() {
+        let body = (0..30)
+            .map(|i| format!("udp://tracker{i}.example:1337/announce\n"))
+            .collect::<String>()
+            + "\n# comment line\n\nudp://tracker0.example:1337/announce\n";
+        let list = TrackerListManager::parse_list(&body);
+        assert_eq!(list.len(), TRACKER_CAP);
+        // The trailing dup of tracker0 must not appear twice.
+        assert_eq!(
+            list.iter().filter(|t| t.contains("tracker0")).count(),
+            1
+        );
+    }
+
+    #[test]
+    fn bundled_fallback_is_usable() {
+        let list = TrackerListManager::parse_list(&BUNDLED_TRACKERS.join("\n"));
+        assert_eq!(list.len(), BUNDLED_TRACKERS.len());
+        assert!(list.iter().all(|t| t.starts_with("udp://") || t.starts_with("https://")));
+    }
+
+    #[test]
+    fn stale_cache_used_only_as_last_resort() {
+        let dir = std::env::temp_dir().join(format!("lyra-trk-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("trackers.txt");
+        std::fs::write(&path, "udp://cached.example:1/announce\n\n").unwrap();
+        let mgr = TrackerListManager::new(path);
+        // Fresh file → served without a fetch.
+        assert_eq!(mgr.cached(false), Some(vec!["udp://cached.example:1/announce".into()]));
+        // Backdate beyond the 7d window → no longer "fresh".
+        let old = std::time::SystemTime::now() - TRACKER_STALE - std::time::Duration::from_secs(60);
+        let f = std::fs::File::options().write(true).open(&mgr.cache_path).unwrap();
+        f.set_modified(old).unwrap();
+        assert_eq!(mgr.cached(false), None);
+        assert!(mgr.cached(true).is_some());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

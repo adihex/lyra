@@ -13,3 +13,5 @@ serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 lyra-formats = { path = "../lyra-formats" }
+sha2.workspace = true
+image.workspace = true

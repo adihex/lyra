@@ -1,6 +1,8 @@
 #ifndef LYRA_H
 #define LYRA_H
 
+#include <stdint.h>
+
 /* lyra-ffi — C ABI for the Swift shell.
  * Strings returned by lyra_* are heap-allocated: free with lyra_string_free.
  */
@@ -36,12 +38,31 @@ void   lyra_engine_set_band(void *e, int band, float freq, float q,
                             float gain_db, int peaking);
 char  *lyra_engine_viz(const void *e);            /* JSON: bands/peak/clip */
 unsigned long lyra_engine_viz_bands(const void *e, float *out, unsigned long n);
+
+/* ── viz frame ABI (docs/VIZ-CONTRACT.md) ── */
+typedef struct {
+    float    bands[64];    /* normalized 0..1, log-spaced 20 Hz-20 kHz,
+                              attack/decay ballistics applied           */
+    float    wave_l[256];  /* strided-decimated recent PCM, newest last */
+    float    wave_r[256];  /*   -1..1                                    */
+    float    peak[2];      /* 0..1, PPM ballistics, L/R                  */
+    float    rms[2];       /* 0..1, dBFS normalized (-60..0 -> 0..1)     */
+    float    bass;         /* 0..1, mean energy of lowest ~4 bands       */
+    float    beat;         /* 0..1, onset/transient pulse, ~150 ms decay */
+    float    level;        /* 0..1, overall loudness (pulse modes)       */
+    uint32_t clip;         /* sticky clip bitmask: bit0 L, bit1 R        */
+    uint64_t seq;          /* monotonically increasing frame counter     */
+} LyraVizFrame;            /* ~4.6 KB — one copy per UI frame            */
+
+uint64_t lyra_engine_viz_frame(const void *e, LyraVizFrame *out);
+/* returns seq; Swift skips redraw when seq is unchanged */
 char  *lyra_engine_eq_response(const void *e);    /* JSON: {freqs, db} */
 void   lyra_engine_free(void *e);
 
 /* ── library DB (opaque handle) ── */
 void  *lyra_lib_open(const char *path);           /* null on failure */
 char  *lyra_lib_sync_dir(void *l, const char *dir); /* JSON SyncStats */
+char  *lyra_lib_sync_files(void *l, const char *json); /* paths JSON -> SyncStats */
 char  *lyra_lib_tracks(void *l);                  /* JSON array */
 char  *lyra_lib_search(void *l, const char *q);   /* JSON array */
 void   lyra_lib_free(void *l);
@@ -57,5 +78,11 @@ char *lyra_torrent_orphans(void);                  /* JSON [{name,bytes}] — un
 char *lyra_torrent_purge_orphans(void);            /* JSON {removed,bytes} */
 char *lyra_torrent_probe(int id, int file_idx);    /* JSON {duration_secs,codec,sample_rate,channels} or NULL */
 int   lyra_engine_play_torrent(void *e, int id, int file_idx);
+
+/* ── torrent search (lyra-search): legal indexes, lossless-first ── */
+void  *lyra_search_new(const char *data_dir);     /* provider caches under data_dir; null on failure */
+void   lyra_search_free(void *s);
+char  *lyra_search(void *s, const char *query_json);          /* SearchResponse JSON — free me; blocks, call off-main */
+char  *lyra_search_resolve(void *s, const char *result_json); /* {result,files,addable:{kind:magnet|torrent_url|torrent_b64,…}} or {"error":…} */
 
 #endif

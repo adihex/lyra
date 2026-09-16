@@ -6,7 +6,7 @@ SWIFTC   := xcrun swiftc
 APP      := .build/Lyra.app
 APPBIN   := $(APP)/Contents/MacOS/Lyra
 LIBDIR   := app/.libs
-SWIFT_SRC:= $(wildcard app/Sources/LyraApp/*.swift)
+SWIFT_SRC:= $(wildcard app/Sources/LyraApp/*.swift app/Sources/LyraApp/*/*.swift)
 
 .PHONY: all rust app sign run clean check
 
@@ -66,6 +66,7 @@ $(APPBIN): $(SWIFT_SRC) $(LIBDIR)/liblyra_ffi.a
 	    -framework SwiftUI -framework AppKit -framework UniformTypeIdentifiers \
 	    -framework AudioToolbox -framework CoreAudio -framework CoreFoundation \
 	    -framework AVFoundation -framework CoreServices -framework MediaPlayer \
+	    -framework SystemConfiguration -framework Security \
 	    -o $(APPBIN)
 
 $(APP)/Contents/Info.plist: Info.plist
