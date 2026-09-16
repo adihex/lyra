@@ -64,6 +64,7 @@ enum VizDraw {
         case .redSector: redSector(&ctx, size, f, st)
         case .spectrogram: spectrogram(&ctx, size, f, st)
         case .waveSeek: waveSeek(&ctx, size, f, st)
+        case .cosmos: cosmos(&ctx, size, f, st)
         }
         clipBadge(&ctx, size, f)
     }

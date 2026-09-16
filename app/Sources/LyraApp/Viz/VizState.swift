@@ -101,6 +101,8 @@ final class VizState {
     // edge detection for beat/bass transients
     var prevBass: Float = 0
     var prevBeat: Float = 0
+    // cosmos mode + dock tile share this motion state (CosmosScene.swift)
+    var cosmos = CosmosSceneState()
     // UI ticks regardless of seq — drives settle/freeze-out animations
     var uiTick: UInt64 = 0
     // WaveSeek peak cache — re-seeded when the track changes; mock peaks

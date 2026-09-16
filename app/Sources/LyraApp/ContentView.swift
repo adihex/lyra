@@ -120,6 +120,10 @@ final class ViewModel: ObservableObject {
     // viz surface — frame compositor + mode catalogue state (Viz/).
     // Selected mode persists across launches; rawValue 0 (unset) → Bars.
     let viz = VizRuntime()
+    /// Dock-tile animator (DockCosmos.swift) — installs lazily on the
+    /// first playing edge inside startPolling; never installs under
+    /// accessibilityReduceMotion. Pref: Prefs.shared.dockIconMode.
+    let dockViz = DockVizDriver()
     @Published var vizMode: VizMode = VizMode(
         rawValue: UserDefaults.standard.integer(forKey: "vizMode")) ?? .bars {
         didSet { UserDefaults.standard.set(vizMode.rawValue, forKey: "vizMode") }
@@ -151,6 +155,7 @@ final class ViewModel: ObservableObject {
             DispatchQueue.main.async {
                 self?.tracks = ts
                 self?.contentID = UUID()
+                SpotlightIndex.shared.libraryReady(ts)
             }
         }
         exclusiveOutput = LyraPlayer.shared.exclusiveOutput
@@ -251,6 +256,7 @@ final class ViewModel: ObservableObject {
             let p = LyraPlayer.shared
             DispatchQueue.main.async {
                 self.playing = p.isPlaying
+                self.dockViz.sync() // lazy install on the playing edge
                 if !self.scrubbing {
                     self.position = p.position
                     self.displayPosition = p.position
@@ -327,6 +333,7 @@ final class ViewModel: ObservableObject {
                 self.contentID = UUID() // force no-diff Table rebuild
                 self.scanning = false
                 self.scanStatus = "\(ts.count) tracks — probed \(probed), skipped \(skipped), pruned \(pruned)"
+                SpotlightIndex.shared.sync(ts)
             }
         }
     }
@@ -541,7 +548,9 @@ final class ViewModel: ObservableObject {
         confirmRemoveTorrent(info)
     }
 
-    func play(_ t: Track) {
+    /// `userInitiated` = the user explicitly picked this track (in-app
+    /// click, Spotlight restore) — those never banner (doc §2 policy).
+    func play(_ t: Track, userInitiated: Bool = true) {
         let ok: Bool
         switch t.source {
         case .file:
@@ -555,6 +564,7 @@ final class ViewModel: ObservableObject {
             position = 0
             pushEQ()
             publishNowPlaying(t)
+            TrackNotifier.shared.trackStarted(t, userInitiated: userInitiated)
             // Duration fallback — playback fetches piece 0 anyway, so the
             // header probe rides along on data the swarm already sent.
             if t.duration == 0, case .torrent = t.source {
@@ -571,11 +581,19 @@ final class ViewModel: ObservableObject {
         play(t)
     }
 
+    /// Spotlight restore entry — select + play by track id.
+    func playTrack(id: String) {
+        guard let t = tracks.first(where: { $0.id == id }) else { return }
+        selection = .library
+        selectedTracks = [id]
+        play(t)
+    }
+
     func toggle() {
         let p = LyraPlayer.shared
         if p.isPlaying { p.pause() }
         else if p.canResume { p.resume() }
-        else if let t = current ?? sortedTracks.first { play(t) }
+        else if let t = current ?? sortedTracks.first { play(t, userInitiated: false) }
         MediaKeys.shared.refreshState()
     }
 
@@ -583,7 +601,7 @@ final class ViewModel: ObservableObject {
     func prev() { step(-1) }
     private func step(_ d: Int) {
         guard let i = currentIndex, sortedTracks.indices.contains(i + d) else { return }
-        play(sortedTracks[i + d])
+        play(sortedTracks[i + d], userInitiated: false)
     }
     func seekBy(_ d: Double) { LyraPlayer.shared.seek(position + d) }
 
@@ -624,7 +642,7 @@ final class ViewModel: ObservableObject {
             UserDefaults.standard.set(on, forKey: "exclusiveOutput")
             lastError = nil
             if wasPlaying, let t = track {
-                play(t)
+                play(t, userInitiated: false)
                 if pos > 1 { LyraPlayer.shared.seek(pos) }
             }
         } else {

@@ -1,9 +1,10 @@
 import Foundation
 
-/// The 34-mode registry — names and order mirror cliamp's visualizers
-/// (see docs/VIZ-CONTRACT.md). `decorative` marks particle/ambient modes
-/// that fall back to Bars under Reduce Motion; meters/scope/wave stay
-/// because they convey information.
+/// The 35-mode registry — names and order mirror cliamp's visualizers
+/// (see docs/VIZ-CONTRACT.md); `cosmos` is Lyra's own dock-icon scene.
+/// `decorative` marks particle/ambient modes that fall back to Bars
+/// under Reduce Motion; meters/scope/wave stay because they convey
+/// information.
 enum VizMode: Int, CaseIterable, Identifiable {
     case bars = 1
     case barsDot
@@ -39,6 +40,7 @@ enum VizMode: Int, CaseIterable, Identifiable {
     case redSector
     case spectrogram
     case waveSeek
+    case cosmos
 
     var id: Int { rawValue }
 
@@ -78,6 +80,7 @@ enum VizMode: Int, CaseIterable, Identifiable {
         case .redSector: "RedSector"
         case .spectrogram: "Spectrogram"
         case .waveSeek: "WaveSeek"
+        case .cosmos: "Cosmos"
         }
     }
 
@@ -123,6 +126,8 @@ enum VizMode: Int, CaseIterable, Identifiable {
             "peaks"
         case .scatter:
             "bands"
+        case .cosmos:
+            "bands · beat · level · wave"
         }
     }
 
@@ -133,7 +138,7 @@ enum VizMode: Int, CaseIterable, Identifiable {
         case .scatter, .flame, .retro, .pulse, .matrix, .binary,
              .sakura, .firework, .bubbles, .logo, .terrain, .butterfly,
              .density, .firefly, .mosaic, .sand, .geyser, .redSector,
-             .spectrogram, .rain, .barsDot, .dither:
+             .spectrogram, .rain, .barsDot, .dither, .cosmos:
             true
         case .bars, .outline, .bricks, .columns, .classicPeak, .wave,
              .scope, .heartbeat, .classicLED, .stereo, .mirror, .waveSeek:

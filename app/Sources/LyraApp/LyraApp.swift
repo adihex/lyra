@@ -2,12 +2,19 @@ import SwiftUI
 
 @main
 struct LyraApp: App {
+    // The delegate mounts every system surface that needs one: dock
+    // menu, notification actions, Spotlight restore (docs §0).
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @ObservedObject private var vm = ViewModel.shared
+    @ObservedObject private var prefs = Prefs.shared
+    // Touching the singleton here starts its policy timer at launch.
+    @ObservedObject private var pet = DesktopPet.shared
 
     var body: some Scene {
-        WindowGroup {
+        WindowGroup(id: "main") {
             ContentView()
                 .preferredColorScheme(.light) // beige theme needs light chrome
+                .background(WindowOpener())
         }
         .windowStyle(.titleBar)
         .defaultSize(width: 960, height: 640)
@@ -27,30 +34,120 @@ struct LyraApp: App {
                 Button("Seek Back 10s") { vm.seekBy(-10) }
                     .keyboardShortcut(.leftArrow, modifiers: .option)
                 Divider()
-                // Exclusive HAL output: hog mode + IOProc. Engine swaps at
-                // runtime; choice persists to the next launch.
-                Toggle("Exclusive Output (HAL)",
-                       isOn: Binding(
-                           get: { vm.exclusiveOutput },
-                           set: { vm.setExclusiveOutput($0) }))
+                // The cosmos cast escapes the dock onto the desktop.
+                Picker("Desktop Pet", selection: Binding(
+                        get: { pet.policy }, set: { pet.policy = $0 })) {
+                    ForEach(DesktopPet.Policy.allCases, id: \.self) {
+                        Text($0.title).tag($0)
+                    }
+                }
+                Toggle("Pet is Interactive", isOn: Binding(
+                        get: { pet.interactive },
+                        set: { pet.interactive = $0 }))
+                Button(pet.isOut ? "Recall Pet" : "Summon Pet") {
+                    pet.summonOrRecall()
+                }
             }
             CommandGroup(replacing: .newItem) {}
             SidebarCommands() // View-menu sidebar toggle + shortcut
         }
 
-        // Menu-bar mini player — .window style hosts arbitrary SwiftUI
-        // (sliders/gestures work; `.menu` style kills them).
-        MenuBarExtra("Lyra", systemImage: "music.note") {
-            MiniPlayerView()
+        // Cmd-, — prefs home for the system surfaces (docs §10).
+        Settings {
+            SettingsView()
                 .preferredColorScheme(.light)
         }
+
+        // Menu-bar mini player — .window style hosts arbitrary SwiftUI
+        // (sliders/gestures work; `.menu` style kills them). isInserted
+        // is our own toggle, independent of Tahoe's kill switch.
+        MenuBarExtra(isInserted: $prefs.menuBarExtra) {
+            MiniPlayerView()
+                .preferredColorScheme(.light)
+        } label: {
+            MenuBarLabel()
+        }
         .menuBarExtraStyle(.window)
+    }
+}
+
+/// openWindow lives only in the view environment — capture it once so
+/// the dock menu and notification clicks can reopen the main window.
+private struct WindowOpener: View {
+    @Environment(\.openWindow) private var openWindow
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .onAppear { WindowOps.openMain = { openWindow(id: "main") } }
+    }
+}
+
+/// Live menu-bar label — TimelineView is the documented workaround for
+/// the server-level label cache (FB11857447, docs §1). Pure reads off
+/// the shared compositor: pump() stays owned by the transport-bar mini
+/// surface. At rest (paused engine → decayed frame) the bars flatten to
+/// a hairline so the item never vanishes.
+struct MenuBarLabel: View {
+    @ObservedObject private var vm = ViewModel.shared
+    @ObservedObject private var prefs = Prefs.shared
+
+    var body: some View {
+        switch prefs.menuBarMode {
+        case "note":
+            Image(systemName: "music.note")
+        case "pulse":
+            TimelineView(.animation(minimumInterval: 1.0 / 15)) { _ in
+                pulseCanvas
+            }
+        default:
+            TimelineView(.animation(minimumInterval: 1.0 / 15)) { _ in
+                spectrumCanvas
+            }
+        }
+    }
+
+    /// 8 ink bars off the first viz bands — still at rest.
+    private var spectrumCanvas: some View {
+        Canvas { ctx, size in
+            let f = vm.viz.frame()
+            let live = vm.playing && f.level > 0.02
+            let n = 8
+            let gap: CGFloat = 1.5
+            let w = (size.width - gap * CGFloat(n - 1)) / CGFloat(n)
+            for i in 0..<n {
+                let v = live && i < f.bands.count
+                    ? CGFloat(min(max(f.bands[i], 0), 1)) : 0
+                let h = max(size.height * v, 1.5)
+                ctx.fill(
+                    Path(CGRect(x: CGFloat(i) * (w + gap),
+                                y: size.height - h,
+                                width: w, height: h)),
+                    with: .color(.primary))
+            }
+        }
+        .frame(width: 22, height: 16)
+    }
+
+    /// Single level dot — lowest-CPU animated mode.
+    private var pulseCanvas: some View {
+        Canvas { ctx, size in
+            let f = vm.viz.frame()
+            let v = vm.playing ? CGFloat(min(max(f.level, 0), 1)) : 0
+            let r = 2 + v * (min(size.width, size.height) / 2 - 2)
+            ctx.fill(
+                Path(ellipseIn: CGRect(x: size.width / 2 - r,
+                                       y: size.height / 2 - r,
+                                       width: 2 * r, height: 2 * r)),
+                with: .color(.primary))
+        }
+        .frame(width: 18, height: 16)
     }
 }
 
 /// Compact transport + now-playing for the menu-bar popover.
 struct MiniPlayerView: View {
     @ObservedObject private var vm = ViewModel.shared
+    @ObservedObject private var pet = DesktopPet.shared
 
     var body: some View {
         VStack(spacing: 10) {
@@ -89,6 +186,14 @@ struct MiniPlayerView: View {
             Text("\(vm.fmt(vm.displayPosition)) / \(vm.fmt(vm.current?.duration ?? 0))")
                 .font(.uiMono)
                 .foregroundStyle(Ui.inkSoft)
+            // Escape hatch for a pet lost under real windows.
+            if pet.isOut || pet.userHidden {
+                Button { pet.summonOrRecall() } label: {
+                    Text(pet.isOut ? "Recall pet" : "Summon pet")
+                        .font(.uiCaption).foregroundStyle(Ui.accent)
+                }
+                .buttonStyle(.plain)
+            }
         }
         .padding()
         .frame(width: 240)

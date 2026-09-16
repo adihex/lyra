@@ -6,6 +6,8 @@ import SwiftUI
 /// art tile → art). The flip is a literal card rotation around Y.
 struct VisualsPane: View {
     @ObservedObject private var vm = ViewModel.shared
+    @ObservedObject private var pet = DesktopPet.shared
+    @ObservedObject private var prefs = Prefs.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -34,6 +36,8 @@ struct VisualsPane: View {
             .rotation3DEffect(.degrees(vm.stageFace == .art ? 180 : 0),
                               axis: (x: 0, y: 1, z: 0), perspective: 0.6)
             .animation(.easeInOut(duration: 0.3), value: vm.stageFace)
+            dockRow
+            petRow
         }
         .padding(Ui.s20)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -64,6 +68,85 @@ struct VisualsPane: View {
                 .background(Ui.surface)
                 .overlay(Rectangle().stroke(Ui.border, lineWidth: 1))
                 .clipped()
+        }
+    }
+
+    // Dock-tile pref — the icon scene animates in the Dock on the same
+    // driver cadence; Reduce Motion keeps the asset icon (decorative).
+    private var dockRow: some View {
+        HStack(spacing: 6) {
+            Text("Dock icon")
+                .font(.uiMicro).foregroundStyle(Ui.inkSoft)
+            ForEach(dockModes, id: \.0) { mode, label in
+                let active = prefs.dockIconMode == mode
+                Button { prefs.dockIconMode = mode } label: {
+                    Text(label)
+                        .font(.uiMicro)
+                        .foregroundStyle(active ? Color.white : Ui.ink)
+                        .lineLimit(1)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(active ? Ui.accent : Ui.surface)
+                        .overlay(Rectangle().stroke(
+                            active ? Ui.accent : Ui.border,
+                            lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .uiElevated()
+            }
+            if reduceMotion {
+                Text("Reduce Motion — stays static")
+                    .font(.uiMicro).foregroundStyle(Ui.inkSoft.opacity(0.7))
+            }
+            Spacer()
+        }
+    }
+
+    private var dockModes: [(String, String)] {
+        [("off", "Off"), ("hidden", "When hidden"), ("playing", "While playing")]
+    }
+
+    // Desktop-pet lifecycle — the cosmos cast escapes the dock onto the
+    // desktop. Ghost = click-through ambiance, Pettable = draggable.
+    private var petRow: some View {
+        HStack(spacing: 6) {
+            Text("Desktop Pet")
+                .font(.uiMicro).foregroundStyle(Ui.inkSoft)
+            ForEach(DesktopPet.Policy.allCases, id: \.self) { p in
+                Button { pet.policy = p } label: {
+                    Text(p.title)
+                        .font(.uiMicro)
+                        .foregroundStyle(pet.policy == p ? Color.white : Ui.ink)
+                        .lineLimit(1)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(pet.policy == p ? Ui.accent : Ui.surface)
+                        .overlay(Rectangle().stroke(
+                            pet.policy == p ? Ui.accent : Ui.border,
+                            lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .uiElevated()
+            }
+            Button { pet.interactive.toggle() } label: {
+                Text(pet.interactive ? "Pettable" : "Ghost")
+                    .font(.uiMicro)
+                    .foregroundStyle(pet.interactive ? Color.white : Ui.ink)
+                    .lineLimit(1)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(pet.interactive ? Ui.accent : Ui.surface)
+                    .overlay(Rectangle().stroke(
+                        pet.interactive ? Ui.accent : Ui.border,
+                        lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+            .uiElevated()
+            if reduceMotion {
+                Text("Reduce Motion — never spawns")
+                    .font(.uiMicro).foregroundStyle(Ui.inkSoft.opacity(0.7))
+            }
+            Spacer()
         }
     }
 

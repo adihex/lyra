@@ -14,15 +14,30 @@ final class VizRuntime {
     private var displayed = VizFrame.rest
     private var lastSeq: UInt64 = 0
 
+    /// Shared cosmos scene for the dock tile + desktop pet surfaces.
+    /// The pet adopts it on pop and hands it back on recall; painters
+    /// must skip bodies in `cosmos.away` (the icon literally empties).
+    var cosmos = CosmosScene()
+    private var lastPump = ContinuousClock.now
+
     /// Pure read for non-pump surfaces — the compositor advances exactly
     /// once per tick via `pump()`, called by the always-mounted mini.
     /// Reading here between pumps returns the same eased frame.
     func frame() -> VizFrame { displayed }
 
+    /// Advance only when the compositor has gone stale — the dock-tile
+    /// driver calls this at 12 Hz: while the window's mini surface pumps
+    /// it's a no-op read; when the window is occluded the dock becomes
+    /// the pump. Two unconditional pumpers would double-ease the frame.
+    func pumpIfStale(_ maxAge: Duration) -> VizFrame {
+        ContinuousClock.now - lastPump > maxAge ? pump() : displayed
+    }
+
     /// Advance the compositor one step. Fresh seq → ease toward the target
     /// (extra smoothing on top of the Rust ballistics); stalled seq → decay
     /// to rest (cliamp's pause behavior: settle, then freeze).
     func pump() -> VizFrame {
+        lastPump = .now
         if let f = LyraEngine.vizFrame() {
             engineLive = true
             if f.seq != lastSeq {
@@ -41,6 +56,11 @@ final class VizRuntime {
             }
         }
         return displayed
+    }
+
+    /// Seconds shorthand for `pumpIfStale` call sites (`pumpIfStale(0.08)`).
+    func pumpIfStale(_ seconds: Double) -> VizFrame {
+        pumpIfStale(.seconds(seconds))
     }
 }
 
