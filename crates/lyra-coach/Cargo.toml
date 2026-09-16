@@ -1,0 +1,23 @@
+[package]
+name = "lyra-coach"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# Distorted-input fallback pitch (SwiftF0 ONNX via ort). Off by default:
+# pulls the onnxruntime binary; the classical MPM/YIN path needs nothing.
+onnx = ["dep:ort"]
+# Hex-pickup / MIDI-guitar input via CoreMIDI/ALSA. Off by default so the
+# crate builds without system MIDI headers (the synth/timing core is midi-free).
+midi = ["dep:midir"]
+
+[dependencies]
+pitch-detection = "0.3"
+# Default ort features (std, CPU EP, binary download). The CoreML EP
+# (`coreml` feature) gets enabled on the macOS ship path later.
+ort = { version = "=2.0.0-rc.13", optional = true }
+midir = { version = "0.11", optional = true }
+
+[dev-dependencies]
