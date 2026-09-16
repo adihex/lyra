@@ -562,19 +562,21 @@ struct ContentView: View {
         NavigationSplitView(columnVisibility: $vm.columnVis) {
             List(SidebarItem.allCases, selection: $vm.selection) { item in
                 Label(item.rawValue, systemImage: item.icon).tag(item)
-                    .font(.cozy(.body, weight: .medium))
+                    .font(.uiBodyStrong)
             }
             .scrollContentBackground(.hidden)
-            .background(Cozy.bg)
+            .background(Ui.bg)
             .navigationSplitViewColumnWidth(min: 170, ideal: 190, max: 240)
         } detail: {
             VStack(spacing: 0) {
                 detailView
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 nowPlayingBar
             }
-            .background(Cozy.bg)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Ui.bg)
         }
-        .tint(Cozy.accent)
+        .tint(Ui.accent)
         .frame(minWidth: 780, minHeight: 560)
     }
 
@@ -583,107 +585,111 @@ struct ContentView: View {
         case .library: libraryPane
         case .eq: eqPane
         case .remote: remotePane
-        case .none: Text("Select a section").foregroundStyle(Cozy.inkSoft)
+        case .none: Text("Select a section").foregroundStyle(Ui.inkSoft)
         }
     }
 
     // ── Library ──────────────────────────────────────────────────────────
     private var libraryPane: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: Ui.s16) {
             HStack {
-                Text("Library").font(.cozy(.title2))
-                    .foregroundStyle(Cozy.ink)
+                Text("Library").font(.uiTitle)
+                    .foregroundStyle(Ui.ink)
                 // explicit search field — .searchable(placement:.toolbar)
                 // landed in the collapsed sidebar strip; an inline field is
                 // deterministic about where it lives.
                 HStack(spacing: 4) {
-                    Image(systemName: "magnifyingglass").foregroundStyle(Cozy.inkSoft)
+                    Image(systemName: "magnifyingglass").foregroundStyle(Ui.inkSoft)
                     TextField("Filter…", text: $vm.query)
                         .textFieldStyle(.plain)
                 }
                 .padding(.horizontal, 10).padding(.vertical, 6)
-                .background(Cozy.surface, in: RoundedRectangle(cornerRadius: 10))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10).stroke(Cozy.border, lineWidth: 1)
-                )
-                .frame(width: 200)
+                .background(Ui.surface)
+                .overlay(Rectangle().stroke(Ui.border, lineWidth: 1))
+                .frame(minWidth: 140, idealWidth: 200, maxWidth: 260)
                 Spacer()
                 if let root = vm.libraryRoot {
                     Text(URL(fileURLWithPath: root).lastPathComponent)
-                        .foregroundStyle(Cozy.inkSoft)
+                        .foregroundStyle(Ui.inkSoft)
                 }
                 Button {
                     vm.showMagnetEntry.toggle()
                 } label: {
                     Label("Add torrent", systemImage: "link.badge.plus")
                 }
+                .buttonStyle(.sharp)
                 .help("Paste a magnet URI or pick up a .torrent file — audio streams on demand")
                 Button(vm.scanning ? "Scanning…" : "Scan folder…") { vm.scanFolder() }
                     .disabled(vm.scanning)
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.sharpProminent)
             }
             if vm.showMagnetEntry {
                 HStack(spacing: 8) {
-                    Image(systemName: "link").foregroundStyle(Cozy.inkSoft)
+                    Image(systemName: "link").foregroundStyle(Ui.inkSoft)
                     TextField("magnet:?xt=… or /path/to/file.torrent", text: $vm.magnetInput)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(.plain)
+                        .padding(.horizontal, 8).padding(.vertical, 5)
+                        .background(Ui.bg)
+                        .overlay(Rectangle().stroke(Ui.border, lineWidth: 1))
                         .onSubmit { vm.addTorrent() }
                     Button("Add") { vm.addTorrent() }
                         .disabled(vm.magnetInput.isEmpty || vm.addingTorrent)
+                        .buttonStyle(.sharpProminent)
                     Button("Browse…") { vm.pickTorrentFile() }
                         .disabled(vm.addingTorrent)
+                        .buttonStyle(.sharp)
                     if vm.addingTorrent {
                         ProgressView().controlSize(.small)
-                        Text("resolving…").font(.caption).foregroundStyle(Cozy.inkSoft)
+                        Text("resolving…").font(.caption).foregroundStyle(Ui.inkSoft)
                     }
                 }
-                .cozyCard()
+                .uiCard()
             }
             if !vm.torrents.isEmpty {
                 HStack(spacing: 8) {
                     ForEach(vm.torrents) { t in
                         HStack(spacing: 6) {
                             Image(systemName: "arrow.down.circle.fill")
-                                .foregroundStyle(Cozy.mint)
+                                .foregroundStyle(Ui.mint)
                             Text(t.name)
-                                .font(.cozy(.caption))
-                                .foregroundStyle(Cozy.ink)
+                                .font(.uiCaption)
+                                .foregroundStyle(Ui.ink)
                                 .lineLimit(1)
                             Button { vm.confirmRemoveTorrent(t) } label: {
                                 Image(systemName: "xmark.circle.fill")
-                                    .foregroundStyle(Cozy.inkSoft)
+                                    .foregroundStyle(Ui.inkSoft)
                             }
                             .buttonStyle(.borderless)
                             .help("Remove torrent — optionally delete downloaded data")
                         }
                         .padding(.horizontal, 10).padding(.vertical, 5)
-                        .background(Cozy.mint.opacity(0.14), in: Capsule())
-                        .overlay(Capsule().stroke(Cozy.mint.opacity(0.4), lineWidth: 1))
+                        .background(Ui.mint.opacity(0.14))
+                        .overlay(Rectangle().stroke(Ui.mint.opacity(0.4), lineWidth: 1))
                     }
                 }
             }
             if !vm.orphans.isEmpty {
                 HStack(spacing: 8) {
-                    Image(systemName: "trash").foregroundStyle(Cozy.inkSoft)
+                    Image(systemName: "trash").foregroundStyle(Ui.inkSoft)
                     Text("\(vm.orphans.count) leftover item\(vm.orphans.count == 1 ? "" : "s") · \(vm.fmtBytes(vm.orphans.reduce(0) { $0 + $1.bytes }))")
-                        .font(.caption).foregroundStyle(Cozy.inkSoft)
+                        .font(.caption).foregroundStyle(Ui.inkSoft)
                     Button("Clean up") { vm.purgeOrphans() }
-                        .controlSize(.small)
+                        .buttonStyle(.sharp)
                         .help("Delete download folders left behind by removed torrents")
                 }
             }
             if !vm.scanStatus.isEmpty {
-                Text(vm.scanStatus).font(.caption).foregroundStyle(Cozy.inkSoft)
+                Text(vm.scanStatus).font(.caption).foregroundStyle(Ui.inkSoft)
             }
             if vm.tracks.isEmpty {
                 Spacer()
                 VStack(spacing: 10) {
                     Text("🪐").font(.system(size: 44))
-                    Text("No tunes yet").font(.cozy(.headline))
-                        .foregroundStyle(Cozy.ink)
+                    Text("No tunes yet").font(.uiHeadline)
+                        .foregroundStyle(Ui.ink)
                     Text("Scan a folder or drop a magnet to fill the sky with music.")
                         .font(.caption)
-                        .foregroundStyle(Cozy.inkSoft)
+                        .foregroundStyle(Ui.inkSoft)
                 }
                 .frame(maxWidth: .infinity)
                 Spacer()
@@ -700,16 +706,17 @@ struct ContentView: View {
                         Text(vm.fmt(t.duration)).monospaced()
                     }.width(50)
                     TableColumn("Codec", value: \.codec) { t in
-                        Text(t.codec).font(.cozy(.caption2))
-                            .foregroundStyle(Cozy.indigo)
+                        Text(t.codec).font(.uiMicro)
+                            .foregroundStyle(Ui.indigo)
                             .padding(.horizontal, 6).padding(.vertical, 1)
-                            .background(Cozy.indigo.opacity(0.12), in: .capsule)
+                            .background(Ui.indigo.opacity(0.12))
+                            .overlay(Rectangle().stroke(Ui.indigo.opacity(0.3), lineWidth: 1))
                     }.width(56)
                 }
                 .id(vm.contentID) // force rebuild — 100k-row diffing stalls
                 .scrollContentBackground(.hidden)
                 .tableStyle(.inset(alternatesRowBackgrounds: false))
-                .cozyCard(padding: 6)
+                .uiCard(padding: 6)
                 .contextMenu(forSelectionType: Track.ID.self) { items in
                     Button("Play") { vm.playSelection(items) }
                     if let id = items.first, id.hasPrefix("torrent://") {
@@ -731,14 +738,16 @@ struct ContentView: View {
                 }
                 HStack {
                     Text("\(vm.sortedTracks.count) tracks")
-                        .font(.caption).foregroundStyle(Cozy.inkSoft)
+                        .font(.caption).foregroundStyle(Ui.inkSoft)
                     Spacer()
                     Button("Play selected") { vm.playSelection(vm.selectedTracks) }
                         .disabled(vm.selectedTracks.isEmpty)
+                        .buttonStyle(.sharp)
                 }
             }
         }
-        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(Ui.s20)
         .onAppear { vm.startPolling() }
     }
 
@@ -755,46 +764,52 @@ struct ContentView: View {
             )
             HStack(spacing: 14) {
                 VStack(alignment: .leading) {
-                    Text(vm.current?.title ?? "Nothing playing").font(.cozy(.headline)).lineLimit(1)
-                        .foregroundStyle(vm.current == nil ? Cozy.inkSoft : Cozy.ink)
+                    Text(vm.current?.title ?? "Nothing playing").font(.uiHeadline).lineLimit(1)
+                        .foregroundStyle(vm.current == nil ? Ui.inkSoft : Ui.ink)
                     Text(vm.lastError ?? [vm.current?.artist, vm.current?.album].compactMap { $0 }.joined(separator: " — "))
                         .font(.caption)
-                        .foregroundStyle(vm.lastError != nil ? .red : Cozy.inkSoft)
+                        .foregroundStyle(vm.lastError != nil ? .red : Ui.inkSoft)
                         .lineLimit(1)
                 }
                 .frame(minWidth: 160, alignment: .leading)
                 Spacer()
-                Button { vm.prev() } label: { Image(systemName: "backward.fill") }
-                    .buttonStyle(.bordered)
+                Button { vm.prev() } label: {
+                    Image(systemName: "backward.fill").sharpIconBox()
+                }
+                .buttonStyle(.plain)
                 Button { vm.toggle() } label: {
                     Image(systemName: vm.playing ? "pause.fill" : "play.fill")
                         .font(.system(size: 15, weight: .bold))
                         .foregroundStyle(.white)
                         .frame(width: 34, height: 34)
-                        .background(Cozy.accent, in: Circle())
+                        .background(Ui.accent)
                 }
                 .buttonStyle(.plain)
-                Button { LyraPlayer.shared.stop() } label: { Image(systemName: "stop.fill") }
-                    .buttonStyle(.bordered)
-                Button { vm.next() } label: { Image(systemName: "forward.fill") }
-                    .buttonStyle(.bordered)
+                Button { LyraPlayer.shared.stop() } label: {
+                    Image(systemName: "stop.fill").sharpIconBox()
+                }
+                .buttonStyle(.plain)
+                Button { vm.next() } label: {
+                    Image(systemName: "forward.fill").sharpIconBox()
+                }
+                .buttonStyle(.plain)
                 Text("\(vm.fmt(vm.displayPosition)) / \(vm.fmt(vm.current?.duration ?? 0))")
-                    .font(.cozy(.caption, weight: .medium).monospacedDigit())
-                    .foregroundStyle(Cozy.inkSoft)
+                    .font(.uiMono)
+                    .foregroundStyle(Ui.inkSoft)
                     .fixedSize()
                 Spacer()
                 if vm.clip {
                     Text("CLIP").font(.caption2.bold()).foregroundStyle(.red)
                 }
                 spectrumMini
-                Image(systemName: "speaker.wave.2.fill").foregroundStyle(Cozy.inkSoft)
+                Image(systemName: "speaker.wave.2.fill").foregroundStyle(Ui.inkSoft)
                 Slider(value: $vm.volume, in: 0...1.42).frame(width: 110) // 1.42² ≈ 2x gain
             }
             .padding(.horizontal, 12)
             .padding(.bottom, 8)
         }
-        .background(Cozy.surface)
-        .overlay(alignment: .top) { Cozy.border.frame(height: 1) }
+        .background(Ui.surface)
+        .overlay(alignment: .top) { Ui.border.frame(height: 1) }
     }
 
     private var spectrumMini: some View {
@@ -807,7 +822,7 @@ struct ContentView: View {
                 ctx.fill(
                     Path(CGRect(x: CGFloat(i) * w, y: size.height - h,
                                 width: w * 0.75, height: h)),
-                    with: .color(Cozy.mint.opacity(0.85))
+                    with: .color(Ui.mint.opacity(0.85))
                 )
             }
         }
@@ -816,11 +831,11 @@ struct ContentView: View {
 
     // ── EQ ───────────────────────────────────────────────────────────────
     private var eqPane: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Parametric EQ").font(.cozy(.title2))
-                .foregroundStyle(Cozy.ink)
+        VStack(alignment: .leading, spacing: Ui.s16) {
+            Text("Parametric EQ").font(.uiTitle)
+                .foregroundStyle(Ui.ink)
             Text("Curve drawn from the same biquad coefficients the audio path uses — not an approximation.")
-                .font(.caption).foregroundStyle(Cozy.inkSoft)
+                .font(.caption).foregroundStyle(Ui.inkSoft)
 
             // response curve + analyzer underlay
             eqCurveView
@@ -834,13 +849,13 @@ struct ContentView: View {
                 ForEach(0..<10, id: \.self) { i in
                     VStack(spacing: 4) {
                         Text(String(format: "%+.0f", vm.eq[i]))
-                            .font(.cozy(.caption2, weight: .medium).monospacedDigit())
-                            .foregroundStyle(Cozy.inkSoft)
+                            .font(.uiMono)
+                            .foregroundStyle(Ui.inkSoft)
                             .frame(height: 14)
                         ZStack {
                             // explicit track — the rotated Slider's own
                             // track renders too thin to read in dark mode
-                            Capsule().fill(Cozy.border)
+                            Rectangle().fill(Ui.border)
                                 .frame(width: 4, height: 110)
                             Slider(value: Binding(
                                 get: { vm.eq[i] },
@@ -851,7 +866,7 @@ struct ContentView: View {
                         }
                         Text(freqLabel(eqFreqs[i]))
                             .font(.caption2.monospaced())
-                            .foregroundStyle(Cozy.inkSoft)
+                            .foregroundStyle(Ui.inkSoft)
                     }
                     .frame(maxWidth: .infinity)
                 }
@@ -861,13 +876,15 @@ struct ContentView: View {
                 Button("Flat") {
                     for i in 0..<10 { vm.eq[i] = 0; vm.applyEQ(i) }
                 }
+                .buttonStyle(.sharp)
                 Spacer()
                 Text("±12dB · 31Hz band is a low shelf")
-                    .font(.caption2).foregroundStyle(Cozy.inkSoft)
+                    .font(.caption2).foregroundStyle(Ui.inkSoft)
             }
             Spacer()
         }
-        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(Ui.s20)
         .onAppear { vm.refreshCurve() }
     }
 
@@ -881,7 +898,7 @@ struct ContentView: View {
                 var p = Path()
                 p.move(to: CGPoint(x: 0, y: y))
                 p.addLine(to: CGPoint(x: size.width, y: y))
-                ctx.stroke(p, with: .color(Cozy.border.opacity(db == 0 ? 0.9 : 0.5)))
+                ctx.stroke(p, with: .color(Ui.border.opacity(db == 0 ? 0.9 : 0.5)))
             }
             // spectrum underlay — same log-freq geometry
             if !vm.bands.isEmpty {
@@ -892,7 +909,7 @@ struct ContentView: View {
                     ctx.fill(
                         Path(CGRect(x: CGFloat(i) * w, y: size.height - h,
                                     width: w * 0.8, height: h)),
-                        with: .color(Cozy.mint.opacity(0.25))
+                        with: .color(Ui.mint.opacity(0.25))
                     )
                 }
             }
@@ -908,7 +925,7 @@ struct ContentView: View {
                     let pt = CGPoint(x: x, y: y)
                     i == 0 ? path.move(to: pt) : path.addLine(to: pt)
                 }
-                ctx.stroke(path, with: .color(Cozy.accent), lineWidth: 2)
+                ctx.stroke(path, with: .color(Ui.accent), lineWidth: 2)
             }
             // band markers
             for (i, f) in eqFreqs.enumerated() {
@@ -917,10 +934,10 @@ struct ContentView: View {
                 let y = size.height * CGFloat(1 - (vm.eq[i] + 12) / 24)
                 let r = CGRect(x: x - 5, y: y - 5, width: 10, height: 10)
                 ctx.fill(Path(ellipseIn: r), with: .color(
-                    vm.eq[i] == 0 ? Cozy.inkSoft.opacity(0.5) : Cozy.accent))
+                    vm.eq[i] == 0 ? Ui.inkSoft.opacity(0.5) : Ui.accent))
             }
         }
-        .cozyCard(padding: 8)
+        .uiCard(padding: 8)
     }
 
     private func freqLabel(_ f: Float) -> String {
@@ -929,16 +946,16 @@ struct ContentView: View {
 
     // ── Remote ───────────────────────────────────────────────────────────
     private var remotePane: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Remote Control").font(.cozy(.title2))
-                .foregroundStyle(Cozy.ink)
+        VStack(alignment: .leading, spacing: Ui.s16) {
+            Text("Remote Control").font(.uiTitle)
+                .foregroundStyle(Ui.ink)
             let r = LyraRemote.shared
             if !r.running {
                 Label("Listener failed to start — check log", systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.orange)
             } else {
                 Label("Listening on :4777 — Noise XX, pinned devices only", systemImage: "antenna.radiowaves.left.and.right")
-                    .foregroundStyle(Cozy.inkSoft)
+                    .foregroundStyle(Ui.inkSoft)
             }
             HStack(spacing: 12) {
                 Button(vm.pairCode == nil ? "Pair new device…" : "Rotate code") {
@@ -949,45 +966,46 @@ struct ContentView: View {
                     }
                 }
                 .disabled(!r.running)
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.sharpProminent)
                 Text("\(vm.pairedCount) device\(vm.pairedCount == 1 ? "" : "s") paired")
-                    .foregroundStyle(Cozy.inkSoft)
+                    .foregroundStyle(Ui.inkSoft)
             }
             if !vm.pairedDevices.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(vm.pairedDevices, id: \.id) { d in
                         HStack(spacing: 8) {
-                            Image(systemName: "iphone").foregroundStyle(Cozy.mint)
+                            Image(systemName: "iphone").foregroundStyle(Ui.mint)
                             Text(d.name).lineLimit(1)
                             Text(String(d.id.prefix(10)))
                                 .font(.caption.monospaced())
-                                .foregroundStyle(Cozy.inkSoft)
+                                .foregroundStyle(Ui.inkSoft)
                             Spacer()
                             Button("Revoke") { vm.revokeDevice(d.id) }
-                                .controlSize(.small)
+                                .buttonStyle(.sharp)
                         }
                     }
                 }
-                .cozyCard()
+                .uiCard()
             }
             if let code = vm.pairCode {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Enter this code on the device — it binds one pairing handshake, it is not a credential:")
-                        .font(.caption).foregroundStyle(Cozy.inkSoft)
+                        .font(.caption).foregroundStyle(Ui.inkSoft)
                     Text(code)
-                        .font(.system(size: 44, weight: .bold, design: .rounded))
-                        .foregroundStyle(Cozy.accent)
+                        .font(.system(size: 40, weight: .bold, design: .monospaced))
+                        .foregroundStyle(Ui.accent)
                         .textSelection(.enabled)
                     Text("Host key fingerprint: \(vm.pairFp)")
-                        .font(.caption.monospaced()).foregroundStyle(Cozy.inkSoft)
+                        .font(.caption.monospaced()).foregroundStyle(Ui.inkSoft)
                 }
-                .cozyCard(padding: 16)
+                .uiCard(padding: 16)
             }
             Text("SPAKE2(code) → Noise XXpsk3 → pinned X25519 keys. Reconnects use plain XX — the pinned key is the identity.")
-                .font(.caption2).foregroundStyle(Cozy.inkSoft.opacity(0.7))
+                .font(.caption2).foregroundStyle(Ui.inkSoft.opacity(0.7))
             Spacer()
         }
-        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(Ui.s20)
         .onAppear { vm.refreshDevices() }
     }
 }

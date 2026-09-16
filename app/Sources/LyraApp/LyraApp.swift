@@ -54,36 +54,44 @@ struct MiniPlayerView: View {
     var body: some View {
         VStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(vm.current?.title ?? "Nothing playing").font(.cozy(.headline))
-                    .foregroundStyle(Cozy.ink).lineLimit(1)
+                Text(vm.current?.title ?? "Nothing playing").font(.uiHeadline)
+                    .foregroundStyle(Ui.ink).lineLimit(1)
                 Text([vm.current?.artist, vm.current?.album].compactMap { $0 }.joined(separator: " — "))
-                    .font(.caption).foregroundStyle(Cozy.inkSoft).lineLimit(1)
+                    .font(.caption).foregroundStyle(Ui.inkSoft).lineLimit(1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            HStack(spacing: 18) {
-                Button { vm.prev() } label: { Image(systemName: "backward.fill") }
-                Button { vm.toggle() } label: {
-                    Image(systemName: vm.playing ? "pause.fill" : "play.fill")
-                        .font(.system(size: 16, weight: .bold))
-                        .foregroundStyle(.white)
-                        .frame(width: 34, height: 34)
-                        .background(Cozy.accent, in: Circle())
+            HStack(spacing: 12) {
+                Button { vm.prev() } label: {
+                    Image(systemName: "backward.fill").sharpIconBox()
                 }
                 .buttonStyle(.plain)
-                Button { LyraPlayer.shared.stop() } label: { Image(systemName: "stop.fill") }
-                Button { vm.next() } label: { Image(systemName: "forward.fill") }
+                Button { vm.toggle() } label: {
+                    Image(systemName: vm.playing ? "pause.fill" : "play.fill")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 34, height: 34)
+                        .background(Ui.accent)
+                }
+                .buttonStyle(.plain)
+                Button { LyraPlayer.shared.stop() } label: {
+                    Image(systemName: "stop.fill").sharpIconBox()
+                }
+                .buttonStyle(.plain)
+                Button { vm.next() } label: {
+                    Image(systemName: "forward.fill").sharpIconBox()
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.borderless)
-            .tint(Cozy.ink)
+            .tint(Ui.ink)
             Slider(value: $vm.volume, in: 0...1.42)
-                .tint(Cozy.accent)
+                .tint(Ui.accent)
             Text("\(vm.fmt(vm.displayPosition)) / \(vm.fmt(vm.current?.duration ?? 0))")
-                .font(.cozy(.caption, weight: .medium).monospacedDigit())
-                .foregroundStyle(Cozy.inkSoft)
+                .font(.uiMono)
+                .foregroundStyle(Ui.inkSoft)
         }
         .padding()
         .frame(width: 240)
-        .background(Cozy.surface)
+        .background(Ui.surface)
         .onAppear { vm.startPolling() }
     }
 }
