@@ -1,0 +1,1 @@
+check = { overrideCommand = ["/Users/adityabalakrishnan/Library/Application Support/mbx/bin/cargo", "check", "--workspace", "--all-targets", "--target-dir", "target/rust-analyzer", "--message-format=json"] }

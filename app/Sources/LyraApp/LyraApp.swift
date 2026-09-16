@@ -7,6 +7,7 @@ struct LyraApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .preferredColorScheme(.light) // beige theme needs light chrome
         }
         .windowStyle(.titleBar)
         .defaultSize(width: 960, height: 640)
@@ -40,6 +41,7 @@ struct LyraApp: App {
         // (sliders/gestures work; `.menu` style kills them).
         MenuBarExtra("Lyra", systemImage: "music.note") {
             MiniPlayerView()
+                .preferredColorScheme(.light)
         }
         .menuBarExtraStyle(.window)
     }
@@ -52,27 +54,36 @@ struct MiniPlayerView: View {
     var body: some View {
         VStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(vm.current?.title ?? "Nothing playing").font(.headline).lineLimit(1)
+                Text(vm.current?.title ?? "Nothing playing").font(.cozy(.headline))
+                    .foregroundStyle(Cozy.ink).lineLimit(1)
                 Text([vm.current?.artist, vm.current?.album].compactMap { $0 }.joined(separator: " — "))
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    .font(.caption).foregroundStyle(Cozy.inkSoft).lineLimit(1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             HStack(spacing: 18) {
                 Button { vm.prev() } label: { Image(systemName: "backward.fill") }
                 Button { vm.toggle() } label: {
                     Image(systemName: vm.playing ? "pause.fill" : "play.fill")
-                        .font(.title2)
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 34, height: 34)
+                        .background(Cozy.accent, in: Circle())
                 }
+                .buttonStyle(.plain)
                 Button { LyraPlayer.shared.stop() } label: { Image(systemName: "stop.fill") }
                 Button { vm.next() } label: { Image(systemName: "forward.fill") }
             }
             .buttonStyle(.borderless)
+            .tint(Cozy.ink)
             Slider(value: $vm.volume, in: 0...1.42)
+                .tint(Cozy.accent)
             Text("\(vm.fmt(vm.displayPosition)) / \(vm.fmt(vm.current?.duration ?? 0))")
-                .font(.caption.monospaced())
+                .font(.cozy(.caption, weight: .medium).monospacedDigit())
+                .foregroundStyle(Cozy.inkSoft)
         }
         .padding()
         .frame(width: 240)
+        .background(Cozy.surface)
         .onAppear { vm.startPolling() }
     }
 }
