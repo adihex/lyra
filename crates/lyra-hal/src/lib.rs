@@ -217,7 +217,7 @@ impl HalDevice {
         extern "C" fn trampoline(
             _dev: AudioDeviceID,
             _now: *const AudioTimeStamp,
-            _in_data: *const AudioBufferList,
+            in_data: *const AudioBufferList,
             _in_time: *const AudioTimeStamp,
             out_data: *mut AudioBufferList,
             _out_time: *const AudioTimeStamp,
@@ -233,30 +233,59 @@ impl HalDevice {
                 return 0;
             }
             let channels = ctx.channels;
-            // mDataByteSize is frames*4 per buffer when non-interleaved,
-            // frames*channels*4 on the single buffer when interleaved.
             let bytes_per_frame = if ctx.interleaved { 4 * channels } else { 4 };
             let frames = bufs[0].mDataByteSize as usize / bytes_per_frame;
-            // try_lock, never lock: the RT thread must not block. The lock
-            // is uncontended in practice (only this callback touches pull).
             let mut guard = match ctx.pull.try_lock() {
                 Ok(g) => g,
-                Err(_) => return 0, // emit silence — still safe
+                Err(_) => return 0,
             };
             let (pull, tmp) = &mut *guard;
             let cap = tmp.len() / channels;
             let frames = frames.min(cap); // clip over-size callbacks
             let written = pull(&mut tmp[..frames * channels]);
-            // usize::MAX = producer idle (intentional silence, not an
-            // underrun); otherwise shortfall counts as an underrun.
-            let filled = if written == usize::MAX {
-                frames
-            } else {
-                if written < frames {
-                    ctx.underruns.fetch_add(1, Ordering::Relaxed);
+            // Idle passthrough: while the engine has no audio, forward
+            // inInputData (every other client's mixed output) verbatim.
+            // An output IOProc owns the hardware path — writing silence
+            // here would mute the whole system even with hog released.
+            if written == usize::MAX {
+                if in_data.is_null() {
+                    for b in bufs.iter_mut() {
+                        unsafe {
+                            std::ptr::write_bytes(b.mData, 0, b.mDataByteSize as usize)
+                        };
+                    }
+                    return 0;
                 }
-                written.min(frames)
-            };
+                let in_list = unsafe { &*in_data };
+                let in_bufs = unsafe {
+                    std::slice::from_raw_parts(
+                        in_list.mBuffers.as_ptr(),
+                        in_list.mNumberBuffers as usize,
+                    )
+                };
+                for (i, b) in bufs.iter_mut().enumerate() {
+                    let (dst, dst_len) = (b.mData as *mut u8, b.mDataByteSize as usize);
+                    match in_bufs.get(i) {
+                        Some(src) if !src.mData.is_null() => {
+                            let n = dst_len.min(src.mDataByteSize as usize);
+                            unsafe {
+                                std::ptr::copy_nonoverlapping(src.mData as *const u8, dst, n);
+                                if dst_len > n {
+                                    std::ptr::write_bytes(dst.add(n), 0, dst_len - n);
+                                }
+                            }
+                        }
+                        _ => unsafe { std::ptr::write_bytes(dst, 0, dst_len) },
+                    }
+                }
+                return 0;
+            }
+            // Shortfall = underrun (idle already returned via the
+            // passthrough branch above).
+            if written < frames {
+                ctx.underruns.fetch_add(1, Ordering::Relaxed);
+            }
+            let filled = written.min(frames);
             if ctx.interleaved {
                 let dst = unsafe {
                     std::slice::from_raw_parts_mut(bufs[0].mData as *mut f32, frames * channels)

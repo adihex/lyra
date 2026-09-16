@@ -146,8 +146,8 @@ enum Output {
     Cpal(cpal::Stream),
     #[cfg(target_os = "macos")]
     Hal {
-        hog: lyra_hal::Hog,
         proc_: lyra_hal::IoProc,
+        keeper: thread::JoinHandle<()>,
     },
 }
 
@@ -221,6 +221,10 @@ pub struct Engine {
     eq_rate: Arc<AtomicF32>,
     _output: Output,
     _worker: thread::JoinHandle<()>,
+    /// Strong ref held only here — the HAL hog-keeper's Weak dies with
+    /// the engine, releasing hog on drop/output-mode swap.
+    #[allow(dead_code)]
+    keeper_alive: Arc<AtomicBool>,
 }
 
 impl Engine {
@@ -240,6 +244,9 @@ impl Engine {
         let ended = Arc::new(AtomicBool::new(false));
         let position_secs = Arc::new(AtomicF32::new(0.0));
         let flush = Arc::new(AtomicBool::new(false));
+        // Keeper-liveness handle: only the Engine holds a strong ref, so
+        // the hog-keeper's Weak fails on engine drop/swap → hog released.
+        let keeper_alive = Arc::new(AtomicBool::new(true));
 
         let mk_tap = |cons: ringbuf::HeapCons<f32>, out_rate: f32, out_ch: usize| {
             OutputTap {
@@ -293,11 +300,41 @@ impl Engine {
                             "HAL path is stereo-only; device has {ch}ch (use Compat)"
                         )));
                     }
-                    let hog = dev.hog()?;
                     let mut tap = mk_tap(cons, rate as f32, ch);
                     let proc_ =
                         dev.start_ioproc(Box::new(move |buf| tap.fill(buf)))?;
-                    (Output::Hal { hog, proc_ }, rate as f32, ch)
+                    // Hog follows `playing`, not the engine lifetime:
+                    // acquired on first audio (~150 ms edge latency),
+                    // released on stop/pause/EOF. Held at idle it denies
+                    // every other app the device; the IOProc passthrough
+                    // keeps the hardware path open while we don't hog.
+                    // Hog acquisition can be denied (another hogger) —
+                    // retry each tick, audio still flows unhogged.
+                    let keeper = {
+                        let playing = Arc::clone(&playing);
+                        let alive = Arc::downgrade(&keeper_alive);
+                        thread::spawn(move || {
+                            let mut hog = None;
+                            while alive.upgrade().is_some() {
+                                match (playing.load(Ordering::Relaxed), hog.is_some()) {
+                                    (true, false) => {
+                                        hog = dev.hog().map_err(|e| {
+                                            warn!("hog denied: {e}");
+                                            e
+                                        }).ok();
+                                    }
+                                    (false, true) => hog = None,
+                                    _ => {}
+                                }
+                                thread::sleep(Duration::from_millis(150));
+                            }
+                        })
+                    };
+                    (
+                        Output::Hal { proc_, keeper },
+                        rate as f32,
+                        ch,
+                    )
                 }
                 #[cfg(not(target_os = "macos"))]
                 {
@@ -345,6 +382,7 @@ impl Engine {
             eq_rate,
             _output: output,
             _worker: worker,
+            keeper_alive,
         })
     }
 
