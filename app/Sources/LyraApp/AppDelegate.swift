@@ -1,5 +1,6 @@
 import AppKit
 import CoreSpotlight
+import OSLog
 import UserNotifications
 
 /// Delegate-mounted surfaces: dock menu, notification actions +
@@ -14,6 +15,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate,
         UNUserNotificationCenter.current().delegate = self
         CSSearchableIndex.default().indexDelegate = self
         TrackNotifier.shared.registerCategory()
+        // Headless playback hook for VM/CLI QA: LYRA_AUTOPLAY=/path/file.wav
+        // plays once the engine is up — no UI automation needed.
+        if let auto = ProcessInfo.processInfo.environment["LYRA_AUTOPLAY"] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                let ok = LyraPlayer.shared.play(path: auto)
+                os_log("LYRA_AUTOPLAY %{public}@ → %{public}@", auto, ok ? "ok" : "FAILED")
+            }
+        }
+        // LYRA_DEBUG_PANE=visuals|library|eq|remote — lane select for
+        // headless QA runs; combined with LYRA_AUTOPLAY it gives a
+        // deterministic "playing on the visuals pane" state.
+        if let pane = ProcessInfo.processInfo.environment["LYRA_DEBUG_PANE"] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                ViewModel.shared.selection = SidebarItem.allCases
+                    .first { $0.rawValue.lowercased() == pane.lowercased() }
+                    ?? ViewModel.shared.selection
+            }
+        }
     }
 
     // ── Dock right-click (iTunes pattern — rebuilt every click so the

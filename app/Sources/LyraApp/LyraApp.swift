@@ -100,27 +100,19 @@ private struct WindowOpener: View {
 struct MenuBarLabel: View {
     @ObservedObject private var vm = ViewModel.shared
     @ObservedObject private var prefs = Prefs.shared
+    // VizTicker drives the cadence while playing; at rest the canvas
+    // renders once, statically. TimelineView can't live in a
+    // MenuBarExtra label slot — it never ticks there.
+    @ObservedObject private var ticker = VizTicker.shared
 
     var body: some View {
         switch prefs.menuBarMode {
         case "note":
             Image(systemName: "music.note")
         case "pulse":
-            if vm.playing {
-                TimelineView(.animation(minimumInterval: 1.0 / 15)) { _ in
-                    pulseCanvas
-                }
-            } else {
-                pulseCanvas
-            }
+            pulseCanvas
         default:
-            if vm.playing {
-                TimelineView(.animation(minimumInterval: 1.0 / 15)) { _ in
-                    spectrumCanvas
-                }
-            } else {
-                spectrumCanvas
-            }
+            spectrumCanvas
         }
     }
 
@@ -166,6 +158,7 @@ struct MenuBarLabel: View {
 struct MiniPlayerView: View {
     @ObservedObject private var vm = ViewModel.shared
     @ObservedObject private var pet = DesktopPet.shared
+    @ObservedObject private var ticker = VizTicker.shared
 
     var body: some View {
         VStack(spacing: 10) {
@@ -201,17 +194,9 @@ struct MiniPlayerView: View {
             .tint(Ui.ink)
             Slider(value: $vm.volume, in: 0...1.42)
                 .tint(Ui.accent)
-            // displayPosition is a plain var — 0.5s cadence while playing,
-            // static at rest (see ViewModel for why these aren't @Published).
-            Group {
-                if vm.playing {
-                    TimelineView(.periodic(from: .now, by: 0.5)) { _ in
-                        timeText
-                    }
-                } else {
-                    timeText
-                }
-            }
+            // displayPosition is a plain var — VizTicker cadence while
+            // playing, static at rest (see ViewModel: not @Published).
+            timeText
             // Escape hatch for a pet lost under real windows.
             if pet.isOut || pet.userHidden {
                 Button { pet.summonOrRecall() } label: {

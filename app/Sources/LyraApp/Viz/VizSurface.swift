@@ -1,4 +1,40 @@
 import SwiftUI
+import OSLog
+
+private let vizLog = OSLog(subsystem: "ai.lyra.debug", category: "viz")
+
+/// The single viz metronome. TimelineView proved unreliable here: it
+/// mounts but never ticks inside Button labels (the transport mini) and
+/// `.animation` sleeps on Canvas content (no animatable attributes) —
+/// before the perf pass, the 30 Hz @Published storm was what actually
+/// drove these canvases. A Timer-published tick on a dedicated object
+/// can't sleep, reaches label slots, and costs nothing at rest because
+/// it only runs while playing (or mid-scrub).
+final class VizTicker: ObservableObject {
+    static let shared = VizTicker()
+    /// Read by every ticking surface's body — the publish IS the tick.
+    @Published var seq = 0
+    private var timer: Timer?
+    private init() {}
+
+    /// Idempotent — called every 30 Hz poll. 30 Hz is enough for every
+    /// consumer (mini/full viz, menu-bar canvases, seek, EQ underlay);
+    /// the full surface still reads at its own frame, not per tick.
+    func sync(_ wantLive: Bool) {
+        if wantLive && timer == nil {
+            let t = Timer(timeInterval: 1.0 / 30, repeats: true) {
+                [weak self] _ in self?.seq &+= 1
+            }
+            RunLoop.main.add(t, forMode: .common) // ticks under menus too
+            timer = t
+            os_log("viz: ticker started", log: vizLog)
+        } else if !wantLive && timer != nil {
+            timer?.invalidate()
+            timer = nil
+            os_log("viz: ticker stopped", log: vizLog)
+        }
+    }
+}
 
 /// Frame compositor: real engine frames when viz-core's symbol exists,
 /// the deterministic mock otherwise — same VizFrame type either way.
@@ -13,6 +49,27 @@ final class VizRuntime {
     private(set) var engineLive = false
     private var displayed = VizFrame.rest
     private var lastSeq: UInt64 = 0
+    private var pumpCount: Int64 = 0
+    private var stalePumpCount: Int64 = 0
+    private var miniRenderCount: Int64 = 0
+
+    /// Compact-surface render heartbeat — proves whether the mini's
+    /// TimelineView actually ticks its Canvas (vs just being mounted).
+    func noteMiniRender() {
+        miniRenderCount += 1
+        if miniRenderCount % 90 == 1 {
+            os_log("viz: miniRender n=%{public}lld", log: vizLog, miniRenderCount)
+        }
+    }
+
+    /// Full-surface render heartbeat — same proof for the stage canvas.
+    private var fullRenderCount: Int64 = 0
+    func noteFullRender() {
+        fullRenderCount += 1
+        if fullRenderCount % 90 == 1 {
+            os_log("viz: fullRender n=%{public}lld", log: vizLog, fullRenderCount)
+        }
+    }
 
     /// Shared cosmos scene for the dock tile + desktop pet surfaces.
     /// The pet adopts it on pop and hands it back on recall; painters
@@ -30,7 +87,14 @@ final class VizRuntime {
     /// it's a no-op read; when the window is occluded the dock becomes
     /// the pump. Two unconditional pumpers would double-ease the frame.
     func pumpIfStale(_ maxAge: Duration) -> VizFrame {
-        ContinuousClock.now - lastPump > maxAge ? pump() : displayed
+        if ContinuousClock.now - lastPump > maxAge {
+            stalePumpCount += 1
+            if stalePumpCount % 60 == 1 {
+                os_log("viz: stalePump n=%{public}lld", log: vizLog, stalePumpCount)
+            }
+            return pump()
+        }
+        return displayed
     }
 
     /// Advance the compositor one step. Fresh seq → ease toward the target
@@ -38,6 +102,14 @@ final class VizRuntime {
     /// to rest (cliamp's pause behavior: settle, then freeze).
     func pump() -> VizFrame {
         lastPump = .now
+        pumpCount += 1
+        if pumpCount % 90 == 1 {
+            os_log("viz: pump n=%{public}lld seq=%{public}lld live=%{public}@ lvl=%{public}.3f bass=%{public}.3f b10=%{public}.3f wv=%{public}.3f",
+                   log: vizLog, pumpCount, lastSeq,
+                   engineLive ? "y" : "n",
+                   displayed.level, displayed.bass,
+                   displayed.bands[10], displayed.waveL[128])
+        }
         if let f = LyraEngine.vizFrame() {
             engineLive = true
             if f.seq != lastSeq {
@@ -74,6 +146,7 @@ struct VizSurfaceView: View {
     /// gestures so it can sit inside a Button.
     var compact = false
     @ObservedObject private var vm = ViewModel.shared
+    @ObservedObject private var ticker = VizTicker.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var effective: VizMode {
@@ -92,10 +165,16 @@ struct VizSurfaceView: View {
             let f: VizFrame
             let st: VizState
             if compact {
+                vm.viz.noteMiniRender()
                 f = vm.viz.pump()
                 st = vm.viz.miniState
             } else {
-                f = vm.viz.frame()
+                // Self-healing read: the mini is the designated pump, but
+                // it can collapse to 0 width (narrow window) or pause under
+                // occlusion. If no pump ran for 80 ms this surface becomes
+                // the pump — same pattern the dock tile uses.
+                vm.viz.noteFullRender()
+                f = vm.viz.pumpIfStale(.milliseconds(80))
                 st = vm.viz.state
             }
             st.tick(frame: f, mode: m)
@@ -107,16 +186,11 @@ struct VizSurfaceView: View {
                     at: CGPoint(x: 6, y: size.height - 8), anchor: .leading)
             }
         }
-        let canvas = Group {
-            if vm.playing {
-                TimelineView(.animation(
-                    minimumInterval: compact ? 1.0 / 30 : 1.0 / 60)) { _ in
-                    core
-                }
-            } else {
-                core
-            }
-        }
+        // No TimelineView anywhere in this path: `ticker` invalidates the
+        // body while playing, the Canvas re-renders, the mini pumps.
+        // At rest nothing ticks — the Canvas drew its last frame on the
+        // playing edge and stays put. Works inside Button labels.
+        let canvas = Group { core }
         if compact {
             canvas
         } else {

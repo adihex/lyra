@@ -1,4 +1,5 @@
 import SwiftUI
+import OSLog
 import UniformTypeIdentifiers
 
 /// One scanned library row — mirrors LibraryTrack's camelCase JSON.
@@ -68,6 +69,53 @@ let eqFreqs: [Float] = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
 struct TorrentInfo: Identifiable, Hashable {
     let id: Int
     let name: String
+}
+
+/// A Discover-pane row — one provider SearchResult. `raw` rides along so
+/// resolve() can hand the FFI the verbatim object back.
+struct DiscoverResult: Identifiable {
+    let id: String
+    let provider: String
+    let name: String
+    let formats: [String]
+    let lossless: Bool?       // tri-state: verified yes / verified no / unknown
+    let sizeBytes: UInt64?
+    let seeds: Int?
+    let downloads: UInt64?
+    let license: String?
+    let fileCount: Int?
+    let bitDepth: Int?
+    let sampleRate: Int?
+    let raw: [String: Any]
+
+    init(_ d: [String: Any]) {
+        id = d["id"] as? String ?? UUID().uuidString
+        provider = d["provider"] as? String ?? "?"
+        name = d["name"] as? String ?? "untitled"
+        formats = d["formats"] as? [String] ?? []
+        lossless = d["lossless"] as? Bool
+        sizeBytes = (d["size_bytes"] as? NSNumber)?.uint64Value
+        seeds = (d["seeds"] as? NSNumber)?.intValue
+        downloads = (d["downloads"] as? NSNumber)?.uint64Value
+        license = d["license"] as? String
+        fileCount = (d["file_count"] as? NSNumber)?.intValue
+        bitDepth = (d["bit_depth"] as? NSNumber)?.intValue
+        sampleRate = (d["sample_rate"] as? NSNumber)?.intValue
+        raw = d
+    }
+
+    var sizeLabel: String {
+        guard let b = sizeBytes else { return "" }
+        return ByteCountFormatter.string(fromByteCount: Int64(b), countStyle: .file)
+    }
+    /// "FLAC 24/96" style quality tag — the lossless-first promise made visible.
+    var qualityLabel: String {
+        var parts = formats.map { $0.uppercased() }
+        if let bd = bitDepth, let sr = sampleRate, sr > 0 {
+            parts.append("\(bd)/\(sr / 1000)")
+        }
+        return parts.joined(separator: " ")
+    }
 }
 
 /// View model. Built with CLT swiftc (no Xcode) — bare `@State` is a
@@ -265,11 +313,15 @@ final class ViewModel: ObservableObject {
                 let playing = p.isPlaying
                 // Publish only on a real edge — the Playback menu title and
                 // every vm observer rebuild on each objectWillChange.
-                if self.playing != playing { self.playing = playing }
+                if self.playing != playing {
+                    self.playing = playing
+                    os_log("viz: playing edge → %{public}@", playing ? "true" : "false")
+                }
                 self.dockViz.sync() // lazy install on the playing edge
+                VizTicker.shared.sync(playing || self.scrubbing)
                 // Volatile state only moves while playing (or mid-scrub).
                 // At rest we skip the FFI reads entirely — no publishes, no
-                // churn; the viz surfaces self-drive via TimelineView.
+                // churn; the viz surfaces self-drive via VizTicker.
                 guard playing || self.scrubbing else { return }
                 if !self.scrubbing {
                     self.position = p.position
@@ -1038,20 +1090,26 @@ struct ContentView: View {
     }
 
     // ── Now playing bar ──────────────────────────────────────────────────
+    /// Re-renders `content` on every VizTicker tick — scoped so only the
+    /// volatile-read view re-evals, not the whole pane. TimelineView is
+    /// unreliable for this: it never ticks inside Button labels and
+    /// `.animation` sleeps on Canvas content.
+    private struct VizTick<Content: View>: View {
+        @ObservedObject private var ticker = VizTicker.shared
+        private let content: () -> Content
+        init(@ViewBuilder content: @escaping () -> Content) {
+            self.content = content
+        }
+        var body: some View { content() }
+    }
+
     private var nowPlayingBar: some View {
         VStack(spacing: 6) {
             // seek: engine clock drives; drag owns it until release.
-            // displayPosition is a plain var (see ViewModel) — while playing
-            // a TimelineView re-reads it at 15 Hz; at rest nothing ticks.
-            Group {
-                if vm.playing || vm.scrubbing {
-                    TimelineView(.animation(minimumInterval: 1.0 / 15)) { _ in
-                        seekSlider
-                    }
-                } else {
-                    seekSlider
-                }
-            }
+            // displayPosition is a plain var (see ViewModel) — VizTick
+            // re-reads it at the viz cadence while playing; at rest the
+            // ticker is stopped and nothing re-renders.
+            VizTick { seekSlider }
             HStack(spacing: 10) {
                 Button { vm.selection = .visuals; vm.stageFace = .art } label: {
                     ArtImage(hash: vm.current?.artworkHash,
@@ -1093,15 +1151,7 @@ struct ContentView: View {
                     Image(systemName: "forward.fill").sharpIconBox()
                 }
                 .buttonStyle(.plain)
-                Group {
-                    if vm.playing {
-                        TimelineView(.periodic(from: .now, by: 0.5)) { _ in
-                            positionLabel
-                        }
-                    } else {
-                        positionLabel
-                    }
-                }
+                VizTick { positionLabel }
                 Spacer()
                 if vm.clip {
                     Text("CLIP").font(.uiMicro.bold()).foregroundStyle(.red)
@@ -1142,17 +1192,9 @@ struct ContentView: View {
                 .font(.uiCaption).foregroundStyle(Ui.inkSoft)
 
             // response curve + analyzer underlay — vm.bands is a plain-var
-            // cache, so the TimelineView supplies the live redraw cadence
+            // cache, so VizTick supplies the live redraw cadence
             // only while playing; at rest the curve renders once, static.
-            Group {
-                if vm.playing {
-                    TimelineView(.animation(minimumInterval: 1.0 / 15)) { _ in
-                        eqCurveView
-                    }
-                } else {
-                    eqCurveView
-                }
-            }
+            VizTick { eqCurveView }
             .frame(maxWidth: .infinity)
             .frame(height: 160)
 

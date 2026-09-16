@@ -296,6 +296,69 @@ final class LyraTorrent {
 }
 
 
+/// Lossless-first torrent discovery — wraps lyra_search_* over the legal
+/// indexes (archive.org etree scope, academic torrents). Cheap rows from
+/// `search`; `resolve` fetches the full file list + an addable spec.
+final class LyraSearch {
+    static let shared = LyraSearch()
+    private var handle: UnsafeMutableRawPointer?
+
+    private init() {
+        let dir = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Lyra/search", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        handle = dir.path.withCString { lyra_search_new($0) }
+    }
+
+    deinit { lyra_search_free(handle) }
+
+    /// (results, provider_errors). Blocks on network — call off-main.
+    func search(_ q: String) -> (results: [[String: Any]], issues: [[String: Any]]) {
+        guard let handle,
+              let raw = q.withCString({ lyra_search(handle, $0) }) else { return ([], []) }
+        defer { lyra_string_free(raw) }
+        guard let d = try? JSONSerialization.jsonObject(with: Data(String(cString: raw).utf8))
+                as? [String: Any] else { return ([], []) }
+        return (d["results"] as? [[String: Any]] ?? [],
+                d["provider_errors"] as? [[String: Any]] ?? [])
+    }
+
+    /// Full file list + addable spec for one result row (pass back the
+    /// row dict verbatim — the FFI re-parses it as SearchResult).
+    /// Blocks on network — call off-main.
+    func resolve(_ result: [String: Any]) -> [String: Any]? {
+        guard let handle,
+              let j = try? JSONSerialization.data(withJSONObject: result),
+              let js = String(data: j, encoding: .utf8),
+              let raw = js.withCString({ lyra_search_resolve(handle, $0) })
+        else { return nil }
+        defer { lyra_string_free(raw) }
+        return try? JSONSerialization.jsonObject(with: Data(String(cString: raw).utf8))
+            as? [String: Any]
+    }
+
+    /// ResolvedTorrent.addable → a `lyra_torrent_add` spec string.
+    /// magnet/url pass through; torrent_b64 lands as a temp .torrent file.
+    static func addableSpec(_ resolved: [String: Any]) -> String? {
+        guard let a = resolved["addable"] as? [String: Any],
+              let kind = a["kind"] as? String else { return nil }
+        switch kind {
+        case "magnet": return a["magnet"] as? String
+        case "torrent_url": return a["url"] as? String
+        case "torrent_b64":
+            guard let b64 = a["data"] as? String,
+                  let bytes = Data(base64Encoded: b64) else { return nil }
+            let f = FileManager.default.temporaryDirectory
+                .appendingPathComponent("lyra-\(UUID().uuidString).torrent")
+            do { try bytes.write(to: f) } catch { return nil }
+            return f.path
+        default: return nil
+        }
+    }
+}
+
+
 /// LAN remote — SPAKE2 pairing → pinned X25519 keys → Noise XX.
 /// The listener binds 0.0.0.0; security lives in the handshake.
 final class LyraRemote {
