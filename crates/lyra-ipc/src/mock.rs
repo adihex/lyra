@@ -2,7 +2,7 @@
 //! Implements the full op table with revision counters so conflict, job and
 //! subscription behavior can be tested on Linux with no engine.
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -197,8 +197,7 @@ impl Dispatcher for MockDispatcher {
                     if method == "next" {
                         st.queue_index = (st.queue_index + 1) % st.queue.len();
                     } else {
-                        st.queue_index =
-                            (st.queue_index + st.queue.len() - 1) % st.queue.len();
+                        st.queue_index = (st.queue_index + st.queue.len() - 1) % st.queue.len();
                     }
                     st.track = Some(st.queue[st.queue_index].clone());
                     st.position = 0.0;
@@ -326,10 +325,14 @@ impl Dispatcher for MockDispatcher {
                         .cloned()
                         .ok_or_else(|| ApiError::not_found(format!("no match for {q}")))?
                 } else {
-                    return Err(ApiError::invalid_param("queue.enqueue needs track_id or query"));
+                    return Err(ApiError::invalid_param(
+                        "queue.enqueue needs track_id or query",
+                    ));
                 };
                 if let Some(pos) = Self::get_int(params, "position") {
-                    let i = usize::try_from(pos).unwrap_or(st.queue.len()).min(st.queue.len());
+                    let i = usize::try_from(pos)
+                        .unwrap_or(st.queue.len())
+                        .min(st.queue.len());
                     st.queue.insert(i, track);
                 } else {
                     st.queue.push(track);
@@ -356,7 +359,10 @@ impl Dispatcher for MockDispatcher {
                     .ok_or_else(|| ApiError::invalid_param("queue.move needs from"))?;
                 let to = Self::get_int(params, "to")
                     .ok_or_else(|| ApiError::invalid_param("queue.move needs to"))?;
-                let (from, to) = (usize::try_from(from).unwrap_or(0), usize::try_from(to).unwrap_or(0));
+                let (from, to) = (
+                    usize::try_from(from).unwrap_or(0),
+                    usize::try_from(to).unwrap_or(0),
+                );
                 if from >= st.queue.len() || to >= st.queue.len() {
                     return Err(ApiError::not_found("queue index out of range"));
                 }
@@ -400,7 +406,10 @@ impl Dispatcher for MockDispatcher {
                 st.bump();
                 let snap = st.snapshot();
                 drop(st);
-                ctx.emit("library.scan", json!({"state": "succeeded", "scans": snap["revision"]}));
+                ctx.emit(
+                    "library.scan",
+                    json!({"state": "succeeded", "scans": snap["revision"]}),
+                );
                 Ok(json!({"scanned": 3, "tracks": 3}))
             }
             "track.play" => {

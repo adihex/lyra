@@ -4,9 +4,9 @@
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{mpsc, Arc, Mutex};
 
-use crate::protocol::{Event, to_line};
+use crate::protocol::{to_line, Event};
 
 /// Topics retained so a mid-song connect gets current state immediately.
 fn is_retained(topic: &str) -> bool {

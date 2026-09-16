@@ -20,7 +20,7 @@ use thiserror::Error;
 
 use crate::events::EventBus;
 use crate::jobs::JobStore;
-use crate::protocol::{ErrorCode, ErrorBody};
+use crate::protocol::{ErrorBody, ErrorCode};
 
 /// Error returned by [`Dispatcher::call`].
 #[derive(Debug, Clone, Error)]
@@ -91,7 +91,10 @@ pub fn check_revision(
     if_playlist_revision: Option<i64>,
 ) -> Result<(), String> {
     if let Some(want) = if_revision {
-        let have = snapshot.get("revision").and_then(Value::as_i64).unwrap_or(0);
+        let have = snapshot
+            .get("revision")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
         if want != have {
             return Err(format!("stale revision: have {have}, if_revision={want}"));
         }

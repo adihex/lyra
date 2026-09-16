@@ -8,16 +8,16 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::{mpsc, Arc};
 use std::thread::JoinHandle;
 
-use crate::dispatcher::{ApiError, DispatchCtx, Dispatcher, check_revision};
+use crate::dispatcher::{check_revision, ApiError, DispatchCtx, Dispatcher};
 use crate::events::EventBus;
-use crate::jobs::{JobStore, JobState};
+use crate::jobs::{JobState, JobStore};
 use crate::paths::sidecar_path;
 use crate::protocol::{
-    ErrorCode, Event, Hello, Id, MAX_LINE_BYTES, OPERATIONS, Request, Response,
-    capabilities_payload, is_async_op, is_mutating_op, to_line,
+    capabilities_payload, is_async_op, is_mutating_op, to_line, ErrorCode, Event, Hello, Id,
+    Request, Response, MAX_LINE_BYTES, OPERATIONS,
 };
 
 /// Bound socket server. Owns the broadcast bus and job store; the player
@@ -237,15 +237,12 @@ impl<D: Dispatcher> Server<D> {
                 r
             }
             "state.get" => Response::ok_snapshot(req.id.clone(), self.dispatcher.snapshot()),
-            "spectrum.get" => match guarded_call(
-                &self.dispatcher,
-                &self.ctx(),
-                "spectrum.get",
-                &params,
-            ) {
-                Ok(v) => Response::ok_result(req.id.clone(), v),
-                Err(e) => Response::err(req.id.clone(), e.code, e.message),
-            },
+            "spectrum.get" => {
+                match guarded_call(&self.dispatcher, &self.ctx(), "spectrum.get", &params) {
+                    Ok(v) => Response::ok_result(req.id.clone(), v),
+                    Err(e) => Response::err(req.id.clone(), e.code, e.message),
+                }
+            }
             "operation.submit" => self.submit(req, &params),
             "job.get" => {
                 let id = params.get("id").and_then(|v| v.as_str()).unwrap_or("");
@@ -255,9 +252,7 @@ impl<D: Dispatcher> Server<D> {
                         serde_json::to_value(&job).unwrap_or(Value::Null),
                         None,
                     ),
-                    None => {
-                        Response::err(req.id.clone(), ErrorCode::NotFound, format!("job {id}"))
-                    }
+                    None => Response::err(req.id.clone(), ErrorCode::NotFound, format!("job {id}")),
                 }
             }
             "job.cancel" => {
@@ -275,15 +270,12 @@ impl<D: Dispatcher> Server<D> {
                     ),
                 }
             }
-            "plugin.call" => match guarded_call(
-                &self.dispatcher,
-                &self.ctx(),
-                "plugin.call",
-                &params,
-            ) {
-                Ok(v) => Response::ok_result(req.id.clone(), v),
-                Err(e) => Response::err(req.id.clone(), e.code, e.message),
-            },
+            "plugin.call" => {
+                match guarded_call(&self.dispatcher, &self.ctx(), "plugin.call", &params) {
+                    Ok(v) => Response::ok_result(req.id.clone(), v),
+                    Err(e) => Response::err(req.id.clone(), e.code, e.message),
+                }
+            }
             // Bare op-table names route like operation.submit (thin convenience).
             other if OPERATIONS.iter().any(|(name, _)| *name == other) => {
                 self.submit_direct(req, other, &params)
@@ -314,7 +306,9 @@ impl<D: Dispatcher> Server<D> {
             .and_then(|o| o.get("params"))
             .cloned()
             .unwrap_or(Value::Object(Default::default()));
-        let if_rev = obj.and_then(|o| o.get("if_revision")).and_then(Value::as_i64);
+        let if_rev = obj
+            .and_then(|o| o.get("if_revision"))
+            .and_then(Value::as_i64);
         let if_pl = obj
             .and_then(|o| o.get("if_playlist_revision"))
             .and_then(Value::as_i64);
@@ -323,7 +317,9 @@ impl<D: Dispatcher> Server<D> {
 
     fn submit_direct(&self, req: &Request, operation: &str, params: &Value) -> Response {
         let obj = params.as_object();
-        let if_rev = obj.and_then(|o| o.get("if_revision")).and_then(Value::as_i64);
+        let if_rev = obj
+            .and_then(|o| o.get("if_revision"))
+            .and_then(Value::as_i64);
         let if_pl = obj
             .and_then(|o| o.get("if_playlist_revision"))
             .and_then(Value::as_i64);
@@ -517,6 +513,14 @@ pub struct ServerHandle {
     shutdown: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
     _keep: Arc<dyn Send + Sync>,
+}
+
+impl std::fmt::Debug for ServerHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ServerHandle")
+            .field("path", &self.path)
+            .finish()
+    }
 }
 
 impl ServerHandle {

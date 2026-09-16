@@ -7,7 +7,10 @@ use serde_json::Value;
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
-#[command(name = "lyra", about = "Drive the Lyra player over the local control socket")]
+#[command(
+    name = "lyra",
+    about = "Drive the Lyra player over the local control socket"
+)]
 pub struct Cli {
     /// Explicit socket path (overrides LYRA_SOCKET + well-known paths).
     #[arg(long, global = true)]
@@ -28,9 +31,13 @@ pub enum Command {
     Next,
     Prev,
     /// Seek: `+30s`, `-10`, `83` (seconds) or `01:23` (mm:ss).
-    Seek { spec: String },
+    Seek {
+        spec: String,
+    },
     /// Volume 0-100 (percent) or 0.0-1.0.
-    Volume { level: String },
+    Volume {
+        level: String,
+    },
     /// Full snapshot (same object agents poll).
     State,
     /// One-line human status (alias of state, condensed).
@@ -106,9 +113,9 @@ pub enum EqOp {
     Set {
         #[arg(long)]
         band: Option<i64>,
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         gain: Option<f64>,
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         bands: Option<String>,
         #[arg(long)]
         preamp: Option<f64>,
@@ -138,7 +145,8 @@ pub fn parse_seek(spec: &str) -> Result<SeekArg, String> {
         let sec: f64 = sec.parse().map_err(|_| format!("bad seek spec: {spec}"))?;
         m * 60.0 + sec
     } else {
-        body.parse::<f64>().map_err(|_| format!("bad seek spec: {spec}"))?
+        body.parse::<f64>()
+            .map_err(|_| format!("bad seek spec: {spec}"))?
     };
     Ok(if relative {
         SeekArg::Relative(secs)
@@ -298,7 +306,10 @@ fn execute(cli: Cli) -> Result<(), ClientError> {
         }
         Command::Queue { op } => match op {
             QueueOp::List => {
-                let r = c.call("operation.submit", serde_json::json!({"operation": "queue.list", "params": {}}))?;
+                let r = c.call(
+                    "operation.submit",
+                    serde_json::json!({"operation": "queue.list", "params": {}}),
+                )?;
                 let payload = job_result(r.job.as_ref().unwrap_or(&Value::Null));
                 out.value(&payload);
                 if !cli.json {
@@ -318,7 +329,11 @@ fn execute(cli: Cli) -> Result<(), ClientError> {
                     }
                 }
             }
-            QueueOp::Add { track, query, position } => {
+            QueueOp::Add {
+                track,
+                query,
+                position,
+            } => {
                 let mut p = serde_json::json!({});
                 if let Some(t) = track {
                     p["track_id"] = t.into();
@@ -331,7 +346,10 @@ fn execute(cli: Cli) -> Result<(), ClientError> {
                 }
                 let (job, _) = submit(&mut c, "queue.enqueue", p)?;
                 out.value(&job);
-                out.line(&format!("queued ({})", job.get("length").map(|v| v.to_string()).unwrap_or_default()));
+                out.line(&format!(
+                    "queued ({})",
+                    job.get("length").map(|v| v.to_string()).unwrap_or_default()
+                ));
             }
             QueueOp::Remove { index } => {
                 let (job, _) = submit(&mut c, "queue.remove", serde_json::json!({"index": index}))?;
@@ -339,7 +357,11 @@ fn execute(cli: Cli) -> Result<(), ClientError> {
                 out.line("removed");
             }
             QueueOp::Move { from, to } => {
-                let (job, _) = submit(&mut c, "queue.move", serde_json::json!({"from": from, "to": to}))?;
+                let (job, _) = submit(
+                    &mut c,
+                    "queue.move",
+                    serde_json::json!({"from": from, "to": to}),
+                )?;
                 out.value(&job);
                 out.line("moved");
             }
@@ -358,7 +380,12 @@ fn execute(cli: Cli) -> Result<(), ClientError> {
             let payload = job_result(&job);
             out.value(&payload);
             if !cli.json {
-                for t in payload.get("results").and_then(|r| r.as_array()).into_iter().flatten() {
+                for t in payload
+                    .get("results")
+                    .and_then(|r| r.as_array())
+                    .into_iter()
+                    .flatten()
+                {
                     println!(
                         "{}\t{}\t{}",
                         t.get("id").and_then(|v| v.as_str()).unwrap_or("?"),
@@ -373,13 +400,24 @@ fn execute(cli: Cli) -> Result<(), ClientError> {
             if let Some(path) = path {
                 p["path"] = path.into();
             }
-            let r = c.call("operation.submit", serde_json::json!({"operation": "library.scan", "params": p}))?;
+            let r = c.call(
+                "operation.submit",
+                serde_json::json!({"operation": "library.scan", "params": p}),
+            )?;
             out.value(r.job.as_ref().unwrap_or(&Value::Null));
             if !cli.json {
                 println!(
                     "scan job {} ({})",
-                    r.job.as_ref().and_then(|j| j.get("id")).and_then(|v| v.as_str()).unwrap_or("?"),
-                    r.job.as_ref().and_then(|j| j.get("state")).and_then(|v| v.as_str()).unwrap_or("?"),
+                    r.job
+                        .as_ref()
+                        .and_then(|j| j.get("id"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?"),
+                    r.job
+                        .as_ref()
+                        .and_then(|j| j.get("state"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?"),
                 );
             }
         }
@@ -402,7 +440,12 @@ fn execute(cli: Cli) -> Result<(), ClientError> {
                 let payload = job_result(&job);
                 out.value(&payload);
                 if !cli.json {
-                    for d in payload.get("devices").and_then(|v| v.as_array()).into_iter().flatten() {
+                    for d in payload
+                        .get("devices")
+                        .and_then(|v| v.as_array())
+                        .into_iter()
+                        .flatten()
+                    {
                         println!("{}", d.as_str().unwrap_or("?"));
                     }
                 }
@@ -415,7 +458,12 @@ fn execute(cli: Cli) -> Result<(), ClientError> {
                 out.value(&payload);
                 out.line(&payload.to_string());
             }
-            EqOp::Set { band, gain, bands, preamp } => {
+            EqOp::Set {
+                band,
+                gain,
+                bands,
+                preamp,
+            } => {
                 let params = if let (Some(b), Some(g)) = (band, gain) {
                     serde_json::json!({"band": b, "gain_db": g})
                 } else {
@@ -423,9 +471,8 @@ fn execute(cli: Cli) -> Result<(), ClientError> {
                     if let Some(list) = bands {
                         let arr: Result<Vec<f64>, _> =
                             list.split(',').map(|s| s.trim().parse()).collect();
-                        let arr = arr.map_err(|_| {
-                            ClientError::Protocol(format!("bad --bands: {list}"))
-                        })?;
+                        let arr =
+                            arr.map_err(|_| ClientError::Protocol(format!("bad --bands: {list}")))?;
                         p["bands"] = arr.into();
                     }
                     if let Some(pa) = preamp {
@@ -433,7 +480,11 @@ fn execute(cli: Cli) -> Result<(), ClientError> {
                     }
                     p
                 };
-                let op = if band.is_some() { "eq.band.set" } else { "eq.set" };
+                let op = if band.is_some() {
+                    "eq.band.set"
+                } else {
+                    "eq.set"
+                };
                 let (job, _) = submit(&mut c, op, params)?;
                 out.value(&job);
                 out.line("eq updated");
@@ -500,8 +551,12 @@ fn doctor(socket: Option<PathBuf>, out: &Out) -> Result<(), ClientError> {
             let mut c = Client::connect(p)?;
             let caps = c.call("capabilities", serde_json::json!({}))?;
             report["protocol"] = 2.into();
-            report["operations"] =
-                caps.operations.as_ref().and_then(|o| o.as_array()).map(|a| a.len()).into();
+            report["operations"] = caps
+                .operations
+                .as_ref()
+                .and_then(|o| o.as_array())
+                .map(|a| a.len())
+                .into();
             report["ok"] = true.into();
         }
         None => {
@@ -515,7 +570,10 @@ fn doctor(socket: Option<PathBuf>, out: &Out) -> Result<(), ClientError> {
         Ok(())
     } else {
         Err(ClientError::NotRunning(
-            candidates.first().map(|p| p.display().to_string()).unwrap_or_default(),
+            candidates
+                .first()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default(),
         ))
     }
 }
@@ -532,7 +590,8 @@ mod tests {
         assert!(cli.json);
         let cli = Cli::try_parse_from(["lyra", "queue", "add", "--query", "jazz"]).unwrap();
         assert!(matches!(cli.cmd, Command::Queue { .. }));
-        let cli = Cli::try_parse_from(["lyra", "eq", "set", "--band", "3", "--gain", "-2.5"]).unwrap();
+        let cli =
+            Cli::try_parse_from(["lyra", "eq", "set", "--band", "3", "--gain", "-2.5"]).unwrap();
         assert!(matches!(cli.cmd, Command::Eq { .. }));
         assert!(Cli::try_parse_from(["lyra", "bogus"]).is_err());
     }

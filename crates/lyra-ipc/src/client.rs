@@ -10,7 +10,7 @@ use std::time::Duration;
 use thiserror::Error;
 
 use crate::paths::candidates;
-use crate::protocol::{ErrorBody, Event, Hello, Request, Response, line_is_event, to_line};
+use crate::protocol::{line_is_event, to_line, ErrorBody, Event, Hello, Request, Response};
 
 #[derive(Debug, Error)]
 pub enum ClientError {
@@ -21,7 +21,10 @@ pub enum ClientError {
     #[error("protocol: {0}")]
     Protocol(String),
     #[error("server error [{code:?}]: {message}")]
-    Server { code: crate::protocol::ErrorCode, message: String },
+    Server {
+        code: crate::protocol::ErrorCode,
+        message: String,
+    },
 }
 
 impl ClientError {
@@ -57,9 +60,8 @@ pub struct Client {
 
 impl Client {
     pub fn connect(path: &Path) -> Result<Self, ClientError> {
-        let stream = UnixStream::connect(path).map_err(|_| {
-            ClientError::NotRunning(path.display().to_string())
-        })?;
+        let stream = UnixStream::connect(path)
+            .map_err(|_| ClientError::NotRunning(path.display().to_string()))?;
         Self::from_stream(stream)
     }
 
@@ -137,7 +139,9 @@ impl Client {
         } else if let Some(e) = resp.error.clone() {
             Err(e.into())
         } else {
-            Err(ClientError::Protocol("response ok=false without error".into()))
+            Err(ClientError::Protocol(
+                "response ok=false without error".into(),
+            ))
         }
     }
 
@@ -173,7 +177,11 @@ impl Client {
 pub enum SubItem {
     Event(Event),
     /// A `seq` gap was seen; the client already re-fetched current state.
-    Resync { snapshot: Value, from_seq: u64, to_seq: u64 },
+    Resync {
+        snapshot: Value,
+        from_seq: u64,
+        to_seq: u64,
+    },
 }
 
 pub struct Subscription {
@@ -220,8 +228,11 @@ impl Subscription {
     fn resync_state(&mut self) -> Result<Value, ClientError> {
         self.client.next_id += 1;
         let id = Value::from(format!("c{}", self.client.next_id));
-        self.client
-            .send(&Request::new(id.clone(), "state.get", Value::Object(Default::default())))?;
+        self.client.send(&Request::new(
+            id.clone(),
+            "state.get",
+            Value::Object(Default::default()),
+        ))?;
         loop {
             let line = self.client.read_line()?;
             if line_is_event(&line) {

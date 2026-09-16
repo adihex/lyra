@@ -40,10 +40,7 @@ impl Request {
 
     /// Params as an object; non-object params decode as `{}`.
     pub fn params_obj(&self) -> serde_json::Map<String, Value> {
-        self.params
-            .as_object()
-            .cloned()
-            .unwrap_or_default()
+        self.params.as_object().cloned().unwrap_or_default()
     }
 }
 
@@ -261,12 +258,7 @@ pub struct OperationDef {
 fn schema(props: &[(&str, &str)], required: &[&str]) -> Value {
     let properties: serde_json::Map<String, Value> = props
         .iter()
-        .map(|(k, t)| {
-            (
-                k.to_string(),
-                serde_json::json!({"type": t}),
-            )
-        })
+        .map(|(k, t)| (k.to_string(), serde_json::json!({"type": t})))
         .collect();
     serde_json::json!({
         "type": "object",
@@ -302,7 +294,11 @@ pub static OPERATIONS: &[(&str, fn() -> Value)] = &[
     ("subscribe", || schema(&[("topics", "array")], &["topics"])),
     ("plugin.call", || {
         schema(
-            &[("plugin", "string"), ("command", "string"), ("args", "object")],
+            &[
+                ("plugin", "string"),
+                ("command", "string"),
+                ("args", "object"),
+            ],
             &["plugin", "command"],
         )
     }),
@@ -320,10 +316,14 @@ pub static OPERATIONS: &[(&str, fn() -> Value)] = &[
         schema(&[("delta_s", "number")], &["delta_s"])
     }),
     ("volume", || schema(&[("volume", "number")], &["volume"])),
-    ("volume.set", || schema(&[("volume", "number")], &["volume"])),
+    ("volume.set", || {
+        schema(&[("volume", "number")], &["volume"])
+    }),
     ("speed", || schema(&[("speed", "number")], &["speed"])),
     // modes
-    ("shuffle", || schema(&[("enabled", "boolean")], &["enabled"])),
+    ("shuffle", || {
+        schema(&[("enabled", "boolean")], &["enabled"])
+    }),
     ("repeat", || schema(&[("mode", "string")], &["mode"])),
     // eq
     ("eq.get", no_params),
@@ -331,9 +331,10 @@ pub static OPERATIONS: &[(&str, fn() -> Value)] = &[
         schema(&[("bands", "array"), ("preamp", "number")], &["bands"])
     }),
     ("eq.band.set", || {
-        schema(&[("band", "integer"), ("gain_db", "number")], &[
-            "band", "gain_db",
-        ])
+        schema(
+            &[("band", "integer"), ("gain_db", "number")],
+            &["band", "gain_db"],
+        )
     }),
     // queue
     ("queue.list", no_params),
@@ -349,7 +350,9 @@ pub static OPERATIONS: &[(&str, fn() -> Value)] = &[
             &[],
         )
     }),
-    ("queue.remove", || schema(&[("index", "integer")], &["index"])),
+    ("queue.remove", || {
+        schema(&[("index", "integer")], &["index"])
+    }),
     ("queue.move", || {
         schema(&[("from", "integer"), ("to", "integer")], &["from", "to"])
     }),
@@ -357,18 +360,18 @@ pub static OPERATIONS: &[(&str, fn() -> Value)] = &[
     // library
     ("library.search", || {
         schema(
-            &[
-                ("q", "string"),
-                ("type", "string"),
-                ("limit", "integer"),
-            ],
+            &[("q", "string"), ("type", "string"), ("limit", "integer")],
             &["q"],
         )
     }),
     ("library.stats", no_params),
     ("library.scan", || schema(&[("path", "string")], &[])),
-    ("track.play", || schema(&[("track_id", "string")], &["track_id"])),
-    ("track.queue", || schema(&[("track_id", "string")], &["track_id"])),
+    ("track.play", || {
+        schema(&[("track_id", "string")], &["track_id"])
+    }),
+    ("track.queue", || {
+        schema(&[("track_id", "string")], &["track_id"])
+    }),
     // sources
     ("url.load", || schema(&[("url", "string")], &["url"])),
     ("torrent.add", || {
@@ -379,7 +382,9 @@ pub static OPERATIONS: &[(&str, fn() -> Value)] = &[
     }),
     // introspection
     ("device.list", no_params),
-    ("device.set", || schema(&[("device", "string")], &["device"])),
+    ("device.set", || {
+        schema(&[("device", "string")], &["device"])
+    }),
 ];
 
 /// Ops that run as retained jobs instead of inline results.
@@ -410,9 +415,7 @@ pub fn is_mutating_op(operation: &str) -> bool {
 pub fn capabilities_payload() -> Value {
     let operations: Vec<Value> = OPERATIONS
         .iter()
-        .map(|(name, schema_fn)| {
-            serde_json::json!({"name": name, "params": schema_fn()})
-        })
+        .map(|(name, schema_fn)| serde_json::json!({"name": name, "params": schema_fn()}))
         .collect();
     serde_json::json!({
         "protocol": PROTOCOL_VERSION,

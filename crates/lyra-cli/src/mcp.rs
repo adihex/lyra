@@ -5,7 +5,7 @@
 //! Hand-rolled JSON-RPC loop — no extra deps beyond serde_json.
 
 use lyra_ipc::{Client, ClientError};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::io::{BufRead, Write};
 
 const MCP_VERSION: &str = "2024-11-05";
@@ -94,7 +94,10 @@ fn tools() -> Vec<Tool> {
 }
 
 fn submit(c: &mut Client, operation: &str, params: Value) -> Result<Value, ClientError> {
-    let r = c.call("operation.submit", json!({"operation": operation, "params": params}))?;
+    let r = c.call(
+        "operation.submit",
+        json!({"operation": operation, "params": params}),
+    )?;
     Ok(json!({"job": r.job, "snapshot": r.snapshot}))
 }
 
@@ -116,27 +119,32 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, ClientError> {
         "previous" => submit(&mut c, "prev", json!({})),
         "stop" => submit(&mut c, "stop", json!({})),
         "play_track" => {
-            let id = get_str("track_id").ok_or_else(|| ClientError::Protocol("play_track needs track_id".into()))?;
+            let id = get_str("track_id")
+                .ok_or_else(|| ClientError::Protocol("play_track needs track_id".into()))?;
             submit(&mut c, "track.play", json!({"track_id": id}))
         }
         // Composite: agents want "play X" to just work.
         "play_query" => {
-            let q = get_str("q").ok_or_else(|| ClientError::Protocol("play_query needs q".into()))?;
+            let q =
+                get_str("q").ok_or_else(|| ClientError::Protocol("play_query needs q".into()))?;
             let r = submit(&mut c, "library.search", json!({"q": q, "limit": 1}))?;
             let first = r
                 .pointer("/job/result/results/0")
                 .cloned()
                 .unwrap_or(Value::Null);
-            let id = first.get("id").and_then(|v| v.as_str()).ok_or_else(|| {
-                ClientError::Server {
-                    code: lyra_ipc::ErrorCode::NotFound,
-                    message: format!("no match for {q}"),
-                }
-            })?;
+            let id =
+                first
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| ClientError::Server {
+                        code: lyra_ipc::ErrorCode::NotFound,
+                        message: format!("no match for {q}"),
+                    })?;
             submit(&mut c, "track.play", json!({"track_id": id}))
         }
         "search_library" => {
-            let q = get_str("q").ok_or_else(|| ClientError::Protocol("search_library needs q".into()))?;
+            let q = get_str("q")
+                .ok_or_else(|| ClientError::Protocol("search_library needs q".into()))?;
             let mut p = json!({"q": q});
             if let Some(t) = get_str("type") {
                 p["type"] = t.into();
@@ -144,18 +152,23 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, ClientError> {
             if let Some(l) = args.get("limit") {
                 p["limit"] = l.clone();
             }
-            Ok(submit(&mut c, "library.search", p)?.pointer("/job/result").cloned().unwrap_or(Value::Null))
+            Ok(submit(&mut c, "library.search", p)?
+                .pointer("/job/result")
+                .cloned()
+                .unwrap_or(Value::Null))
         }
         "seek" => {
-            let pos = args.get("position_s").and_then(Value::as_f64).ok_or_else(|| {
-                ClientError::Protocol("seek needs position_s".into())
-            })?;
+            let pos = args
+                .get("position_s")
+                .and_then(Value::as_f64)
+                .ok_or_else(|| ClientError::Protocol("seek needs position_s".into()))?;
             submit(&mut c, "seek.absolute", json!({"position_s": pos}))
         }
         "set_volume" => {
-            let v = args.get("volume").and_then(Value::as_f64).ok_or_else(|| {
-                ClientError::Protocol("set_volume needs volume".into())
-            })?;
+            let v = args
+                .get("volume")
+                .and_then(Value::as_f64)
+                .ok_or_else(|| ClientError::Protocol("set_volume needs volume".into()))?;
             submit(&mut c, "volume.set", json!({"volume": v}))
         }
         "queue_add" => {
@@ -172,15 +185,22 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, ClientError> {
             let r = c.call("operation.submit", req)?;
             Ok(json!({"job": r.job, "snapshot": r.snapshot}))
         }
-        "queue_list" => Ok(submit(&mut c, "queue.list", json!({}))?.pointer("/job/result").cloned().unwrap_or(Value::Null)),
+        "queue_list" => Ok(submit(&mut c, "queue.list", json!({}))?
+            .pointer("/job/result")
+            .cloned()
+            .unwrap_or(Value::Null)),
         "queue_remove" => {
-            let i = args.get("index").and_then(Value::as_i64).ok_or_else(|| {
-                ClientError::Protocol("queue_remove needs index".into())
-            })?;
+            let i = args
+                .get("index")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| ClientError::Protocol("queue_remove needs index".into()))?;
             submit(&mut c, "queue.remove", json!({"index": i}))
         }
         "queue_clear" => submit(&mut c, "queue.clear", json!({})),
-        "eq_get" => Ok(submit(&mut c, "eq.get", json!({}))?.pointer("/job/result").cloned().unwrap_or(Value::Null)),
+        "eq_get" => Ok(submit(&mut c, "eq.get", json!({}))?
+            .pointer("/job/result")
+            .cloned()
+            .unwrap_or(Value::Null)),
         "eq_set" => {
             if let (Some(b), Some(g)) = (args.get("band"), args.get("gain_db")) {
                 submit(&mut c, "eq.band.set", json!({"band": b, "gain_db": g}))
@@ -195,7 +215,10 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, ClientError> {
                 submit(&mut c, "eq.set", p)
             }
         }
-        "library_stats" => Ok(submit(&mut c, "library.stats", json!({}))?.pointer("/job/result").cloned().unwrap_or(Value::Null)),
+        "library_stats" => Ok(submit(&mut c, "library.stats", json!({}))?
+            .pointer("/job/result")
+            .cloned()
+            .unwrap_or(Value::Null)),
         "library_scan" => {
             let mut p = json!({});
             if let Some(path) = get_str("path") {
@@ -204,12 +227,14 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, ClientError> {
             submit(&mut c, "library.scan", p)
         }
         "job_get" => {
-            let id = get_str("id").ok_or_else(|| ClientError::Protocol("job_get needs id".into()))?;
+            let id =
+                get_str("id").ok_or_else(|| ClientError::Protocol("job_get needs id".into()))?;
             let r = c.call("job.get", json!({"id": id}))?;
             Ok(r.job.unwrap_or(Value::Null))
         }
         "job_cancel" => {
-            let id = get_str("id").ok_or_else(|| ClientError::Protocol("job_cancel needs id".into()))?;
+            let id =
+                get_str("id").ok_or_else(|| ClientError::Protocol("job_cancel needs id".into()))?;
             let r = c.call("job.cancel", json!({"id": id}))?;
             Ok(r.job.unwrap_or(Value::Null))
         }
@@ -230,9 +255,7 @@ fn text_error(msg: String) -> Value {
 }
 
 fn handle(method: &str, params: &Value, id: &Value) -> Option<Value> {
-    let ok = |result: Value| {
-        Some(json!({"jsonrpc": "2.0", "id": id, "result": result}))
-    };
+    let ok = |result: Value| Some(json!({"jsonrpc": "2.0", "id": id, "result": result}));
     let err = |code: i64, message: String| {
         Some(json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}}))
     };
@@ -331,7 +354,15 @@ mod tests {
             .iter()
             .map(|t| t["name"].as_str().unwrap())
             .collect();
-        for want in ["now_playing", "play", "play_query", "seek", "set_volume", "library_scan", "job_get"] {
+        for want in [
+            "now_playing",
+            "play",
+            "play_query",
+            "seek",
+            "set_volume",
+            "library_scan",
+            "job_get",
+        ] {
             assert!(names.contains(&want), "missing tool {want}");
         }
         // Unknown method → JSON-RPC error, unknown tool → MCP isError (not crash).

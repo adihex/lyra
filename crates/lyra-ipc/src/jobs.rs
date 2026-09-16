@@ -85,7 +85,7 @@ impl JobStore {
             let old = inner
                 .jobs
                 .get(front)
-                .map(|j| !j.state.terminal() || j.updated < cutoff)
+                .map(|j| j.state.terminal() && j.updated < cutoff)
                 .unwrap_or(true);
             let over = inner.jobs.len() > MAX_JOBS
                 && inner
