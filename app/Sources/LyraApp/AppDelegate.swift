@@ -15,6 +15,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate,
         UNUserNotificationCenter.current().delegate = self
         CSSearchableIndex.default().indexDelegate = self
         TrackNotifier.shared.registerCategory()
+        // Agent-native surface: NDJSON unix socket for `lyra`/`lyra-mcp`.
+        // Inside the app container; the CLI's discovery list probes it.
+        LyraIPC.shared.start()
         // Headless playback hook for VM/CLI QA: LYRA_AUTOPLAY=/path/file.wav
         // plays once the engine is up — no UI automation needed.
         if let auto = ProcessInfo.processInfo.environment["LYRA_AUTOPLAY"] {

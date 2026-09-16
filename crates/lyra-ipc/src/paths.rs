@@ -69,10 +69,13 @@ pub fn candidates() -> Vec<PathBuf> {
                     .join(TEAM_SCOPE)
                     .join(SOCKET_NAME),
             );
+            // `Data/Library/Application Support/Lyra` would be the natural
+            // home but overflows the ~103-byte sun_path limit — unix
+            // sockets can't bind past it. `Data/Lyra` stays under it.
             out.push(
                 home.join("Library/Containers")
                     .join(BUNDLE_ID)
-                    .join("Data/Library/Application Support/Lyra")
+                    .join("Data/Lyra")
                     .join(SOCKET_NAME),
             );
         }

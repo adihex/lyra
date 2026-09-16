@@ -85,4 +85,10 @@ void   lyra_search_free(void *s);
 char  *lyra_search(void *s, const char *query_json);          /* SearchResponse JSON — free me; blocks, call off-main */
 char  *lyra_search_resolve(void *s, const char *result_json); /* {result,files,addable:{kind:magnet|torrent_url|torrent_b64,…}} or {"error":…} */
 
+/* ── IPC (lyra-ipc): NDJSON unix socket for `lyra` CLI / lyra-mcp ── */
+int   lyra_ipc_start(const char *db_path, const char *sock_dir); /* bind sock_dir/control.sock; 0 ok */
+void  lyra_ipc_stop(void);
+int   lyra_ipc_publish_state(const char *json);  /* VM -> snapshot merge: track/queue/modes */
+char *lyra_ipc_drain_commands(void);             /* JSON array of VM-bound ops, NULL if empty — free me */
+
 #endif

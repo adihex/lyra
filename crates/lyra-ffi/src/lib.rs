@@ -18,7 +18,9 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 static INIT: Once = Once::new();
 
-fn init_logging() {
+mod ipc;
+
+pub(crate) fn init_logging() {
     INIT.call_once(|| {
         let _ = tracing_subscriber::fmt()
             .with_env_filter(
@@ -578,7 +580,7 @@ static TORRENT: std::sync::OnceLock<
     Result<std::sync::Arc<lyra_torrent::TorrentEngine>, String>,
 > = std::sync::OnceLock::new();
 
-fn torrent() -> Result<&'static std::sync::Arc<lyra_torrent::TorrentEngine>, c_int> {
+pub(crate) fn torrent() -> Result<&'static std::sync::Arc<lyra_torrent::TorrentEngine>, c_int> {
     match TORRENT.get() {
         Some(Ok(e)) => Ok(e),
         Some(Err(_)) => Err(1),

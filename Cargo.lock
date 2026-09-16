@@ -3031,6 +3031,7 @@ dependencies = [
  "lyra-engine",
  "lyra-formats",
  "lyra-fs",
+ "lyra-ipc",
  "lyra-remote",
  "lyra-search",
  "lyra-store",

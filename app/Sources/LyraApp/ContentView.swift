@@ -328,6 +328,10 @@ final class ViewModel: ObservableObject {
                 }
                 self.dockViz.sync() // lazy install on the playing edge
                 VizTicker.shared.sync(playing || self.scrubbing)
+                // Agent IPC: socket clients' UI-bound ops land here. Runs
+                // even at rest — `lyra play` must work on an idle app.
+                for cmd in LyraIPC.shared.drainCommands() { self.execIPC(cmd) }
+                self.publishIPCStateIfChanged()
                 // Volatile state only moves while playing (or mid-scrub).
                 // At rest we skip the FFI reads entirely — no publishes, no
                 // churn; the viz surfaces self-drive via VizTicker.
@@ -819,6 +823,83 @@ final class ViewModel: ObservableObject {
         MediaKeys.shared.publish(title: t.title, artist: t.artist,
                                  album: t.album, duration: t.duration,
                                  artworkHash: t.artworkHash)
+        ipcSig = "" // force a state push on the next poll tick
+    }
+
+    // ── Agent IPC (lyra CLI / lyra-mcp over the unix socket) ────────────
+    private var ipcSig = ""
+
+    /// Push UI-owned state into the dispatcher's snapshot merge — only when
+    /// the signature changes (30 Hz JSON churn is the bug we fixed once).
+    private func publishIPCStateIfChanged() {
+        guard LyraIPC.shared.running else { return }
+        let sig = "\(current?.id ?? "")|\(tracks.count)|\(currentIndex ?? -1)|\(playing)|\(sortOrder)"
+        guard sig != ipcSig else { return }
+        ipcSig = sig
+        let t = current
+        let sorted = sortedTracks
+        let items: [[String: Any]] = sorted.prefix(500).map {
+            ["id": $0.id, "title": $0.title, "artist": $0.artist,
+             "album": $0.album, "duration": $0.duration]
+        }
+        LyraIPC.shared.publishState([
+            "track": t.map {
+                ["id": $0.id, "path": $0.path, "title": $0.title,
+                 "artist": $0.artist, "album": $0.album,
+                 "duration": $0.duration, "codec": $0.codec] as [String: Any]
+            } as Any,
+            "duration": t?.duration ?? 0,
+            "queue": ["index": currentIndex ?? 0, "length": sorted.count,
+                      "items": items],
+            "playlist_revision": tracks.count,
+            "device": exclusiveOutput ? "hal-exclusive" : "default",
+        ])
+    }
+
+    /// Execute one socket-issued op. UI-bound ops only — transport/eq/volume
+    /// act on the engine directly in Rust and never arrive here.
+    private func execIPC(_ cmd: [String: Any]) {
+        let op = cmd["op"] as? String ?? ""
+        let params = cmd["params"] as? [String: Any] ?? [:]
+        switch op {
+        case "next": next()
+        case "prev": prev()
+        case "track.play":
+            let id = params["track_id"] as? String ?? ""
+            if let t = tracks.first(where: { $0.id == id || $0.path == id }) {
+                play(t, userInitiated: false)
+            }
+        case "queue.play":
+            if let i = params["index"] as? Int,
+               sortedTracks.indices.contains(i) {
+                play(sortedTracks[i], userInitiated: false)
+            }
+        case "library.reload":
+            // A socket client ran library.scan — re-read the table.
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                let ts = LyraLibrary.shared.tracks.map(Track.init)
+                DispatchQueue.main.async {
+                    self?.tracks = ts
+                    self?.contentID = UUID()
+                }
+            }
+        case "torrent.added":
+            if let id = params["id"] as? Int {
+                DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                    self?.refreshTorrents(rebuildRows: true)
+                    let rows = LyraTorrent.shared.files(id)
+                    DispatchQueue.main.async {
+                        var newTracks = rows.map { Track(torrentId: id, file: $0) }.filter(\.isAudio)
+                        for i in newTracks.indices { newTracks[i].trackNumber = i + 1 }
+                        if !newTracks.isEmpty {
+                            self?.tracks.append(contentsOf: newTracks)
+                            self?.contentID = UUID()
+                        }
+                    }
+                }
+            }
+        default: break
+        }
     }
 
     func fmt(_ s: Double) -> String {

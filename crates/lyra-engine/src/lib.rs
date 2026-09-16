@@ -435,6 +435,14 @@ impl Engine {
     pub fn set_volume(&self, v: f32) {
         self.volume.store(v.clamp(0.0, 2.0), Ordering::Relaxed);
     }
+
+    pub fn volume(&self) -> f32 { self.volume.load(Ordering::Relaxed) }
+
+    /// Live per-band EQ specs — None means flat/unset for that slot.
+    /// IPC + FFI read this; `set_band` is the write path.
+    pub fn eq_specs(&self) -> Vec<Option<BandSpec>> {
+        self.eq_specs.lock().unwrap().clone()
+    }
     pub fn is_playing(&self) -> bool { self.playing.load(Ordering::Relaxed) }
     /// A track is loaded and paused — resume continues, play would restart.
     pub fn can_resume(&self) -> bool {

@@ -359,6 +359,56 @@ final class LyraSearch {
 }
 
 
+/// Agent-native IPC — NDJSON over a unix socket for `lyra` CLI / lyra-mcp.
+/// The server lives in Rust (lyra-ipc); this wraps start/stop + the two
+/// state edges: publishState (VM→snapshot) and drainCommands (socket→VM).
+final class LyraIPC {
+    static let shared = LyraIPC()
+    private(set) var running = false
+
+    private init() {}
+
+    /// Bind `<container>/Data/Lyra/control.sock` — matches the CLI's
+    /// discovery candidate. Application Support is too deep: the path
+    /// would exceed the ~103-byte sun_path bind limit.
+    @discardableResult
+    func start() -> Bool {
+        let appSupport = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let dir = appSupport.deletingLastPathComponent()
+            .deletingLastPathComponent() // → Data/ inside the container
+            .appendingPathComponent("Lyra", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let db = appSupport.appendingPathComponent("Lyra/library.db").path
+        let rc = db.withCString { dbp in
+            dir.path.withCString { lyra_ipc_start(dbp, $0) }
+        }
+        running = rc == 0
+        if !running {
+            NSLog("lyra-ipc: lyra_ipc_start failed rc=%d dir=%@", rc, dir.path)
+        }
+        return running
+    }
+
+    func stop() { lyra_ipc_stop(); running = false }
+
+    /// VM pushes now-playing/queue/mode state — merged into `state.get`.
+    func publishState(_ obj: [String: Any]) {
+        guard running,
+              let data = try? JSONSerialization.data(withJSONObject: obj),
+              let js = String(data: data, encoding: .utf8)
+        else { return }
+        js.withCString { _ = lyra_ipc_publish_state($0) }
+    }
+
+    /// UI-bound ops pushed by socket clients — the VM drains + executes.
+    func drainCommands() -> [[String: Any]] {
+        guard running, let raw = lyra_ipc_drain_commands() else { return [] }
+        defer { lyra_string_free(raw) }
+        return (try? JSONSerialization.jsonObject(with: Data(String(cString: raw).utf8)) as? [[String: Any]]) ?? []
+    }
+}
+
 /// LAN remote — SPAKE2 pairing → pinned X25519 keys → Noise XX.
 /// The listener binds 0.0.0.0; security lives in the handshake.
 final class LyraRemote {
