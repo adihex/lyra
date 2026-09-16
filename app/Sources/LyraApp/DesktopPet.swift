@@ -40,9 +40,10 @@ final class DesktopPet: ObservableObject {
     @Published private(set) var userHidden = false
     @Published private(set) var sleeping = false
 
-    /// Panel sizes per doc §2's cast (~140 pt planet, smaller escorts).
+    /// Panel sizes per doc §2's cast (~140 pt planet + moon escort).
+    /// The logo note stays in the cosmos — it doesn't pop as a pet.
     static let panelSize: [CosmosScene.Body: CGFloat] = [
-        .saturn: 140, .moon: 56, .logo: 72,
+        .saturn: 140, .moon: 56,
     ]
 
     private enum Phase {
@@ -56,7 +57,7 @@ final class DesktopPet: ObservableObject {
     /// scene's state" is literal: the pet keeps driving the same planet.
     private var scene: CosmosScene { ViewModel.shared.viz.cosmos }
     private var bandHi: Float = 0   // bands[48…63] — twinkle aura
-    private var bandMid: Float = 0  // bands[21…47] — stripes, logo bounce
+    private var bandMid: Float = 0  // bands[21…47] — stripes
     private var bandGlint: Float = 0 // max(peakL, peakR) — ring glint
     private var world = CosmosWorld(bounds: .zero)
     private var panels: [CosmosScene.Body: NSPanel] = [:]
@@ -156,7 +157,7 @@ final class DesktopPet: ObservableObject {
         let vis = screen.visibleFrame
         // the shared scene keeps rolling — the same planet steps out,
         // and `away` empties the dock painter's sky (doc §3/§7)
-        ViewModel.shared.viz.cosmos.away = [.saturn, .moon, .logo]
+        ViewModel.shared.viz.cosmos.away = [.saturn, .moon]
         world = CosmosWorld(bounds: vis)
         let origin = dockEstimate(on: screen)
         let land = CGPoint(
@@ -169,8 +170,6 @@ final class DesktopPet: ObservableObject {
         popTo[.saturn] = land
         popFrom[.moon] = origin; popCtrl[.moon] = arc
         popTo[.moon] = CGPoint(x: land.x + 40, y: land.y - 24)
-        popFrom[.logo] = origin; popCtrl[.logo] = arc
-        popTo[.logo] = CGPoint(x: land.x - 82, y: land.y + 10)
         if panels.isEmpty { makePanels() }
         for (b, p) in panels {
             if let o = popFrom[b] { placePanel(p, center: o) }
@@ -225,7 +224,7 @@ final class DesktopPet: ObservableObject {
         case .hidden:
             return
         case .popping(let t):
-            let starts: [CosmosScene.Body: CGFloat] = [.saturn: 0, .moon: 0.18, .logo: 0.34]
+            let starts: [CosmosScene.Body: CGFloat] = [.saturn: 0, .moon: 0.18]
             for b in DesktopPet.panelSize.keys {
                 let tt = min(max((t - starts[b]!) / (1 - starts[b]!), 0), 1)
                 let e = 1 - (1 - tt) * (1 - tt) // ease-out ballistic
@@ -248,7 +247,7 @@ final class DesktopPet: ObservableObject {
             world.roam(f, scene, dt: dt, bounds: lyraScreen().visibleFrame,
                        perches: perchRects)
         case .recalling(let t):
-            let starts: [CosmosScene.Body: CGFloat] = [.saturn: 0.2, .moon: 0.05, .logo: 0]
+            let starts: [CosmosScene.Body: CGFloat] = [.saturn: 0.2, .moon: 0.05]
             var done = true
             for b in DesktopPet.panelSize.keys {
                 let tt = min(max((t - starts[b]!) / (1 - starts[b]!), 0), 1)
