@@ -96,6 +96,7 @@ final class ViewModel: ObservableObject {
     @Published var exclusiveOutput = false
 
     // now playing
+    @Published var hoveredTrack: String?
     @Published var current: Track?
     @Published var lastError: String?
     @Published var playing = false
@@ -138,6 +139,7 @@ final class ViewModel: ObservableObject {
         }
         exclusiveOutput = LyraPlayer.shared.exclusiveOutput
         refreshDevices()
+        hookKeys()
         // Session init + restore block on disk/metadata — off the main
         // thread. Restored torrents rebuild their rows + chips.
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -160,6 +162,71 @@ final class ViewModel: ObservableObject {
     }
 
     var currentIndex: Int? { sortedTracks.firstIndex { $0.id == current?.id } }
+
+    // ── Custom-table selection/nav (system Table replaced — its selection
+    // pill can't be tinted; we draw our own square accent selection) ────
+    private var lastSelectedIdx: Int?
+    private var keyMonitor: Any?
+
+    /// Click-select: plain = replace, ⌘ = toggle, ⇧ = range from last click.
+    func selectTrack(_ id: Track.ID) {
+        let mods = NSEvent.modifierFlags
+        let idx = sortedTracks.firstIndex { $0.id == id }
+        if mods.contains(.command) {
+            if selectedTracks.contains(id) { selectedTracks.remove(id) }
+            else { selectedTracks.insert(id) }
+        } else if mods.contains(.shift), let last = lastSelectedIdx, let idx {
+            selectedTracks = Set((min(last, idx)...max(last, idx)).map { sortedTracks[$0].id })
+        } else {
+            selectedTracks = [id]
+        }
+        lastSelectedIdx = idx
+    }
+
+    /// Arrow/return nav — a local key monitor because focusable-view key
+    /// routing doesn't reach our custom rows. Skips when a text field
+    /// (the filter box) owns the responder chain.
+    func hookKeys() {
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
+            guard let self, self.selection == .library,
+                  !(NSApp.keyWindow?.firstResponder is NSTextView)
+            else { return e }
+            switch Int(e.keyCode) {
+            case 125: self.moveSelection(1)
+            case 126: self.moveSelection(-1)
+            case 36: self.playSelected()
+            default: return e
+            }
+            return nil
+        }
+    }
+
+    func moveSelection(_ d: Int) {
+        let rows = sortedTracks
+        guard !rows.isEmpty else { return }
+        let cur = rows.firstIndex { selectedTracks.contains($0.id) } ?? (d > 0 ? -1 : rows.count)
+        let next = min(max(cur + d, 0), rows.count - 1)
+        selectedTracks = [rows[next].id]
+        lastSelectedIdx = next
+    }
+
+    func playSelected() {
+        if let t = sortedTracks.first(where: { selectedTracks.contains($0.id) }) { play(t) }
+    }
+
+    /// Sort-header toggle — same key flips order, new key resets forward.
+    func toggleSort<V: Comparable>(_ kp: KeyPath<Track, V>) {
+        if vm_isSorted(kp) {
+            let rev = sortOrder.first?.order == .forward
+            sortOrder = [KeyPathComparator(kp, order: rev ? .reverse : .forward)]
+        } else {
+            sortOrder = [KeyPathComparator(kp)]
+        }
+    }
+
+    private func vm_isSorted<V: Comparable>(_ kp: KeyPath<Track, V>) -> Bool {
+        sortOrder.first?.keyPath == kp
+    }
 
     func startPolling() {
         timer?.invalidate()
@@ -560,13 +627,25 @@ struct ContentView: View {
 
     var body: some View {
         NavigationSplitView(columnVisibility: $vm.columnVis) {
-            List(SidebarItem.allCases, selection: $vm.selection) { item in
-                Label(item.rawValue, systemImage: item.icon).tag(item)
-                    .font(.uiBodyStrong)
+            // Manual nav — List's selection pill can't be tinted (system
+            // accent only); buttons give us the square accent highlight.
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(SidebarItem.allCases) { item in
+                    Button { vm.selection = item } label: {
+                        Label(item.rawValue, systemImage: item.icon)
+                            .font(.uiBodyStrong)
+                            .foregroundStyle(vm.selection == item ? .white : Ui.ink)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, Ui.s12)
+                            .padding(.vertical, 7)
+                            .background(vm.selection == item ? Ui.accent : Color.clear)
+                    }
+                    .buttonStyle(.plain)
+                }
+                Spacer()
             }
-            .scrollContentBackground(.hidden)
+            .padding(Ui.s8)
             .background(Ui.bg)
-            .tint(Ui.accent)
             .navigationSplitViewColumnWidth(min: 150, ideal: 190, max: 320)
         } detail: {
             VStack(spacing: 0) {
@@ -696,53 +775,8 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity)
                 Spacer()
             } else {
-                Table(vm.sortedTracks, selection: $vm.selectedTracks,
-                      sortOrder: $vm.sortOrder) {
-                    TableColumn("#", value: \.trackNumber) { t in
-                        Text(t.trackNumber > 0 ? "\(t.trackNumber)" : "—")
-                            .foregroundStyle(Ui.inkSoft)
-                    }.width(min: 26, ideal: 34, max: 50)
-                    TableColumn("Title", value: \.title)
-                        .width(min: 140, ideal: 280, max: 560)
-                    TableColumn("Artist", value: \.artist)
-                        .width(min: 80, ideal: 150, max: 320)
-                    TableColumn("Album", value: \.album)
-                        .width(min: 80, ideal: 160, max: 340)
-                    TableColumn("Time", value: \.duration) { t in
-                        Text(vm.fmt(t.duration)).monospaced()
-                    }.width(min: 42, ideal: 54, max: 80)
-                    TableColumn("Codec", value: \.codec) { t in
-                        Text(t.codec).font(.uiMicro)
-                            .foregroundStyle(Ui.indigo)
-                            .padding(.horizontal, 6).padding(.vertical, 1)
-                            .background(Ui.indigo.opacity(0.12))
-                            .overlay(Rectangle().stroke(Ui.indigo.opacity(0.3), lineWidth: 1))
-                    }.width(min: 48, ideal: 62, max: 90)
-                }
-                .tint(Ui.accent)
-                .id(vm.contentID) // force rebuild — 100k-row diffing stalls
-                .scrollContentBackground(.hidden)
-                .tableStyle(.inset(alternatesRowBackgrounds: false))
-                .uiCard(padding: 6)
-                .contextMenu(forSelectionType: Track.ID.self) { items in
-                    Button("Play") { vm.playSelection(items) }
-                    if let id = items.first, id.hasPrefix("torrent://") {
-                        Divider()
-                        Button("Remove torrent…") {
-                            vm.confirmRemoveTorrent(forTrackId: id)
-                        }
-                    } else {
-                        Divider()
-                        Button("Reveal in Finder") {
-                            if let id = items.first {
-                                NSWorkspace.shared.activateFileViewerSelecting(
-                                    [URL(fileURLWithPath: id)])
-                            }
-                        }
-                    }
-                } primaryAction: { items in
-                    vm.playSelection(items) // double-click
-                }
+                trackTable
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 HStack {
                     Text("\(vm.sortedTracks.count) tracks")
                         .font(.uiCaption).foregroundStyle(Ui.inkSoft)
@@ -756,6 +790,116 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(Ui.s20)
         .onAppear { vm.startPolling() }
+    }
+
+    // ── Track table ─────────────────────────────────────────────────────
+    // Custom table — the system Table's selection pill renders in the
+    // untintable system accent (no Assets.car without Xcode), so we draw
+    // our own square terracotta selection. Columns are proportional:
+    // #/Time/Codec fixed, Title flexes 2× Artist/Album.
+    private var trackTable: some View {
+        GeometryReader { geo in
+            let w = trackCols(geo.size.width)
+            VStack(spacing: 0) {
+                trackHeader(w)
+                Ui.border.frame(height: 1)
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(vm.sortedTracks) { t in
+                            trackRow(t, widths: w)
+                        }
+                    }
+                }
+            }
+        }
+        .id(vm.contentID)
+        .uiCard(padding: 0)
+    }
+
+    private func trackCols(_ total: CGFloat) -> [CGFloat] {
+        let flex = max(total - 154, 220) // 34 + 56 + 64 fixed
+        return [34, flex * 0.5, flex * 0.25, flex * 0.25, 56, 64]
+    }
+
+    private func trackHeader(_ w: [CGFloat]) -> some View {
+        HStack(spacing: 0) {
+            sortCell("#", \.trackNumber, w[0])
+            sortCell("Title", \.title, w[1])
+            sortCell("Artist", \.artist, w[2])
+            sortCell("Album", \.album, w[3])
+            sortCell("Time", \.duration, w[4])
+            sortCell("Codec", \.codec, w[5])
+        }
+        .padding(.vertical, 7)
+        .background(Ui.surface)
+    }
+
+    private func sortCell<V: Comparable>(_ label: String,
+                                         _ kp: KeyPath<Track, V>,
+                                         _ w: CGFloat) -> some View {
+        Button { vm.toggleSort(kp) } label: {
+            HStack(spacing: 4) {
+                Text(label).font(.uiHeadline)
+                if vm.sortOrder.first?.keyPath == kp {
+                    Image(systemName: vm.sortOrder.first?.order == .forward
+                          ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 8, weight: .bold))
+                }
+            }
+            .foregroundStyle(Ui.inkSoft)
+            .frame(width: w - 16, alignment: .leading)
+            .padding(.horizontal, 8)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func trackRow(_ t: Track, widths w: [CGFloat]) -> some View {
+        let sel = vm.selectedTracks.contains(t.id)
+        let soft: Color = sel ? .white.opacity(0.85) : Ui.inkSoft
+        return HStack(spacing: 0) {
+            cell(t.trackNumber > 0 ? "\(t.trackNumber)" : "—", w[0], .uiCaption,
+                 sel ? .white.opacity(0.8) : Ui.inkSoft)
+            cell(t.title, w[1], .uiBody, sel ? .white : Ui.ink)
+            cell(t.artist, w[2], .uiBody, soft)
+            cell(t.album, w[3], .uiBody, soft)
+            cell(vm.fmt(t.duration), w[4], .uiMono, soft)
+            Text(t.codec).font(.uiMicro)
+                .foregroundStyle(sel ? .white : Ui.indigo)
+                .padding(.horizontal, 6).padding(.vertical, 1)
+                .background(sel ? Color.white.opacity(0.16) : Ui.indigo.opacity(0.12))
+                .overlay(Rectangle().stroke(sel ? Color.white.opacity(0.5) : Ui.indigo.opacity(0.3), lineWidth: 1))
+                .frame(width: w[5], alignment: .center)
+        }
+        .frame(height: 27)
+        .background(sel ? Ui.accent
+                    : vm.hoveredTrack == t.id ? Ui.ink.opacity(0.05) : Color.clear)
+        .contentShape(Rectangle())
+        .onHover { vm.hoveredTrack = $0 ? t.id : nil }
+        .onTapGesture(count: 2) { vm.play(t) }
+        .onTapGesture(count: 1) { vm.selectTrack(t.id) }
+        .contextMenu { trackMenu(t) }
+    }
+
+    private func cell(_ s: String, _ w: CGFloat, _ f: Font, _ c: Color) -> some View {
+        Text(s).font(f).foregroundStyle(c)
+            .lineLimit(1)
+            .frame(width: w - 16, alignment: .leading)
+            .padding(.horizontal, 8)
+    }
+
+    private func trackMenu(_ t: Track) -> some View {
+        Group {
+            Button("Play") { vm.play(t) }
+            Divider()
+            if t.id.hasPrefix("torrent://") {
+                Button("Remove torrent…") { vm.confirmRemoveTorrent(forTrackId: t.id) }
+            } else {
+                Button("Reveal in Finder") {
+                    NSWorkspace.shared.activateFileViewerSelecting(
+                        [URL(fileURLWithPath: t.id)])
+                }
+            }
+        }
     }
 
     // ── Now playing bar ──────────────────────────────────────────────────

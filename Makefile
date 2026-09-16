@@ -61,6 +61,17 @@ sign: $(APPBIN)
 run: app
 	open $(APP)
 
+# Pseudo-HMR: incremental build (Swift-only ≈ seconds) then relaunch.
+# True hot reload needs Xcode previews or InjectionIII — the latter wants
+# disable-library-validation, which conflicts with our signing posture.
+dev: app
+	@pkill -f 'Lyra.app/Contents/MacOS/Lyra' 2>/dev/null || true
+	@open $(APP)
+
+# Auto-rebuild+relaunch on Swift source save (watchexec via mise).
+watch:
+	watchexec -w app/Sources -e swift -- make dev
+
 clean:
 	rm -rf .build $(LIBDIR)
 	$(CARGO) clean
