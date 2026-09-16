@@ -83,7 +83,14 @@ impl TorrentEngine {
 
     /// Add a magnet URI or local .torrent path. Returns torrent id.
     pub fn add(&self, spec: &str) -> Result<usize, LyraError> {
-        self.add_opts(spec, AddOpts::default())
+        // overwrite=true: player semantics — re-adding a torrent whose
+        // output files exist must resume, not error (rqbit's default is
+        // create_new → EEXIST). Existing pieces are hash-validated either
+        // way, so partial downloads keep their progress.
+        self.add_opts(
+            spec,
+            AddOpts { overwrite: true, ..Default::default() },
+        )
     }
 
     pub fn add_opts(&self, spec: &str, mut add: AddOpts) -> Result<usize, LyraError> {
