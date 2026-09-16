@@ -712,6 +712,19 @@ pub extern "C" fn lyra_torrent_purge_orphans() -> *mut c_char {
     }
 }
 
+/// Session-wide tracker list (fixed at engine build from the ngosang
+/// best-of cache + bundled fallback; rqbit has no post-add mutation).
+/// JSON {trackers:[…]}. Null when the engine isn't initialized.
+#[no_mangle]
+pub extern "C" fn lyra_torrent_trackers() -> *mut c_char {
+    let e = match torrent() {
+        Ok(e) => e,
+        Err(_) => return std::ptr::null_mut(),
+    };
+    let j = serde_json::json!({"trackers": e.session_trackers()});
+    CString::new(j.to_string()).unwrap().into_raw()
+}
+
 /// JSON stats snapshot {progress_bytes,total_bytes,finished}. Null on failure.
 #[no_mangle]
 pub extern "C" fn lyra_torrent_stats(id: c_int) -> *mut c_char {
@@ -833,6 +846,41 @@ mod tests {
             lyra_engine_viz_frame(std::ptr::null_mut(), std::ptr::null_mut())
         };
         assert_eq!(seq, 0);
+    }
+
+    /// Live-network smoke: archive.org etree query through the FFI.
+    /// Ignored — `cargo test -p lyra-ffi search_live -- --ignored`.
+    #[test]
+    #[ignore]
+    fn search_live_archive_org() {
+        let dir = std::env::temp_dir().join(format!("lyra-search-{}", std::process::id()));
+        let dc = CString::new(dir.to_str().unwrap()).unwrap();
+        let s = lyra_search_new(dc.as_ptr());
+        assert!(!s.is_null());
+
+        // Object form — what the app sends (strict lossless default).
+        let q = CString::new(r#"{"text":"grateful dead","strict":true}"#).unwrap();
+        let raw = unsafe { lyra_search(s, q.as_ptr()) };
+        assert!(!raw.is_null());
+        let body = unsafe { CStr::from_ptr(raw) }.to_str().unwrap().to_string();
+        unsafe { lyra_string_free(raw) };
+        println!("results: {}", &body[..body.len().min(400)]);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(v.get("results").is_some(), "no results key: {body}");
+        assert!(
+            v["results"].as_array().map(|r| !r.is_empty()).unwrap_or(false),
+            "empty results: {body}"
+        );
+
+        // Bare-text and garbage input must not crash — both return JSON.
+        let q = CString::new("not json at all").unwrap();
+        let raw = unsafe { lyra_search(s, q.as_ptr()) };
+        let body = unsafe { CStr::from_ptr(raw) }.to_str().unwrap().to_string();
+        unsafe { lyra_string_free(raw) };
+        assert!(body.contains("error"), "expected error json: {body}");
+
+        unsafe { lyra_search_free(s) };
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

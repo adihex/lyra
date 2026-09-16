@@ -160,6 +160,10 @@ final class ViewModel: ObservableObject {
     @Published var discoverExpanded: String?
     @Published var discoverDetail: [String: [String: Any]] = [:]
     @Published var discoverResolving = false
+    /// Off = strict lossless (verified-lossy rows dropped server-side).
+    /// On = lossy rows arrive flagged — LOSSY badge, ranked last.
+    @Published var discoverLossy = false
+    @Published var sessionTrackerCount = 0
 
     // now playing
     @Published var hoveredTrack: String?
@@ -665,7 +669,7 @@ final class ViewModel: ObservableObject {
         discoverBusy = true
         discoverIssues = []
         DispatchQueue.global(qos: .userInitiated).async {
-            let (rows, issues) = LyraSearch.shared.search(q)
+            let (rows, issues) = LyraSearch.shared.search(q, strict: !self.discoverLossy)
             var results = rows.map(DiscoverResult.init)
             results.sort {
                 let l = ($0.lossless == true) != ($1.lossless == true)
@@ -1770,11 +1774,18 @@ struct ContentView: View {
                 Button(vm.discoverBusy ? "Searching…" : "Search") { vm.runDiscover() }
                     .disabled(vm.discoverBusy || vm.discoverQuery.isEmpty)
                     .buttonStyle(.sharpProminent)
+                Toggle("include lossy", isOn: $vm.discoverLossy)
+                    .toggleStyle(.checkbox)
+                    .font(.uiCaption)
+                    .foregroundStyle(Ui.inkSoft)
                 if vm.discoverBusy { ProgressView().controlSize(.small) }
                 Spacer()
             }
             Text("Lossless-first over legal indexes — archive.org etree live recordings, academic torrents. FLAC ahead of lossy, swarm health visible before you commit.")
                 .font(.uiCaption).foregroundStyle(Ui.inkSoft)
+            Text("\(vm.sessionTrackerCount) session trackers — ngosang best-of, cached 7 d")
+                .font(.uiMicro).foregroundStyle(Ui.inkSoft.opacity(0.7))
+                .onAppear { vm.sessionTrackerCount = LyraTorrent.shared.sessionTrackers().count }
             ForEach(vm.discoverIssues, id: \.self) { issue in
                 Label(issue, systemImage: "exclamationmark.triangle")
                     .font(.uiCaption).foregroundStyle(.orange)

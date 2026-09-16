@@ -299,6 +299,16 @@ final class LyraTorrent {
         }
     }
 
+    /// Session trackers — the ngosang best-of list fixed at engine build.
+    /// Read-only (rqbit can't mutate trackers post-add).
+    func sessionTrackers() -> [String] {
+        guard let raw = lyra_torrent_trackers() else { return [] }
+        defer { lyra_string_free(raw) }
+        let d = (try? JSONSerialization.jsonObject(with: Data(String(cString: raw).utf8)))
+            as? [String: Any]
+        return d?["trackers"] as? [String] ?? []
+    }
+
     /// Delete every orphan entry → (removed, bytesFreed); nil on failure.
     @discardableResult
     func purgeOrphans() -> (removed: Int, bytes: UInt64)? {
@@ -338,10 +348,19 @@ final class LyraSearch {
 
     deinit { lyra_search_free(handle) }
 
-    /// (results, provider_errors). Blocks on network — call off-main.
-    func search(_ q: String) -> (results: [[String: Any]], issues: [[String: Any]]) {
+    /// (results, provider_errors). `strict` (default) drops rows verified
+    /// lossy; false keeps them flagged via `lossless:false` + `formats`.
+    /// Blocks on network — call off-main.
+    func search(_ q: String, strict: Bool = true)
+        -> (results: [[String: Any]], issues: [[String: Any]])
+    {
+        // SearchQuery::from_json needs a JSON object (or quoted string) —
+        // a bare text query parses as neither and errors server-side.
         guard let handle,
-              let raw = q.withCString({ lyra_search(handle, $0) }) else { return ([], []) }
+              let data = try? JSONSerialization.data(
+                  withJSONObject: ["text": q, "strict": strict]),
+              let js = String(data: data, encoding: .utf8),
+              let raw = js.withCString({ lyra_search(handle, $0) }) else { return ([], []) }
         defer { lyra_string_free(raw) }
         guard let d = try? JSONSerialization.jsonObject(with: Data(String(cString: raw).utf8))
                 as? [String: Any] else { return ([], []) }
