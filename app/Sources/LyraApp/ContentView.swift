@@ -88,6 +88,7 @@ final class ViewModel: ObservableObject {
     @Published var showMagnetEntry = false
     @Published var addingTorrent = false
     @Published var torrents: [TorrentInfo] = []
+    @Published var orphans: [(name: String, bytes: UInt64)] = []
     @Published var pairCode: String?
     @Published var pairFp = ""
     @Published var pairedCount = 0
@@ -137,6 +138,12 @@ final class ViewModel: ObservableObject {
         }
         exclusiveOutput = LyraPlayer.shared.exclusiveOutput
         refreshDevices()
+        // Session init + restore block on disk/metadata — off the main
+        // thread. Restored torrents rebuild their rows + chips.
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            self?.refreshTorrents(rebuildRows: true)
+            self?.refreshOrphans()
+        }
     }
     deinit { vizBuf.deallocate() }
 
@@ -264,14 +271,7 @@ final class ViewModel: ObservableObject {
                 } else {
                     self.tracks.append(contentsOf: newTracks)
                     self.contentID = UUID()
-                    // Display name: top-level dir of the first file path —
-                    // for single-file torrents it's the filename itself.
-                    let firstPath = rows.first?["path"] as? String ?? ""
-                    let name = firstPath.split(separator: "/").first.map(String.init)
-                        ?? "torrent #\(id)"
-                    if !self.torrents.contains(where: { $0.id == id }) {
-                        self.torrents.append(TorrentInfo(id: id, name: name))
-                    }
+                    self.refreshTorrents()
                     self.scanStatus = "torrent #\(id): \(newTracks.count) playable of \(rows.count) files — streams on demand"
                     self.probeTorrentDurations(newTracks)
                 }
@@ -297,6 +297,77 @@ final class ViewModel: ObservableObject {
                 }
             }
         }
+    }
+
+    /// Rebuild the torrent list from the session (the source of truth —
+    /// rqbit JSON persistence restores torrents across relaunches with
+    /// stable ids). rebuildRows also reconstructs table rows for torrents
+    /// restored on launch, whose rows were never in this process's RAM.
+    /// Safe from any thread — marshals UI updates to main.
+    func refreshTorrents(rebuildRows: Bool = false) {
+        let work = {
+            let list = LyraTorrent.shared.list()
+            var newRows: [Track] = []
+            if rebuildRows {
+                DispatchQueue.main.sync {
+                    self.torrents = list
+                }
+                let known = DispatchQueue.main.sync {
+                    Set(self.tracks.compactMap { t -> Int? in
+                        guard case .torrent(let tid, _) = t.source else { return nil }
+                        return tid
+                    })
+                }
+                for info in list where !known.contains(info.id) {
+                    let rows = LyraTorrent.shared.files(info.id)
+                    newRows.append(contentsOf: rows
+                        .map { Track(torrentId: info.id, file: $0) }
+                        .filter(\.isAudio))
+                }
+            }
+            DispatchQueue.main.async {
+                self.torrents = list
+                if !newRows.isEmpty {
+                    self.tracks.append(contentsOf: newRows)
+                    self.contentID = UUID()
+                    self.probeTorrentDurations(newRows)
+                }
+            }
+        }
+        if Thread.isMainThread { DispatchQueue.global(qos: .userInitiated).async(execute: work) }
+        else { work() }
+    }
+
+    func refreshOrphans() {
+        let work = {
+            let os = LyraTorrent.shared.orphans()
+            DispatchQueue.main.async { self.orphans = os }
+        }
+        if Thread.isMainThread { DispatchQueue.global(qos: .utility).async(execute: work) }
+        else { work() }
+    }
+
+    /// Wipe leftover download folders not owned by any managed torrent.
+    func purgeOrphans() {
+        let work = {
+            let res = LyraTorrent.shared.purgeOrphans()
+            DispatchQueue.main.async {
+                if let r = res {
+                    self.orphans = []
+                    self.scanStatus = "cleaned \(r.removed) leftover item\(r.removed == 1 ? "" : "s") — freed \(self.fmtBytes(r.bytes))"
+                } else {
+                    self.lastError = "Orphan cleanup failed"
+                }
+            }
+        }
+        if Thread.isMainThread { DispatchQueue.global(qos: .utility).async(execute: work) }
+        else { work() }
+    }
+
+    func fmtBytes(_ b: UInt64) -> String {
+        let gb = Double(b) / 1_073_741_824
+        if gb >= 0.1 { return String(format: "%.1f GB", gb) }
+        return String(format: "%.0f MB", Double(b) / 1_048_576)
     }
 
     /// Torrent id embedded in a track path ("torrent://<id>/<idx>").
@@ -329,6 +400,7 @@ final class ViewModel: ObservableObject {
         scanStatus = deleteFiles
             ? "torrent #\(id) removed — downloaded data deleted"
             : "torrent #\(id) removed — files kept on disk"
+        refreshOrphans() // keep-files removal leaves an orphan folder
     }
 
     /// NSAlert confirm: keep files (cheap) vs delete downloaded data
@@ -588,6 +660,16 @@ struct ContentView: View {
                         .background(Cozy.mint.opacity(0.14), in: Capsule())
                         .overlay(Capsule().stroke(Cozy.mint.opacity(0.4), lineWidth: 1))
                     }
+                }
+            }
+            if !vm.orphans.isEmpty {
+                HStack(spacing: 8) {
+                    Image(systemName: "trash").foregroundStyle(Cozy.inkSoft)
+                    Text("\(vm.orphans.count) leftover item\(vm.orphans.count == 1 ? "" : "s") · \(vm.fmtBytes(vm.orphans.reduce(0) { $0 + $1.bytes }))")
+                        .font(.caption).foregroundStyle(Cozy.inkSoft)
+                    Button("Clean up") { vm.purgeOrphans() }
+                        .controlSize(.small)
+                        .help("Delete download folders left behind by removed torrents")
                 }
             }
             if !vm.scanStatus.isEmpty {

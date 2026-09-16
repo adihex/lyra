@@ -52,6 +52,9 @@ int   lyra_torrent_add(const char *spec);          /* id >=0, <0 error; blocks o
 char *lyra_torrent_files(int id);                  /* JSON [{index,path,len}] */
 char *lyra_torrent_stats(int id);                  /* JSON {progress_bytes,total_bytes,finished} */
 int   lyra_torrent_remove(int id, int delete_files); /* 0 ok; delete_files!=0 also wipes downloaded data */
+char *lyra_torrent_list(void);                     /* JSON [{id,name}] — session is the source of truth */
+char *lyra_torrent_orphans(void);                  /* JSON [{name,bytes}] — unowned download_dir entries */
+char *lyra_torrent_purge_orphans(void);            /* JSON {removed,bytes} */
 char *lyra_torrent_probe(int id, int file_idx);    /* JSON {duration_secs,codec,sample_rate,channels} or NULL */
 int   lyra_engine_play_torrent(void *e, int id, int file_idx);
 

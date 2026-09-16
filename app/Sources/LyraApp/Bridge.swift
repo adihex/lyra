@@ -200,6 +200,47 @@ final class LyraTorrent {
         lyra_torrent_remove(Int32(id), deleteFiles ? 1 : 0) == 0
     }
 
+    /// Managed torrents [{id,name}] — the session persists across
+    /// relaunches, so the UI rebuilds its list from this.
+    func list() -> [TorrentInfo] {
+        guard let raw = lyra_torrent_list() else { return [] }
+        defer { lyra_string_free(raw) }
+        let rows = (try? JSONSerialization.jsonObject(with: Data(String(cString: raw).utf8)))
+            as? [[String: Any]] ?? []
+        return rows.compactMap { r in
+            guard let id = r["id"] as? Int, let name = r["name"] as? String
+            else { return nil }
+            return TorrentInfo(id: id, name: name)
+        }
+    }
+
+    /// Download-dir entries not owned by any managed torrent —
+    /// [(name, bytes)] leftovers from killed sessions.
+    func orphans() -> [(name: String, bytes: UInt64)] {
+        guard let raw = lyra_torrent_orphans() else { return [] }
+        defer { lyra_string_free(raw) }
+        let rows = (try? JSONSerialization.jsonObject(with: Data(String(cString: raw).utf8)))
+            as? [[String: Any]] ?? []
+        return rows.compactMap { r in
+            guard let name = r["name"] as? String else { return nil }
+            let bytes = (r["bytes"] as? NSNumber)?.uint64Value ?? 0
+            return (name, bytes)
+        }
+    }
+
+    /// Delete every orphan entry → (removed, bytesFreed); nil on failure.
+    @discardableResult
+    func purgeOrphans() -> (removed: Int, bytes: UInt64)? {
+        guard let raw = lyra_torrent_purge_orphans() else { return nil }
+        defer { lyra_string_free(raw) }
+        guard let d = try? JSONSerialization.jsonObject(with: Data(String(cString: raw).utf8))
+                as? [String: Any]
+        else { return nil }
+        let removed = (d["removed"] as? NSNumber)?.intValue ?? 0
+        let bytes = (d["bytes"] as? NSNumber)?.uint64Value ?? 0
+        return (removed, bytes)
+    }
+
     /// {progress_bytes,total_bytes,finished}
     func stats(_ id: Int) -> [String: Any]? {
         guard let raw = lyra_torrent_stats(Int32(id)) else { return nil }

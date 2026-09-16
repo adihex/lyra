@@ -68,6 +68,13 @@ impl TorrentEngine {
             disable_dht: cfg.disable_dht,
             disable_dht_persistence: cfg.disable_dht,
             listen_port_range: cfg.listen_port_range,
+            // JSON persistence → torrents survive relaunches with stable
+            // ids (preferred_id), offline metadata ({hash}.torrent) and
+            // piece bitmaps ({hash}.bitv) for resume. Dot-folder so the
+            // orphan sweep skips it.
+            persistence: Some(librqbit::SessionPersistenceConfig::Json {
+                folder: Some(download_dir.join(".session")),
+            }),
             ..Default::default()
         };
         let session = rt
@@ -253,6 +260,95 @@ impl TorrentEngine {
             .ok_or_else(|| LyraError::Remote(format!("no file {file_idx}")))?;
         Ok(self.download_dir.join(&f.path))
     }
+
+    /// Managed torrents in this session — the UI's source of truth across
+    /// relaunches (JSON persistence restores them with stable ids).
+    pub fn list(&self) -> Vec<(usize, String)> {
+        self.session.with_torrents(|it| {
+            it.map(|(id, h)| {
+                (
+                    id,
+                    h.name().unwrap_or_else(|| format!("torrent #{id}")),
+                )
+            })
+            .collect()
+        })
+    }
+
+    /// Top-level entries in download_dir not claimed by any managed
+    /// torrent — leftovers from sessions killed before a clean remove,
+    /// or folders deleted from the session by hand.
+    pub fn orphans(&self) -> Result<Vec<(String, u64)>, LyraError> {
+        use std::collections::HashSet;
+        let mut claimed: HashSet<String> = [".session".to_string()].into_iter().collect();
+        // Multi-file torrents download under a dir named after the
+        // torrent; file paths may also carry a top-level prefix.
+        let (names, paths): (Vec<_>, Vec<_>) = self.session.with_torrents(|it| {
+            it.map(|(_, h)| {
+                let tops = h
+                    .metadata
+                    .load_full()
+                    .map(|meta| {
+                        meta.info
+                            .iter_file_details()
+                            .map(|details| {
+                                details
+                                    .filter_map(|d| d.filename.to_string().ok())
+                                    .filter_map(|p| {
+                                        p.split('/').next().map(str::to_string)
+                                    })
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default()
+                    })
+                    .unwrap_or_default();
+                (h.name(), tops)
+            })
+            .unzip()
+        });
+        claimed.extend(names.into_iter().flatten());
+        claimed.extend(paths.into_iter().flatten());
+        let mut out = Vec::new();
+        for e in std::fs::read_dir(&self.download_dir)? {
+            let e = e?;
+            let name = e.file_name().to_string_lossy().into_owned();
+            if claimed.contains(&name) {
+                continue;
+            }
+            out.push((name, entry_size(&e.path())));
+        }
+        Ok(out)
+    }
+
+    /// Delete every orphan entry — returns (removed, bytes freed).
+    pub fn purge_orphans(&self) -> Result<(usize, u64), LyraError> {
+        let mut freed = 0u64;
+        let mut removed = 0usize;
+        for (name, bytes) in self.orphans()? {
+            let p = self.download_dir.join(&name);
+            if p.is_dir() {
+                std::fs::remove_dir_all(&p)?;
+            } else {
+                std::fs::remove_file(&p)?;
+            }
+            freed += bytes;
+            removed += 1;
+        }
+        Ok((removed, freed))
+    }
+}
+
+fn entry_size(p: &std::path::Path) -> u64 {
+    if p.is_file() {
+        return p.metadata().map(|m| m.len()).unwrap_or(0);
+    }
+    let mut total = 0;
+    if let Ok(rd) = std::fs::read_dir(p) {
+        for e in rd.flatten() {
+            total += entry_size(&e.path());
+        }
+    }
+    total
 }
 
 /// rqbit's FileStream type isn't exported at the crate root — erase it

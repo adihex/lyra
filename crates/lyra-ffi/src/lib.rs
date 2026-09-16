@@ -616,6 +616,58 @@ pub extern "C" fn lyra_torrent_remove(id: c_int, delete_files: c_int) -> c_int {
     }
 }
 
+/// JSON [{id,name}] of managed torrents — the session persists across
+/// relaunches, so the UI rebuilds its list from this. Null on failure.
+#[no_mangle]
+pub extern "C" fn lyra_torrent_list() -> *mut c_char {
+    let e = match torrent() {
+        Ok(e) => e,
+        Err(_) => return std::ptr::null_mut(),
+    };
+    let j = serde_json::json!(e
+        .list()
+        .iter()
+        .map(|(id, name)| serde_json::json!({"id": id, "name": name}))
+        .collect::<Vec<_>>());
+    CString::new(j.to_string()).unwrap().into_raw()
+}
+
+/// JSON [{name,bytes}] of download_dir entries not owned by any managed
+/// torrent. Null on failure.
+#[no_mangle]
+pub extern "C" fn lyra_torrent_orphans() -> *mut c_char {
+    let e = match torrent() {
+        Ok(e) => e,
+        Err(_) => return std::ptr::null_mut(),
+    };
+    match e.orphans() {
+        Ok(os) => {
+            let j = serde_json::json!(os
+                .iter()
+                .map(|(name, bytes)| serde_json::json!({"name": name, "bytes": bytes}))
+                .collect::<Vec<_>>());
+            CString::new(j.to_string()).unwrap().into_raw()
+        }
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+/// Delete every orphan entry → JSON {removed,bytes}. Null on failure.
+#[no_mangle]
+pub extern "C" fn lyra_torrent_purge_orphans() -> *mut c_char {
+    let e = match torrent() {
+        Ok(e) => e,
+        Err(_) => return std::ptr::null_mut(),
+    };
+    match e.purge_orphans() {
+        Ok((removed, bytes)) => {
+            let j = serde_json::json!({"removed": removed, "bytes": bytes});
+            CString::new(j.to_string()).unwrap().into_raw()
+        }
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
 /// JSON stats snapshot {progress_bytes,total_bytes,finished}. Null on failure.
 #[no_mangle]
 pub extern "C" fn lyra_torrent_stats(id: c_int) -> *mut c_char {
