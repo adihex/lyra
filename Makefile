@@ -62,7 +62,7 @@ $(APPBIN): $(SWIFT_SRC) $(LIBDIR)/liblyra_ffi.a
 	    -import-objc-header modules/CLyraFFI/lyra.h \
 	    -I modules/CLyraFFI \
 	    $(SWIFT_SRC) \
-	    -L $(LIBDIR) -llyra_ffi \
+	    -L $(LIBDIR) -llyra_ffi -lz \
 	    -framework SwiftUI -framework AppKit -framework UniformTypeIdentifiers \
 	    -framework AudioToolbox -framework CoreAudio -framework CoreFoundation \
 	    -framework AVFoundation -framework CoreServices -framework MediaPlayer \
