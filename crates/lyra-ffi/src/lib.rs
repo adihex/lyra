@@ -19,6 +19,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 static INIT: Once = Once::new();
 
 mod ipc;
+mod remote_fs;
 
 pub(crate) fn init_logging() {
     INIT.call_once(|| {

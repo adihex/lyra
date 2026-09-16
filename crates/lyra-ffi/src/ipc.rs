@@ -38,7 +38,7 @@ fn need_engine() -> Result<&'static lyra_engine::Engine, ApiError> {
 
 /// State shared between the Server's dispatcher and the publish/drain FFI
 /// — kept in its own Arc so Server can own the dispatcher by value.
-struct Shared {
+pub(crate) struct Shared {
     revision: AtomicI64,
     /// VM-published UI state: {track, queue, shuffle, repeat,
     /// playlist_revision, duration, speed}. Read on every snapshot.
@@ -224,7 +224,7 @@ impl Dispatcher for LiveDispatcher {
                 let gain = params.get("gain_db").and_then(Value::as_f64)
                     .ok_or_else(|| ApiError::invalid_param("eq.band.set needs gain_db"))? as f32;
                 let e = need_engine()?;
-                let mut specs = e.eq_specs();
+                let specs = e.eq_specs();
                 if i >= specs.len() {
                     return Err(ApiError::invalid_param(format!("band {i} out of range")));
                 }

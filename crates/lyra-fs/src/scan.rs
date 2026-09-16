@@ -228,6 +228,45 @@ impl RemoteOpen for SftpOpener {
     }
 }
 
+// ── exec transport: hosts with no sftp subsystem ─────────────────────────
+// Dropbear/restricted sshds answer exec channels but not sftp — the whole
+// walk is one `find` round-trip, reads ride `ssh dd` (the v0 bootstrap).
+
+/// One-shot `ssh find` listing of the profile root.
+pub struct ExecWalk {
+    profile: RemoteProfile,
+}
+
+impl ExecWalk {
+    pub fn new(profile: &RemoteProfile) -> Self {
+        Self { profile: profile.clone() }
+    }
+}
+
+impl RemoteWalk for ExecWalk {
+    fn walk(&self, _cancel: &Cancel) -> Result<Vec<RemoteEntry>, LyraError> {
+        super::scan(&self.profile, &self.profile.root_path)
+    }
+}
+
+/// Per-file `ssh dd` reads — chatty, so probes stay small (HeaderProbe's
+/// 2 MiB cap) and playback wraps it in the block cache.
+pub struct ExecOpen {
+    profile: RemoteProfile,
+}
+
+impl ExecOpen {
+    pub fn new(profile: &RemoteProfile) -> Self {
+        Self { profile: profile.clone() }
+    }
+}
+
+impl RemoteOpen for ExecOpen {
+    fn open(&self, remote_path: &str) -> Result<Arc<dyn ByteSource>, LyraError> {
+        Ok(Arc::new(super::SshExecFile::open_profile(&self.profile, remote_path)?))
+    }
+}
+
 // ── scanner ──────────────────────────────────────────────────────────────
 
 /// Per-file progress hook (UI / remote WS). Called synchronously on the

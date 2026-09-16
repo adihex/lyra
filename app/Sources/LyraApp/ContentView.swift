@@ -7,6 +7,7 @@ struct Track: Identifiable, Hashable {
     enum Source: Hashable {
         case file
         case torrent(id: Int, fileIdx: Int)
+        case remote   // path is sftp://host[:port]/… — profile lookup at play time
     }
     let id: String // path or torrent://id/idx
     let path: String
@@ -33,6 +34,7 @@ struct Track: Identifiable, Hashable {
         codec = d["codec"] as? String ?? format
         trackNumber = d["trackNumber"] as? Int ?? 0
         artworkHash = d["artworkHash"] as? String
+        if path.hasPrefix("sftp://") { source = .remote }
     }
 
     /// A file inside a torrent — playable via stream-while-downloading.
@@ -136,6 +138,11 @@ final class ViewModel: ObservableObject {
     @Published var contentID = UUID() // bump → Table skips dataset diffing
     @Published var magnetInput = ""
     @Published var showMagnetEntry = false
+    @Published var showRemoteSources = false
+    @Published var remoteDraft = RemoteSource()
+    @Published var remotePassword = ""     // form field — lands in Keychain
+    @Published var remoteNote = ""         // test/scan feedback line
+    @Published var remoteBusy = false
     @Published var addingTorrent = false
     @Published var torrents: [TorrentInfo] = []
     @Published var orphans: [(name: String, bytes: UInt64)] = []
@@ -435,6 +442,84 @@ final class ViewModel: ObservableObject {
         addTorrent()
     }
 
+    // ── Remote sources (SSH/SFTP roots via lyra-fs) ─────────────────────
+
+    /// Identity-file pick — the security-scoped bookmark rides inside the
+    /// RemoteSource so the grant survives relaunches.
+    func pickRemoteKey() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.message = "Pick an SSH identity file (id_ed25519, id_rsa, …)"
+        guard panel.runModal() == .OK, let url = panel.url,
+              let bm = try? url.bookmarkData(options: .withSecurityScope)
+        else { return }
+        remoteDraft.keyBookmark = bm
+    }
+
+    func saveRemoteSource() {
+        let d = remoteDraft
+        guard !d.host.isEmpty, !d.rootPath.isEmpty else {
+            remoteNote = "host + remote path required"
+            return
+        }
+        RemoteSources.shared.upsert(d, password: remotePassword.isEmpty ? nil : remotePassword)
+        remoteDraft = RemoteSource()
+        remotePassword = ""
+        remoteNote = "saved — Scan pulls the library rows"
+    }
+
+    func editRemote(_ s: RemoteSource) {
+        remoteDraft = s
+        remotePassword = RemoteSources.shared.password(for: s) ?? ""
+    }
+
+    /// ssh find-count over the root — answers "can I reach it" without a
+    /// full walk.
+    func testRemote(_ s: RemoteSource) {
+        remoteBusy = true
+        remoteNote = "testing \(s.label)…"
+        DispatchQueue.global(qos: .userInitiated).async {
+            let r = LyraFS.shared.test(s)
+            DispatchQueue.main.async {
+                self.remoteBusy = false
+                if let r, r["ok"] as? Bool == true {
+                    self.remoteNote = "\(s.label): \(r["files"] ?? "?") audio files in \(r["elapsed_ms"] ?? "?")ms"
+                } else {
+                    self.remoteNote = "\(s.label): \(r?["error"] as? String ?? "unreachable")"
+                }
+            }
+        }
+    }
+
+    /// Full SFTP scan into the library DB — resumable, mtime-gated.
+    func scanRemote(_ s: RemoteSource) {
+        guard let pj = s.profileJSON(password: RemoteSources.shared.password(for: s))
+        else { remoteNote = "\(s.label): bad profile"; return }
+        remoteBusy = true
+        scanning = true
+        remoteNote = "scanning \(s.label)…"
+        DispatchQueue.global(qos: .userInitiated).async {
+            let stats = LyraLibrary.shared.syncRemote(pj)
+            let ts = LyraLibrary.shared.tracks.map(Track.init)
+            DispatchQueue.main.async {
+                self.tracks = ts
+                self.contentID = UUID()
+                self.scanning = false
+                self.remoteBusy = false
+                if let err = stats?["error"] as? String {
+                    self.remoteNote = "\(s.label): \(err)"
+                } else if let st = stats {
+                    self.remoteNote = "\(s.label): \(st["walked"] ?? "?") walked, \(st["probed"] ?? "?") probed"
+                    SpotlightIndex.shared.sync(ts)
+                } else {
+                    self.remoteNote = "\(s.label): scan failed"
+                }
+            }
+        }
+    }
+
     /// Accepts a magnet URI or a local .torrent path. Blocks in the FFI on
     /// magnet metadata resolve — runs on a background queue; audio files in
     /// the torrent land in the table as playable rows.
@@ -714,6 +799,15 @@ final class ViewModel: ObservableObject {
             ok = LyraPlayer.shared.play(path: t.path)
         case .torrent(let id, let idx):
             ok = LyraPlayer.shared.playTorrent(id, file: idx)
+        case .remote:
+            if let src = RemoteSources.shared.profile(forPath: t.path),
+               let rp = RemoteSources.shared.remotePath(t.path, for: src),
+               let pj = src.profileJSON(password: RemoteSources.shared.password(for: src)) {
+                ok = LyraPlayer.shared.playRemote(profileJSON: pj, remotePath: rp)
+            } else {
+                ok = false
+                lastError = "No remote source matches \(t.path)"
+            }
         }
         if ok {
             current = t
@@ -932,6 +1026,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
 
 struct ContentView: View {
     @ObservedObject private var vm = ViewModel.shared
+    @ObservedObject private var remotes = RemoteSources.shared
 
     var body: some View {
         NavigationSplitView(columnVisibility: $vm.columnVis) {
@@ -1019,6 +1114,13 @@ struct ContentView: View {
                 }
                 .buttonStyle(.sharp)
                 .help("Paste a magnet URI or pick up a .torrent file — audio streams on demand")
+                Button {
+                    vm.showRemoteSources.toggle()
+                } label: {
+                    Label("Remote", systemImage: "server.rack")
+                }
+                .buttonStyle(.sharp)
+                .help("SSH/SFTP library roots — scan and stream without copying")
                 Button(vm.scanning ? "Scanning…" : "Scan folder…") { vm.scanFolder() }
                     .disabled(vm.scanning)
                     .buttonStyle(.sharpProminent)
@@ -1045,6 +1147,9 @@ struct ContentView: View {
                 }
                 .uiCard()
                 .uiElevated()
+            }
+            if vm.showRemoteSources {
+                remoteSourcesCard
             }
             if !vm.torrents.isEmpty {
                 HStack(spacing: 8) {
@@ -1110,6 +1215,79 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(Ui.s20)
         .onAppear { vm.startPolling() }
+    }
+
+    // ── Remote sources card ─────────────────────────────────────────────
+    // SSH/SFTP roots — profiles persist, passwords live in the Keychain,
+    // rows land in the same table keyed sftp://host/path.
+    private var remoteSourcesCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(remotes.all) { s in
+                HStack(spacing: 8) {
+                    Image(systemName: "server.rack").foregroundStyle(Ui.mint)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(s.label).font(.uiCaption).foregroundStyle(Ui.ink)
+                        Text("\(s.user.isEmpty ? "" : "\(s.user)@")\(s.host):\(s.rootPath)")
+                            .font(.uiMicro).foregroundStyle(Ui.inkSoft)
+                    }
+                    Spacer()
+                    Button("Test") { vm.testRemote(s) }
+                        .buttonStyle(.sharp).disabled(vm.remoteBusy)
+                    Button("Scan") { vm.scanRemote(s) }
+                        .buttonStyle(.sharpProminent).disabled(vm.remoteBusy || vm.scanning)
+                    Button { vm.editRemote(s) } label: {
+                        Image(systemName: "pencil")
+                    }
+                    .buttonStyle(.borderless)
+                    Button { remotes.remove(s) } label: {
+                        Image(systemName: "xmark.circle.fill").foregroundStyle(Ui.inkSoft)
+                    }
+                    .buttonStyle(.borderless)
+                }
+            }
+            remoteField("Name (optional)", text: $vm.remoteDraft.name)
+            HStack(spacing: 8) {
+                remoteField("Host (alias, tailnet name, or IP)", text: $vm.remoteDraft.host)
+                remoteField("Port", text: portBinding).frame(maxWidth: 70)
+            }
+            HStack(spacing: 8) {
+                remoteField("User (empty = ssh default)", text: $vm.remoteDraft.user)
+                remoteField("Remote root, e.g. /mnt/music", text: $vm.remoteDraft.rootPath)
+            }
+            HStack(spacing: 8) {
+                Button(vm.remoteDraft.keyBookmark == nil ? "Identity file…" : "Key picked ✓") {
+                    vm.pickRemoteKey()
+                }
+                .buttonStyle(.sharp)
+                .help("SSH private key — a security-scoped bookmark keeps sandbox access")
+                SecureField("Password (optional — Keychain)", text: $vm.remotePassword)
+                    .textFieldStyle(.plain)
+                    .padding(.horizontal, 8).padding(.vertical, 5)
+                    .background(Ui.bg)
+                    .overlay(Rectangle().stroke(Ui.border, lineWidth: 1))
+                Button("Save source") { vm.saveRemoteSource() }
+                    .buttonStyle(.sharpProminent)
+                    .disabled(vm.remoteDraft.host.isEmpty || vm.remoteDraft.rootPath.isEmpty)
+            }
+            if !vm.remoteNote.isEmpty {
+                Text(vm.remoteNote).font(.uiCaption).foregroundStyle(Ui.inkSoft)
+            }
+        }
+        .uiCard()
+        .uiElevated()
+    }
+
+    private func remoteField(_ ph: String, text: Binding<String>) -> some View {
+        TextField(ph, text: text)
+            .textFieldStyle(.plain)
+            .padding(.horizontal, 8).padding(.vertical, 5)
+            .background(Ui.bg)
+            .overlay(Rectangle().stroke(Ui.border, lineWidth: 1))
+    }
+
+    private var portBinding: Binding<String> {
+        Binding(get: { String(vm.remoteDraft.port) },
+                set: { vm.remoteDraft.port = Int($0) ?? 22 })
     }
 
     // ── Track table ─────────────────────────────────────────────────────

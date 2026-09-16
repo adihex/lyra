@@ -26,6 +26,8 @@ void  *lyra_engine_current(void);                 /* live handle — re-fetch af
 int    lyra_engine_set_output_mode(int mode);     /* 0 ok, 1 unavailable — old engine kept */
 int    lyra_engine_output_mode(void);             /* mode of the live engine */
 int    lyra_engine_play_file(void *e, const char *path);
+int    lyra_engine_play_remote(void *e, const char *profile_json,
+                               const char *remote_path); /* SFTP+cache; 0 ok */
 void   lyra_engine_pause(void *e);
 void   lyra_engine_resume(void *e);
 void   lyra_engine_stop(void *e);
@@ -84,6 +86,13 @@ void  *lyra_search_new(const char *data_dir);     /* provider caches under data_
 void   lyra_search_free(void *s);
 char  *lyra_search(void *s, const char *query_json);          /* SearchResponse JSON — free me; blocks, call off-main */
 char  *lyra_search_resolve(void *s, const char *result_json); /* {result,files,addable:{kind:magnet|torrent_url|torrent_b64,…}} or {"error":…} */
+
+/* ── remote library (lyra-fs): profile JSON = {host,port,user,key_path,
+ *    root_path,password?} — password selects Password auth over key/agent ── */
+char *lyra_remlib_scan(void *lib, const char *profile_json);  /* ScanStats JSON — blocks, off-main; free me */
+char *lyra_remlib_test(const char *profile_json);             /* {ok,files,elapsed_ms}|{ok:false,error} — free me */
+int   lyra_remlib_pin(const char *profile_json, const char *remote_dir,
+                      const char *local_dir);                 /* rsync stage; 0 ok */
 
 /* ── IPC (lyra-ipc): NDJSON unix socket for `lyra` CLI / lyra-mcp ── */
 int   lyra_ipc_start(const char *db_path, const char *sock_dir); /* bind sock_dir/control.sock; 0 ok */

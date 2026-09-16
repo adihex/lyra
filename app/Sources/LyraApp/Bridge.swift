@@ -73,6 +73,16 @@ final class LyraLibrary {
         return try? JSONSerialization.jsonObject(with: Data(String(cString: raw).utf8)) as? [String: Any]
     }
 
+    /// Remote scan — SFTP walk + header probes into the same DB.
+    /// Synchronous + blocking — call off the main thread.
+    @discardableResult
+    func syncRemote(_ profileJSON: String) -> [String: Any]? {
+        guard let lib, let raw = profileJSON.withCString({ lyra_remlib_scan(lib, $0) })
+        else { return nil }
+        defer { lyra_string_free(raw) }
+        return try? JSONSerialization.jsonObject(with: Data(String(cString: raw).utf8)) as? [String: Any]
+    }
+
     /// All library rows (LibraryTrack JSON dicts).
     var tracks: [[String: Any]] {
         guard let lib, let raw = lyra_lib_tracks(lib) else { return [] }
@@ -122,8 +132,17 @@ final class LyraPlayer {
         return path.withCString { lyra_engine_play_file(e, $0) } == 0
     }
 
-    /// Stream a file out of a torrent — pieces fetch on demand.
+    /// SFTP random-access under the block cache — same streaming shape
+    /// as torrent playback.
     @discardableResult
+    func playRemote(profileJSON: String, remotePath: String) -> Bool {
+        guard let e = engine else { return false }
+        return remotePath.withCString { rp in
+            profileJSON.withCString { lyra_engine_play_remote(e, $0, rp) }
+        } == 0
+    }
+
+    /// Stream a file out of a torrent — pieces fetch on demand.
     func playTorrent(_ torrentId: Int, file fileIdx: Int) -> Bool {
         guard let e = engine else { return false }
         return lyra_engine_play_torrent(e, Int32(torrentId), Int32(fileIdx)) == 0

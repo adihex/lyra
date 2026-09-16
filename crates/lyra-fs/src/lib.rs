@@ -42,8 +42,9 @@ pub mod sftp;
 pub use config::{AuthCallback, AuthMethod, RemoteProfile};
 pub use rsync::RsyncSource;
 pub use scan::{
-    is_remote_audio, Cancel, HeaderProbe, ProbeHint, ProbedFile, RemoteOpen, RemoteProbe,
-    RemoteScanner, RemoteWalk, ScanOptions, ScanProgress, ScanStats, SftpOpener, SftpWalk,
+    is_remote_audio, Cancel, ExecOpen, ExecWalk, HeaderProbe, ProbeHint, ProbedFile,
+    RemoteOpen, RemoteProbe, RemoteScanner, RemoteWalk, ScanOptions, ScanProgress,
+    ScanStats, SftpOpener, SftpWalk,
 };
 pub use sftp::{SftpBackend, SftpHandle, SftpSource, Ssh2Backend, Ssh2Handle};
 
@@ -116,6 +117,7 @@ impl ByteSource for LocalFile {
 /// the BlockCache makes reads effectively sequential.
 pub struct SshExecFile {
     host: String,
+    port: u16,
     path: String,
     len: u64,
 }
@@ -147,6 +149,7 @@ impl SshExecFile {
             .map_err(|_| LyraError::Remote(format!("bad stat output for {target}:{path}")))?;
         Ok(Self {
             host: target.into(),
+            port,
             path: path.into(),
             len,
         })
@@ -161,7 +164,7 @@ impl SshExecFile {
             offset,
             len
         );
-        let out = ssh_cmd(&self.host, 22)
+        let out = ssh_cmd(&self.host, self.port)
             .arg(&cmd)
             .stderr(Stdio::null())
             .output()?;
@@ -378,9 +381,9 @@ pub struct RemoteEntry {
     pub mtime: i64,
 }
 
-/// Enumerate audio files under `root` on `host`. `find -printf` on the
+/// Enumerate audio files under the profile's root. `find -printf` on the
 /// remote does the walk — orders of magnitude faster than SFTP stat loops.
-pub fn scan(host: &str, root: &str) -> Result<Vec<RemoteEntry>, LyraError> {
+pub fn scan(profile: &RemoteProfile, root: &str) -> Result<Vec<RemoteEntry>, LyraError> {
     let find = format!(
         "find {} -type f \\( -iname '*.flac' -o -iname '*.wav' -o -iname '*.aif*' \
          -o -iname '*.m4a' -o -iname '*.mp3' -o -iname '*.ogg' -o -iname '*.opus' \
@@ -388,12 +391,19 @@ pub fn scan(host: &str, root: &str) -> Result<Vec<RemoteEntry>, LyraError> {
          -o -iname '*.cue' \\) -printf '%s\\t%T@\\t%p\\n'",
         shell_quote(root)
     );
-    let out = ssh_cmd(host, 22)
+    let mut cmd = ssh_cmd(&profile.ssh_target(), profile.port);
+    if let Some(k) = &profile.key_path {
+        cmd.arg("-i").arg(k);
+    }
+    let out = cmd
         .arg(&find)
         .stderr(Stdio::null())
         .output()?;
     if !out.status.success() {
-        return Err(LyraError::Remote(format!("scan failed: {host}:{root}")));
+        return Err(LyraError::Remote(format!(
+            "scan failed: {}:{root}",
+            profile.ssh_target()
+        )));
     }
     let text = String::from_utf8_lossy(&out.stdout);
     Ok(text
@@ -410,15 +420,18 @@ pub fn scan(host: &str, root: &str) -> Result<Vec<RemoteEntry>, LyraError> {
 }
 
 /// Pin a remote subtree locally via rsync — delta sync, resume, checksums.
-/// The "offline copy" feature; playback itself never needs rsync.
-pub fn pin(host: &str, remote_dir: &str, local_dir: &Path) -> Result<(), LyraError> {
+/// The "offline copy" feature; playback itself never needs rsync. The
+/// profile's port/key ride along via `rsync -e "ssh …"`.
+pub fn pin(profile: &RemoteProfile, remote_dir: &str, local_dir: &Path) -> Result<(), LyraError> {
     std::fs::create_dir_all(local_dir)?;
     let status = Command::new("rsync")
         .args([
             "-a",
             "--partial",
             "--info=progress2",
-            &format!("{host}:{}", remote_dir.trim_end_matches('/')),
+            "-e",
+            &config::rsync_ssh(profile),
+            &format!("{}:{}", profile.ssh_target(), remote_dir.trim_end_matches('/')),
             &format!("{}/", local_dir.display()),
         ])
         .status()?;
