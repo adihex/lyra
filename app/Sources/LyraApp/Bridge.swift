@@ -39,10 +39,16 @@ final class LyraLibrary {
     static let shared = LyraLibrary()
     private var lib: UnsafeMutableRawPointer?
 
+    /// Container data dir — library.db, maps/, IPC socket all live here.
+    static let dbDir: URL = FileManager.default
+        .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("Lyra", isDirectory: true)
+
+    /// Opaque store handle for sibling FFI wrappers (map analyze/registry).
+    var handle: UnsafeMutableRawPointer? { lib }
+
     private init() {
-        let dir = FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Lyra", isDirectory: true)
+        let dir = Self.dbDir
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         lib = dir.appendingPathComponent("library.db").path
             .withCString { lyra_lib_open($0) }

@@ -573,6 +573,47 @@ final class ViewModel: ObservableObject {
         coachScore = LyraCoach.shared.score()
     }
 
+    // ── Map (offline analysis lane) ──────────────────────────────────────
+    @Published var mapBusy = false
+    @Published var mapTrackTitle = ""
+    @Published var songMap: SongMapView?
+    @Published var mapNote = ""
+
+    /// Pipeline run on a library track — seconds-scale, background queue.
+    /// Local files only; remote/torrent analysis rides ByteSource later.
+    func analyzeTrack(_ t: Track) {
+        guard !t.id.contains("://"), !mapBusy else { return }
+        mapBusy = true
+        mapTrackTitle = t.title
+        mapNote = ""
+        DispatchQueue.global(qos: .userInitiated).async {
+            let r = LyraMap.shared.analyze(lib: LyraLibrary.shared.handle, path: t.id)
+            let view = LyraMap.shared.forTrack(lib: LyraLibrary.shared.handle, path: t.id)
+            DispatchQueue.main.async {
+                self.mapBusy = false
+                if let r, r["error"] == nil, let v = view.flatMap(SongMapView.init) {
+                    self.songMap = v
+                    self.mapNote = "map saved — \(r["status"] as? String ?? "")"
+                } else {
+                    self.mapNote = (r?["error"] as? String) ?? "analysis failed"
+                }
+            }
+        }
+    }
+
+    /// Load a previously generated map for a track into the pane.
+    func showMap(_ t: Track) {
+        mapTrackTitle = t.title
+        if let v = LyraMap.shared.forTrack(lib: LyraLibrary.shared.handle, path: t.id)
+            .flatMap(SongMapView.init) {
+            songMap = v
+            mapNote = ""
+            selection = .map
+        } else {
+            mapNote = "no map yet — right-click → Analyse map"
+        }
+    }
+
     /// Accepts a magnet URI or a local .torrent path. Blocks in the FFI on
     /// magnet metadata resolve — runs on a background queue; audio files in
     /// the torrent land in the table as playable rows.
@@ -1063,6 +1104,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
     case library = "Library"
     case discover = "Discover"
     case coach = "Coach"
+    case map = "Map"
     case eq = "Equalizer"
     case visuals = "Visuals"
     case remote = "Remote"
@@ -1072,6 +1114,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
         case .library: "music.note.list"
         case .discover: "sparkle.magnifyingglass"
         case .coach: "metronome"
+        case .map: "guitars"
         case .eq: "slider.horizontal.3"
         case .visuals: "waveform"
         case .remote: "iphone.radiowaves.left.and.right"
@@ -1131,6 +1174,7 @@ struct ContentView: View {
         case .library: libraryPane
         case .discover: discoverPane
         case .coach: coachPane
+        case .map: mapPane
         case .eq: eqPane
         case .visuals: VisualsPane()
         case .remote: remotePane
@@ -1466,6 +1510,12 @@ struct ContentView: View {
                     NSWorkspace.shared.activateFileViewerSelecting(
                         [URL(fileURLWithPath: t.id)])
                 }
+            }
+            if !t.id.contains("://") {
+                Divider()
+                Button("Show map") { vm.showMap(t) }
+                Button(vm.mapBusy ? "Analysing…" : "Analyse map") { vm.analyzeTrack(t) }
+                    .disabled(vm.mapBusy)
             }
         }
     }
@@ -1978,6 +2028,97 @@ struct ContentView: View {
         case "good": Ui.accent
         case "ok": .orange
         case "miss", "off_grid": .red.opacity(0.7)
+        default: Ui.border
+        }
+    }
+
+    // ── Map ───────────────────────────────────────────────────────────────
+    private var mapPane: some View {
+        VStack(alignment: .leading, spacing: Ui.s16) {
+            HStack {
+                Text("Map").font(.uiTitle).foregroundStyle(Ui.ink)
+                if !vm.mapTrackTitle.isEmpty {
+                    Text(vm.mapTrackTitle).font(.uiCaption).foregroundStyle(Ui.inkSoft)
+                        .lineLimit(1)
+                }
+                if vm.mapBusy { ProgressView().controlSize(.small) }
+                Spacer()
+            }
+            Text("Song map — beat grid, sections, chords and notes decoded offline into a .lyramap. ONNX stages fall back to null estimates until weights ship.")
+                .font(.uiCaption).foregroundStyle(Ui.inkSoft)
+            if !vm.mapNote.isEmpty {
+                Text(vm.mapNote).font(.uiCaption).foregroundStyle(Ui.accent)
+            }
+
+            if let m = vm.songMap {
+                HStack(spacing: Ui.s16) {
+                    coachStat("STATUS", m.status)
+                    coachStat("CONF", String(format: "%.0f%%", m.conf * 100))
+                    coachStat("BEATS", "\(m.beats)")
+                    coachStat("SECTIONS", "\(m.sections.count)")
+                    coachStat("CHORDS", "\(m.chords.count)")
+                    coachStat("STRUMS", "\(m.strums)")
+                    coachStat("NOTES", "\(m.notes)")
+                    coachStat("TAB", "\(m.tab)")
+                }
+
+                if !m.sections.isEmpty {
+                    Text("SECTIONS").font(.uiMicro).foregroundStyle(Ui.inkSoft)
+                    GeometryReader { geo in
+                        HStack(spacing: 1) {
+                            ForEach(m.sections) { s in
+                                let w = max(4, (s.t1 - s.t0) / max(m.duration, 0.01) * geo.size.width)
+                                Rectangle()
+                                    .fill(sectionColor(s.label))
+                                    .frame(width: w)
+                                    .overlay(alignment: .bottomLeading) {
+                                        Text("\(s.label) \(vm.fmt(s.t0))")
+                                            .font(.uiMicro)
+                                            .foregroundStyle(.white)
+                                            .lineLimit(1)
+                                            .fixedSize()
+                                    }
+                            }
+                        }
+                    }
+                    .frame(height: 34)
+                }
+
+                if !m.chords.isEmpty {
+                    Text("CHORDS").font(.uiMicro).foregroundStyle(Ui.inkSoft)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 4) {
+                            ForEach(m.chords) { c in
+                                VStack(spacing: 1) {
+                                    Text(c.name).font(.uiBodyStrong).foregroundStyle(Ui.ink)
+                                    Text(vm.fmt(c.t0)).font(.uiMicro).foregroundStyle(Ui.inkSoft)
+                                }
+                                .padding(.horizontal, 8).padding(.vertical, 5)
+                                .background(Ui.surface)
+                                .overlay(Rectangle().stroke(Ui.border, lineWidth: 1))
+                            }
+                        }
+                    }
+                }
+            } else if !vm.mapBusy {
+                Text("Right-click a library track → Analyse map.")
+                    .foregroundStyle(Ui.inkSoft)
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(Ui.s20)
+    }
+
+    private func sectionColor(_ label: String) -> Color {
+        switch label.lowercased() {
+        case "intro": Ui.indigo
+        case "verse": Ui.accent
+        case "chorus": Ui.mint
+        case "bridge": .orange
+        case "solo": .pink
+        case "interlude": .teal
+        case "outro": Ui.indigo.opacity(0.6)
         default: Ui.border
         }
     }

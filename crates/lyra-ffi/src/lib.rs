@@ -20,6 +20,7 @@ static INIT: Once = Once::new();
 
 mod coach;
 mod ipc;
+mod map;
 mod remote_fs;
 
 pub(crate) fn init_logging() {

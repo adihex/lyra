@@ -106,6 +106,13 @@ int   lyra_coach_count_in(unsigned long first_index);
 int   lyra_coach_feedback(const char *mode);  /* full|coarse|end_of_phrase|silent */
 void  lyra_coach_stop(void);
 
+/* ── map (lyra-map): offline analysis — grid/sections/chords/notes/tab
+ *    into a content-addressed .lyramap + track_maps registry row ── */
+char *lyra_map_analyze(void *lib, const char *path,
+                       const char *maps_dir, const char *stages); /* summary JSON — free me */
+char *lyra_map_load(const char *map_path);                        /* SongMap JSON — free me */
+char *lyra_map_for_track(void *lib, const char *path);            /* SongMap JSON — free me */
+
 /* ── IPC (lyra-ipc): NDJSON unix socket for `lyra` CLI / lyra-mcp ── */
 int   lyra_ipc_start(const char *db_path, const char *sock_dir); /* bind sock_dir/control.sock; 0 ok */
 void  lyra_ipc_stop(void);
