@@ -36,10 +36,15 @@ use tracing::debug;
 
 pub mod config;
 pub mod rsync;
+pub mod scan;
 pub mod sftp;
 
 pub use config::{AuthCallback, AuthMethod, RemoteProfile};
 pub use rsync::RsyncSource;
+pub use scan::{
+    is_remote_audio, Cancel, HeaderProbe, ProbeHint, ProbedFile, RemoteOpen, RemoteProbe,
+    RemoteScanner, RemoteWalk, ScanOptions, ScanProgress, ScanStats, SftpOpener, SftpWalk,
+};
 pub use sftp::{SftpBackend, SftpHandle, SftpSource, Ssh2Backend, Ssh2Handle};
 
 use config::{shell_quote, ssh_cmd};
