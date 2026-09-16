@@ -461,7 +461,7 @@ impl Client {
         let mut psk = [0u8; 32];
         psk.copy_from_slice(&Sha256::digest(&k)[..32]);
 
-        let mut hs = Builder::new(params(PAIR_PATTERN))
+        let hs = Builder::new(params(PAIR_PATTERN))
             .local_private_key(&self.key.private)
             .map_err(|e| LyraError::Remote(e.to_string()))?
             .psk(3, &psk)
@@ -476,7 +476,7 @@ impl Client {
     pub async fn connect(&self, addr: SocketAddr) -> Result<Session, LyraError> {
         let mut sock = TcpStream::connect(addr).await?;
         write_frame(&mut sock, br#"{"op":"connect"}"#).await?;
-        let mut hs = Builder::new(params(CONN_PATTERN))
+        let hs = Builder::new(params(CONN_PATTERN))
             .local_private_key(&self.key.private)
             .map_err(|e| LyraError::Remote(e.to_string()))?
             .build_initiator()
@@ -494,7 +494,7 @@ impl Client {
     ) -> Result<Session, LyraError> {
         let mut sock = TcpStream::connect(addr).await?;
         write_frame(&mut sock, br#"{"op":"connect"}"#).await?;
-        let mut hs = Builder::new(params(CONN_PATTERN))
+        let hs = Builder::new(params(CONN_PATTERN))
             .local_private_key(&self.key.private)
             .map_err(|e| LyraError::Remote(e.to_string()))?
             .remote_public_key(expected_host_pub)

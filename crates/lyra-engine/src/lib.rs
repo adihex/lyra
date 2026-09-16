@@ -73,10 +73,10 @@ pub enum OutputMode {
     HalExclusive,
 }
 
+#[allow(dead_code)]
 enum Output {
     Cpal(cpal::Stream),
     #[cfg(target_os = "macos")]
-    #[allow(dead_code)]
     Hal {
         hog: lyra_hal::Hog,
         proc_: lyra_hal::IoProc,

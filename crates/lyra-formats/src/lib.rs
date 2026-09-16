@@ -40,13 +40,16 @@ fn probe_magic(path: &Path) -> Result<AudioFormat, LyraError> {
 }
 
 fn probe_ext(path: &Path) -> AudioFormat {
-    match path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase()
-        .as_str()
-    {
+    format_from_ext(
+        path.extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or_default(),
+    )
+}
+
+/// Extension → container guess (no magic sniff — for stream sources).
+pub fn format_from_ext(ext: &str) -> AudioFormat {
+    match ext.to_ascii_lowercase().as_str() {
         "flac" => AudioFormat::Flac,
         "aiff" | "aif" | "aifc" => AudioFormat::Aiff,
         "wav" | "wave" => AudioFormat::Wav,
@@ -64,14 +67,28 @@ fn probe_ext(path: &Path) -> AudioFormat {
 
 /// Container/codec info without decoding — feeds the library scanner.
 pub fn stream_info(path: &Path) -> Result<StreamInfo, LyraError> {
+    let format = probe(path);
+    let file = File::open(path)?;
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default();
+    stream_info_media(file, format, ext)
+}
+
+/// Same probe over any `MediaSource` — torrent files, SSH streams, caches.
+/// `format` should come from `probe_ext`/`format_from_ext` (no path here).
+pub fn stream_info_media(
+    source: impl symphonia::core::io::MediaSource + 'static,
+    format: AudioFormat,
+    ext: &str,
+) -> Result<StreamInfo, LyraError> {
     use symphonia::core::formats::probe::Hint;
     use symphonia::core::io::MediaSourceStream;
 
-    let format = probe(path);
-    let file = File::open(path)?;
-    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+    let mss = MediaSourceStream::new(Box::new(source), Default::default());
     let mut hint = Hint::new();
-    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+    if !ext.is_empty() {
         hint.with_extension(ext);
     }
 

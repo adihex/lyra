@@ -284,9 +284,8 @@ impl HalDevice {
         }
         // Start can return EAGAIN while the device is still settling from
         // a rate/format transition — retry briefly before giving up.
-        let mut st = 0;
         for attempt in 0..50 {
-            st = unsafe { AudioDeviceStart(self.id, proc_id) };
+            let st = unsafe { AudioDeviceStart(self.id, proc_id) };
             if st == 0 {
                 break;
             }

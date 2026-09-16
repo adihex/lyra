@@ -238,6 +238,27 @@ final class ViewModel: ObservableObject {
                     self.tracks.append(contentsOf: newTracks)
                     self.contentID = UUID()
                     self.scanStatus = "torrent #\(id): \(newTracks.count) playable of \(rows.count) files — streams on demand"
+                    self.probeTorrentDurations(newTracks)
+                }
+            }
+        }
+    }
+
+    /// Fill in durations for fresh torrent rows — each probe reads the
+    /// file's header region only (piece 0 fetches on demand), serially in
+    /// the background so a 20-file album doesn't hammer the swarm.
+    private func probeTorrentDurations(_ newTracks: [Track]) {
+        DispatchQueue.global(qos: .utility).async {
+            for t in newTracks {
+                guard case .torrent(let tid, let fidx) = t.source else { continue }
+                guard let info = LyraTorrent.shared.probe(tid, file: fidx),
+                      let dur = info["duration_secs"] as? Double, dur > 0
+                else { continue }
+                DispatchQueue.main.async {
+                    if let i = self.tracks.firstIndex(where: { $0.id == t.id }) {
+                        self.tracks[i].duration = dur
+                    }
+                    if self.current?.id == t.id { self.current?.duration = dur }
                 }
             }
         }
@@ -257,6 +278,11 @@ final class ViewModel: ObservableObject {
             position = 0
             pushEQ()
             publishNowPlaying(t)
+            // Duration fallback — playback fetches piece 0 anyway, so the
+            // header probe rides along on data the swarm already sent.
+            if t.duration == 0, case .torrent = t.source {
+                probeTorrentDurations([t])
+            }
         } else {
             lastError = "Cannot open \(t.title)"
         }

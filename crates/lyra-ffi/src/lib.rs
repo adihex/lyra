@@ -541,3 +541,45 @@ pub unsafe extern "C" fn lyra_engine_play_torrent(
     unsafe { &*e }.play(cached, ext.as_deref());
     0
 }
+
+/// Probe file `file_idx` of torrent `id` for container metadata → JSON
+/// {duration_secs,codec,sample_rate,channels}. Reads only the header
+/// region (the probe's reads pull piece 0 on demand). Null on failure —
+/// caller keeps the row without duration.
+/// Free with lyra_string_free.
+#[no_mangle]
+pub extern "C" fn lyra_torrent_probe(id: c_int, file_idx: c_int) -> *mut c_char {
+    let eng = match torrent() {
+        Ok(e) => e,
+        Err(_) => return std::ptr::null_mut(),
+    };
+    let ext = eng
+        .files(id as usize)
+        .ok()
+        .and_then(|fs| fs.into_iter().find(|f| f.index == file_idx as usize))
+        .and_then(|f| {
+            std::path::Path::new(&f.path)
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(String::from)
+        })
+        .unwrap_or_default();
+    let src = match eng.open_file(id as usize, file_idx as usize) {
+        Ok(s) => s,
+        Err(_) => return std::ptr::null_mut(),
+    };
+    let media = lyra_fs::SourceMediaSource::new(lyra_fs::CachingSource::wrap(src));
+    let format = lyra_formats::format_from_ext(&ext);
+    match lyra_formats::stream_info_media(media, format, &ext) {
+        Ok(info) => {
+            let j = serde_json::json!({
+                "duration_secs": info.duration_secs,
+                "codec": info.codec,
+                "sample_rate": info.sample_rate,
+                "channels": info.channels,
+            });
+            CString::new(j.to_string()).unwrap().into_raw()
+        }
+        Err(_) => std::ptr::null_mut(),
+    }
+}

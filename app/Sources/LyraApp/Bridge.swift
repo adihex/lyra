@@ -168,6 +168,16 @@ final class LyraTorrent {
             as? [[String: Any]] ?? []
     }
 
+    /// {duration_secs,codec,sample_rate,channels} for a torrent file —
+    /// reads only the header region (piece 0 fetches on demand).
+    /// Call off the main thread; nil = keep the row without metadata.
+    func probe(_ id: Int, file idx: Int) -> [String: Any]? {
+        guard let raw = lyra_torrent_probe(Int32(id), Int32(idx)) else { return nil }
+        defer { lyra_string_free(raw) }
+        return try? JSONSerialization.jsonObject(with: Data(String(cString: raw).utf8))
+            as? [String: Any]
+    }
+
     /// {progress_bytes,total_bytes,finished}
     func stats(_ id: Int) -> [String: Any]? {
         guard let raw = lyra_torrent_stats(Int32(id)) else { return nil }

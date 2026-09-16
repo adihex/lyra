@@ -45,6 +45,7 @@ int   lyra_torrent_init(const char *download_dir);
 int   lyra_torrent_add(const char *spec);          /* id >=0, <0 error; blocks on magnet metadata */
 char *lyra_torrent_files(int id);                  /* JSON [{index,path,len}] */
 char *lyra_torrent_stats(int id);                  /* JSON {progress_bytes,total_bytes,finished} */
+char *lyra_torrent_probe(int id, int file_idx);    /* JSON {duration_secs,codec,sample_rate,channels} or NULL */
 int   lyra_engine_play_torrent(void *e, int id, int file_idx);
 
 #endif

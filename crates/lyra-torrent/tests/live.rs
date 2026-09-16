@@ -144,6 +144,26 @@ fn seed_leech_body() {
     assert!(n >= 4 && &head[..4] == b"fLaC", "bad head magic: {:?}", &head[..4]);
     eprintln!("head read ok — fLaC magic streamed over loopback swarm");
 
+    // Header probe — the path lyra_torrent_probe uses for UI durations.
+    let probe_src: Arc<dyn ByteSource> = leecher.open_file(id, f.index).unwrap();
+    let probe_media = SourceMediaSource::new(lyra_fs::CachingSource::wrap(probe_src));
+    let info = lyra_formats::stream_info_media(
+        probe_media,
+        lyra_formats::format_from_ext("flac"),
+        "flac",
+    )
+    .unwrap();
+    assert!(
+        info.duration_secs.unwrap_or(0.0) > 0.0,
+        "probe over torrent stream returned no duration"
+    );
+    eprintln!(
+        "probe: {:.1}s {} {}Hz",
+        info.duration_secs.unwrap_or(0.0),
+        info.codec,
+        info.sample_rate.unwrap_or(0)
+    );
+
     // The full product path: ByteSource → MediaSource → TrackDecoder.
     let media = SourceMediaSource::new(src);
     let mut dec = lyra_formats::TrackDecoder::open(media, Some("flac")).unwrap();
