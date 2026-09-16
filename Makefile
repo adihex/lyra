@@ -20,7 +20,25 @@ rust:
 	@mkdir -p $(LIBDIR)
 	@cp target/debug/liblyra_ffi.a $(LIBDIR)/
 
-app: rust $(APPBIN) $(APP)/Contents/Info.plist sign
+app: rust $(APPBIN) $(APP)/Contents/Info.plist $(APP)/Contents/Resources/AppIcon.icns sign
+
+$(APP)/Contents/Resources/AppIcon.icns: app/Resources/AppIcon.icns
+	@mkdir -p $(APP)/Contents/Resources
+	@cp app/Resources/AppIcon.icns $(APP)/Contents/Resources/
+
+# Regenerate the icon: swift scripts/make_icon.swift → iconset → icns.
+app/Resources/AppIcon.icns: scripts/make_icon.swift
+	swift scripts/make_icon.swift .build/icon_1024.png
+	@mkdir -p .build/lyra.iconset
+	@for s in 16 32 64 128 256 512; do \
+		sips -z $$s $$s .build/icon_1024.png --out .build/lyra.iconset/icon_$${s}x$${s}.png >/dev/null; \
+	done
+	@sips -z 32 32 .build/icon_1024.png --out .build/lyra.iconset/icon_16x16@2x.png >/dev/null
+	@sips -z 64 64 .build/icon_1024.png --out .build/lyra.iconset/icon_32x32@2x.png >/dev/null
+	@sips -z 256 256 .build/icon_1024.png --out .build/lyra.iconset/icon_128x128@2x.png >/dev/null
+	@sips -z 512 512 .build/icon_1024.png --out .build/lyra.iconset/icon_256x256@2x.png >/dev/null
+	@sips -z 1024 1024 .build/icon_1024.png --out .build/lyra.iconset/icon_512x512@2x.png >/dev/null
+	iconutil -c icns .build/lyra.iconset -o app/Resources/AppIcon.icns
 
 $(APPBIN): $(SWIFT_SRC) $(LIBDIR)/liblyra_ffi.a
 	@mkdir -p $(APP)/Contents/MacOS $(APP)/Contents/Resources

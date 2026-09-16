@@ -5,6 +5,7 @@
     <key>CFBundleDevelopmentRegion</key><string>en</string>
     <key>CFBundleExecutable</key><string>Lyra</string>
     <key>CFBundleIdentifier</key><string>app.lyra.player</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
     <key>CFBundleName</key><string>Lyra</string>
     <key>CFBundlePackageType</key><string>APPL</string>
