@@ -35,9 +35,11 @@ use symphonia_core::io::MediaSource;
 use tracing::debug;
 
 pub mod config;
+pub mod rsync;
 pub mod sftp;
 
 pub use config::{AuthCallback, AuthMethod, RemoteProfile};
+pub use rsync::RsyncSource;
 pub use sftp::{SftpBackend, SftpHandle, SftpSource, Ssh2Backend, Ssh2Handle};
 
 use config::{shell_quote, ssh_cmd};
