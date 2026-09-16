@@ -22,7 +22,7 @@ pub mod paths;
 pub mod protocol;
 pub mod server;
 
-pub use client::Client;
+pub use client::{Client, ClientError};
 pub use dispatcher::{ApiError, DispatchCtx, Dispatcher};
 pub use protocol::{ErrorCode, PROTOCOL_VERSION};
 pub use server::{Server, ServerHandle};

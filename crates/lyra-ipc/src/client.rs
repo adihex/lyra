@@ -245,4 +245,8 @@ impl Subscription {
     pub fn last_seq(&self) -> u64 {
         self.last_seq
     }
+
+    pub fn set_read_timeout(&mut self, dur: Option<Duration>) -> std::io::Result<()> {
+        self.client.set_read_timeout(dur)
+    }
 }
