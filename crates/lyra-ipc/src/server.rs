@@ -86,6 +86,10 @@ impl<D: Dispatcher> Server<D> {
                 while !flag.load(Ordering::SeqCst) {
                     match listener.accept() {
                         Ok((stream, _)) => {
+                            // macOS inherits the listener's nonblocking flag
+                            // on accepted sockets (Linux does not) — every
+                            // conn read would EAGAIN. Force blocking.
+                            let _ = stream.set_nonblocking(false);
                             let worker = Arc::clone(&worker);
                             std::thread::Builder::new()
                                 .name("lyra-ipc-conn".into())
@@ -464,7 +468,13 @@ impl ConnReader {
                 return Err(());
             }
             let mut chunk = [0u8; 8192];
-            let n = self.stream.read(&mut chunk).map_err(|_| ())?;
+            let n = match self.stream.read(&mut chunk) {
+                Ok(n) => n,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                // A dead/erring stream is EOF for our purposes — reporting it
+                // as ParseError upstream would lie about the cause.
+                Err(_) => return Ok(None),
+            };
             if n == 0 {
                 if self.buf.is_empty() {
                     return Ok(None);
