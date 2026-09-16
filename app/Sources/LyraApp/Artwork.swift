@@ -43,6 +43,21 @@ enum Artwork {
             DispatchQueue.main.async { done(img) }
         }
     }
+
+    /// Stage-size load — globs `full.<ext>` (any original format), falling
+    /// back to the 256 thumb if the full file is gone.
+    static func fullImage(_ hash: String?, _ done: @escaping (NSImage?) -> Void) {
+        guard let hash, !hash.isEmpty else { done(nil); return }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let dir = root.appendingPathComponent("\(hash.prefix(2))/\(hash)")
+            let hit = (try? FileManager.default.contentsOfDirectory(
+                at: dir, includingPropertiesForKeys: nil))?
+                .first { $0.lastPathComponent.hasPrefix("full.") }
+            let img = hit.flatMap { NSImage(contentsOfFile: $0.path) }
+                ?? image(hash, size: 256)
+            DispatchQueue.main.async { done(img) }
+        }
+    }
 }
 
 /// Square art tile with async load + album-initial placeholder — sits on
@@ -52,7 +67,7 @@ struct ArtImage: View {
     /// Placeholder seed — album name initial.
     var label: String = ""
     var size: CGFloat = 32
-    /// 64 for rows, 256 for the now-playing hero.
+    /// 64 for rows, 256 for the now-playing hero, 0 = full-resolution.
     var px: Int = 64
     @ObservedObject private var loader = ArtLoader()
 
@@ -86,8 +101,10 @@ final class ArtLoader: ObservableObject {
         guard key != lastKey else { return }
         lastKey = key
         image = nil
-        Artwork.imageAsync(hash, size: px) { [weak self] img in
-            self?.image = img
+        if px == 0 {
+            Artwork.fullImage(hash) { [weak self] img in self?.image = img }
+        } else {
+            Artwork.imageAsync(hash, size: px) { [weak self] img in self?.image = img }
         }
     }
 }

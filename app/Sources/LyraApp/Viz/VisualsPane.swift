@@ -1,24 +1,56 @@
 import SwiftUI
 
-/// "Visuals" sidebar pane — mode chip strip on top, active renderer
-/// filling the rest. Fits the ~400pt detail column: chips wrap via an
-/// adaptive grid, surface takes all remaining height.
+/// "Visuals" sidebar pane — two faces on one card: the visualizer (mode
+/// chips + renderer) and the album-art stage. `vm.stageFace` flips it —
+/// set by the face chips here or the transport bar (mini viz → viz,
+/// art tile → art). The flip is a literal card rotation around Y.
 struct VisualsPane: View {
     @ObservedObject private var vm = ViewModel.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: Ui.s12) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("Visuals").font(.uiTitle).foregroundStyle(Ui.ink)
+            HStack(alignment: .firstTextBaseline, spacing: Ui.s8) {
+                FaceChip(title: "Visuals", active: vm.stageFace == .viz) {
+                    vm.stageFace = .viz
+                }
+                FaceChip(title: "Artwork", active: vm.stageFace == .art) {
+                    vm.stageFace = .art
+                }
                 Spacer()
-                Text("\(vm.vizMode.displayName) · \(vm.vizMode.inputs)")
+                Text(caption)
                     .font(.uiCaption).foregroundStyle(Ui.inkSoft)
+                    .lineLimit(1)
             }
-            if reduceMotion && vm.vizMode.decorative {
+            if vm.stageFace == .viz && reduceMotion && vm.vizMode.decorative {
                 Text("Reduce Motion — rendering Bars")
                     .font(.uiMicro).foregroundStyle(Ui.inkSoft)
             }
+            ZStack {
+                vizFace.opacity(vm.stageFace == .viz ? 1 : 0)
+                artFace.opacity(vm.stageFace == .art ? 1 : 0)
+                    .rotation3DEffect(.degrees(180), axis: (x: 0, y: 1, z: 0))
+            }
+            .rotation3DEffect(.degrees(vm.stageFace == .art ? 180 : 0),
+                              axis: (x: 0, y: 1, z: 0), perspective: 0.6)
+            .animation(.easeInOut(duration: 0.3), value: vm.stageFace)
+        }
+        .padding(Ui.s20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var caption: String {
+        if vm.stageFace == .viz {
+            "\(vm.vizMode.displayName) · \(vm.vizMode.inputs)"
+        } else {
+            vm.current.map { "\($0.title) — \($0.album)" } ?? "Nothing playing"
+        }
+    }
+
+    // Front face — mode chip strip on top, active renderer filling the
+    // rest. Chips wrap via an adaptive grid, surface takes all height.
+    private var vizFace: some View {
+        VStack(alignment: .leading, spacing: Ui.s12) {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 72), spacing: 6)],
                       spacing: 6) {
                 ForEach(VizMode.allCases) { m in
@@ -33,8 +65,51 @@ struct VisualsPane: View {
                 .overlay(Rectangle().stroke(Ui.border, lineWidth: 1))
                 .clipped()
         }
-        .padding(Ui.s20)
-        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // Back face — full-resolution artwork on the same card chrome.
+    private var artFace: some View {
+        GeometryReader { g in
+            let side = max(140, min(g.size.width, g.size.height) - 48)
+            VStack(spacing: Ui.s12) {
+                Spacer(minLength: 0)
+                ArtImage(hash: vm.current?.artworkHash,
+                         label: vm.current?.album ?? "♪",
+                         size: side, px: 0)
+                Text(vm.current.map { "\($0.artist ?? "Unknown") — \($0.album)" }
+                     ?? "No track selected")
+                    .font(.uiCaption).foregroundStyle(Ui.inkSoft)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Ui.surface)
+        .overlay(Rectangle().stroke(Ui.border, lineWidth: 1))
+        .clipped()
+    }
+}
+
+/// Face toggle — square editorial chip matching VizChip.
+private struct FaceChip: View {
+    let title: String
+    let active: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.uiCaption)
+                .foregroundStyle(active ? Color.white : Ui.ink)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(active ? Ui.accent : Ui.surface)
+                .overlay(Rectangle().stroke(active ? Ui.accent : Ui.border,
+                                            lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .uiElevated()
     }
 }
 

@@ -124,6 +124,12 @@ final class ViewModel: ObservableObject {
         rawValue: UserDefaults.standard.integer(forKey: "vizMode")) ?? .bars {
         didSet { UserDefaults.standard.set(vizMode.rawValue, forKey: "vizMode") }
     }
+    /// Which face the Visuals stage shows — flipped from the transport
+    /// bar (mini viz → viz, art tile → art) or the pane's face chips.
+    @Published var stageFace = StageFace(
+        rawValue: UserDefaults.standard.integer(forKey: "stageFace")) ?? .viz {
+        didSet { UserDefaults.standard.set(stageFace.rawValue, forKey: "stageFace") }
+    }
 
     private var timer: Timer?
     private var vizBuf: UnsafeMutableBufferPointer<Float>
@@ -649,6 +655,10 @@ final class ViewModel: ObservableObject {
     }
 }
 
+/// The focused pane's two faces — the visualizer and the album-art stage
+/// are flip sides of the same card.
+enum StageFace: Int { case viz, art }
+
 enum SidebarItem: String, CaseIterable, Identifiable {
     case library = "Library"
     case eq = "Equalizer"
@@ -982,8 +992,16 @@ struct ContentView: View {
                 }
             )
             HStack(spacing: 10) {
-                ArtImage(hash: vm.current?.artworkHash,
-                         label: vm.current?.album ?? "", size: 34, px: 256)
+                Button { vm.selection = .visuals; vm.stageFace = .art } label: {
+                    ArtImage(hash: vm.current?.artworkHash,
+                             label: vm.current?.album ?? "", size: 34, px: 256)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .onHover { h in
+                    if h { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+                }
+                .help("Artwork — \(vm.current?.album ?? "nothing playing")")
                 VStack(alignment: .leading) {
                     Text(vm.current?.title ?? "Nothing playing").font(.uiHeadline).lineLimit(1)
                         .foregroundStyle(vm.current == nil ? Ui.inkSoft : Ui.ink)
@@ -1036,7 +1054,7 @@ struct ContentView: View {
     /// Transport-bar viz: live thumbnail of the selected mode — clicking
     /// expands into the Visuals pane. This surface is the compositor pump.
     private var spectrumMini: some View {
-        Button { vm.selection = .visuals } label: {
+        Button { vm.selection = .visuals; vm.stageFace = .viz } label: {
             VizSurfaceView(mode: vm.vizMode, compact: true)
                 .frame(minWidth: 0, maxWidth: 120)
                 .frame(height: 28)
