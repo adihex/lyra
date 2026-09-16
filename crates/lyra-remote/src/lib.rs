@@ -98,15 +98,73 @@ impl StaticKey {
 
 // ── Device store ─────────────────────────────────────────────────────────
 
+fn hex32(b: &[u8; 32]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+fn unhex32(s: &str) -> Option<[u8; 32]> {
+    let s = s.trim();
+    if s.len() != 64 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for i in 0..32 {
+        out[i] = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).ok()?;
+    }
+    Some(out)
+}
+
 /// Paired devices, keyed by their X25519 static — the key IS the identity,
 /// the name is a display claim. SHA-256 of pubkey stored, compared in CT.
+/// Persisted as JSON {hash_hex: name} so paired clients survive restarts.
 #[derive(Default)]
 pub struct DeviceStore {
     /// sha256(client_static) -> device name
     pub devices: HashMap<[u8; 32], String>,
+    path: Option<PathBuf>,
 }
 
 impl DeviceStore {
+    /// Load the persisted device list. Missing/corrupt file → empty store.
+    pub fn load(path: PathBuf) -> Self {
+        let devices = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<HashMap<String, String>>(&s).ok())
+            .map(|m| {
+                m.into_iter()
+                    .filter_map(|(k, v)| unhex32(&k).map(|h| (h, v)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self {
+            devices,
+            path: Some(path),
+        }
+    }
+
+    /// tmp + rename so a crash mid-write can't truncate the ACL. 0600.
+    fn save(&self) {
+        let Some(path) = &self.path else { return };
+        let m: HashMap<String, &String> =
+            self.devices.iter().map(|(k, v)| (hex32(k), v)).collect();
+        let Ok(json) = serde_json::to_string_pretty(&m) else {
+            return;
+        };
+        let tmp = path.with_extension("tmp");
+        if std::fs::write(&tmp, json).is_err() {
+            return;
+        }
+        if std::fs::rename(&tmp, path).is_err() {
+            return;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ =
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        }
+    }
+
     fn contains(&self, static_key: &[u8]) -> bool {
         let h: [u8; 32] = Sha256::digest(static_key).into();
         self.devices.keys().any(|k| k.ct_eq(&h).into())
@@ -114,6 +172,14 @@ impl DeviceStore {
     fn register(&mut self, static_key: &[u8], name: String) {
         let h: [u8; 32] = Sha256::digest(static_key).into();
         self.devices.insert(h, name);
+        self.save();
+    }
+    fn revoke(&mut self, hash: &[u8; 32]) -> bool {
+        let removed = self.devices.remove(hash).is_some();
+        if removed {
+            self.save();
+        }
+        removed
     }
 }
 
@@ -194,7 +260,9 @@ impl Host {
     pub fn new(key_path: &std::path::Path, sink: Arc<dyn CommandSink>) -> Result<Self, LyraError> {
         Ok(Self {
             key: StaticKey::load_or_create(key_path)?,
-            devices: Mutex::new(DeviceStore::default()),
+            devices: Mutex::new(DeviceStore::load(
+                key_path.with_file_name("paired-devices.json"),
+            )),
             throttle: Mutex::new(Throttle::default()),
             pairing: Mutex::new(None),
             sink,
@@ -223,6 +291,25 @@ impl Host {
     /// Device count (tests + UI badge).
     pub fn paired_count(&self) -> usize {
         self.devices.lock().unwrap().devices.len()
+    }
+
+    /// Paired devices for the UI: (sha256 hex of the pinned static, name).
+    pub fn devices(&self) -> Vec<(String, String)> {
+        self.devices
+            .lock()
+            .unwrap()
+            .devices
+            .iter()
+            .map(|(k, v)| (hex32(k), v.clone()))
+            .collect()
+    }
+
+    /// Remove a pinned device by its hash hex — it must re-pair to connect.
+    pub fn revoke(&self, hash_hex: &str) -> bool {
+        let Some(h) = unhex32(hash_hex) else {
+            return false;
+        };
+        self.devices.lock().unwrap().revoke(&h)
     }
 
     // -- connection entry points -------------------------------------------

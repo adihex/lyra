@@ -74,6 +74,44 @@ async fn wrong_code_fails() {
 }
 
 #[tokio::test]
+async fn devices_persist_and_revoke() {
+    let dir = std::env::temp_dir().join(format!("lyra-remote-persist-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (host, addr) = spawn_host(&dir).await;
+
+    let client = Client::new();
+    let code = host.open_pairing();
+    let mut s = client.pair(addr, "persist-phone", &code).await.unwrap();
+    s.hello().await.unwrap();
+    assert_eq!(host.paired_count(), 1);
+    drop(s);
+
+    // "Restart": a fresh Host over the same key dir loads the device list.
+    let host2 = host_with_echo(dir.join("remote-key.bin")).unwrap();
+    assert_eq!(host2.paired_count(), 1);
+    let devs = host2.devices();
+    assert_eq!(devs.len(), 1);
+    assert_eq!(devs[0].1, "persist-phone");
+
+    // And the persisted record actually authorizes a reconnect.
+    let port2 = PORT.fetch_add(1, Ordering::SeqCst);
+    let h2 = std::sync::Arc::clone(&host2);
+    tokio::spawn(async move { lyra_remote::serve(h2, port2).await });
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    let addr2 = SocketAddr::from(([127, 0, 0, 1], port2));
+    let mut s2 = client.connect(addr2).await.unwrap();
+    assert_eq!(s2.hello().await.unwrap()["event"], "connected");
+    drop(s2);
+
+    // Revoke → persisted removal + reconnect rejected.
+    assert!(host2.revoke(&devs[0].0));
+    assert_eq!(host2.paired_count(), 0);
+    let host3 = host_with_echo(dir.join("remote-key.bin")).unwrap();
+    assert_eq!(host3.paired_count(), 0);
+}
+
+#[tokio::test]
 async fn unknown_device_rejected() {
     let dir = std::env::temp_dir().join(format!("lyra-remote-test-unk-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
