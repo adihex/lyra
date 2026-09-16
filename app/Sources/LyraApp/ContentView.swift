@@ -102,9 +102,14 @@ final class ViewModel: ObservableObject {
     @Published var current: Track?
     @Published var lastError: String?
     @Published var playing = false
-    @Published var position: Double = 0
+    /// Volatile transport state — plain vars on purpose. A 30 Hz @Published
+    /// fired objectWillChange on every tick, and every observer of `vm`
+    /// (including the App scene's .commands → main-menu rebuild) re-rendered
+    /// 30×/s — ~40% of a core in makeMainMenu alone. Live UI reads these
+    /// inside TimelineView-scoped closures instead.
+    var position: Double = 0
     @Published var scrubbing = false
-    @Published var displayPosition: Double = 0
+    var displayPosition: Double = 0
     @Published var volume: Float = 1.0 {
         didSet { LyraPlayer.shared.setVolume(volume * volume) } // perceptual taper
     }
@@ -114,7 +119,9 @@ final class ViewModel: ObservableObject {
     @Published var eqCurve: (freqs: [Float], db: [Float]) = ([], [])
 
     // viz — raw buffer path, no JSON at 60Hz
-    @Published var bands: [Float] = Array(repeating: 0, count: 48)
+    /// Spectrum snapshot cache for the EQ underlay — read at Canvas draw
+    /// time, never published (same reason as displayPosition above).
+    var bands: [Float] = Array(repeating: 0, count: 48)
     @Published var clip = false
 
     // viz surface — frame compositor + mode catalogue state (Viz/).
@@ -255,15 +262,25 @@ final class ViewModel: ObservableObject {
             guard let self else { return }
             let p = LyraPlayer.shared
             DispatchQueue.main.async {
-                self.playing = p.isPlaying
+                let playing = p.isPlaying
+                // Publish only on a real edge — the Playback menu title and
+                // every vm observer rebuild on each objectWillChange.
+                if self.playing != playing { self.playing = playing }
                 self.dockViz.sync() // lazy install on the playing edge
+                // Volatile state only moves while playing (or mid-scrub).
+                // At rest we skip the FFI reads entirely — no publishes, no
+                // churn; the viz surfaces self-drive via TimelineView.
+                guard playing || self.scrubbing else { return }
                 if !self.scrubbing {
                     self.position = p.position
                     self.displayPosition = p.position
                 }
                 _ = p.vizBands(into: self.vizBuf)
                 self.bands = Array(self.vizBuf)
-                if let v = p.viz { self.clip = v["clip"] as? Bool ?? false }
+                if let v = p.viz {
+                    let c = v["clip"] as? Bool ?? false
+                    if self.clip != c { self.clip = c }
+                }
             }
         }
     }
@@ -999,17 +1016,42 @@ struct ContentView: View {
         }
     }
 
+    /// The seek slider reads displayPosition (plain var) — the TimelineView
+    /// wrapper in nowPlayingBar supplies the refresh cadence while playing.
+    private var seekSlider: some View {
+        Slider(
+            value: Binding(
+                get: { vm.displayPosition },
+                set: { vm.displayPosition = $0 }),
+            in: 0...max(vm.current?.duration ?? 1, 1),
+            onEditingChanged: { editing in
+                if editing { vm.scrubbing = true } else { vm.scrubEnded() }
+            }
+        )
+    }
+
+    private var positionLabel: some View {
+        Text("\(vm.fmt(vm.displayPosition)) / \(vm.fmt(vm.current?.duration ?? 0))")
+            .font(.uiMono)
+            .foregroundStyle(Ui.inkSoft)
+            .fixedSize()
+    }
+
     // ── Now playing bar ──────────────────────────────────────────────────
     private var nowPlayingBar: some View {
         VStack(spacing: 6) {
-            // seek: engine clock drives; drag owns it until release
-            Slider(
-                value: $vm.displayPosition,
-                in: 0...max(vm.current?.duration ?? 1, 1),
-                onEditingChanged: { editing in
-                    if editing { vm.scrubbing = true } else { vm.scrubEnded() }
+            // seek: engine clock drives; drag owns it until release.
+            // displayPosition is a plain var (see ViewModel) — while playing
+            // a TimelineView re-reads it at 15 Hz; at rest nothing ticks.
+            Group {
+                if vm.playing || vm.scrubbing {
+                    TimelineView(.animation(minimumInterval: 1.0 / 15)) { _ in
+                        seekSlider
+                    }
+                } else {
+                    seekSlider
                 }
-            )
+            }
             HStack(spacing: 10) {
                 Button { vm.selection = .visuals; vm.stageFace = .art } label: {
                     ArtImage(hash: vm.current?.artworkHash,
@@ -1051,10 +1093,15 @@ struct ContentView: View {
                     Image(systemName: "forward.fill").sharpIconBox()
                 }
                 .buttonStyle(.plain)
-                Text("\(vm.fmt(vm.displayPosition)) / \(vm.fmt(vm.current?.duration ?? 0))")
-                    .font(.uiMono)
-                    .foregroundStyle(Ui.inkSoft)
-                    .fixedSize()
+                Group {
+                    if vm.playing {
+                        TimelineView(.periodic(from: .now, by: 0.5)) { _ in
+                            positionLabel
+                        }
+                    } else {
+                        positionLabel
+                    }
+                }
                 Spacer()
                 if vm.clip {
                     Text("CLIP").font(.uiMicro.bold()).foregroundStyle(.red)
@@ -1094,10 +1141,20 @@ struct ContentView: View {
             Text("Curve drawn from the same biquad coefficients the audio path uses — not an approximation.")
                 .font(.uiCaption).foregroundStyle(Ui.inkSoft)
 
-            // response curve + analyzer underlay
-            eqCurveView
-                .frame(maxWidth: .infinity)
-                .frame(height: 160)
+            // response curve + analyzer underlay — vm.bands is a plain-var
+            // cache, so the TimelineView supplies the live redraw cadence
+            // only while playing; at rest the curve renders once, static.
+            Group {
+                if vm.playing {
+                    TimelineView(.animation(minimumInterval: 1.0 / 15)) { _ in
+                        eqCurveView
+                    }
+                } else {
+                    eqCurveView
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 160)
 
             // Vertical sliders: rotate a horizontal Slider — the layout
             // frame must be pinned to the ROTATED bounds (20×110), not the

@@ -81,26 +81,40 @@ struct VizSurfaceView: View {
     }
 
     var body: some View {
-        let canvas = TimelineView(.animation(minimumInterval: 1.0 / 60)) { _ in
-            Canvas { ctx, size in
-                let m = effective
-                let f: VizFrame
-                let st: VizState
-                if compact {
-                    f = vm.viz.pump()
-                    st = vm.viz.miniState
-                } else {
-                    f = vm.viz.frame()
-                    st = vm.viz.state
+        // Each TimelineView tick is a full scene transaction — and every
+        // transaction piggybacks a main-menu rebuild (makeMainMenu was ~40%
+        // of a core when this ran 60 Hz *at rest*). So the metronome only
+        // exists while playing; at rest the Canvas draws its decayed frame
+        // once, statically. Compact strip ticks at 30 Hz — plenty for a
+        // transport-bar mini viz.
+        let core = Canvas { ctx, size in
+            let m = effective
+            let f: VizFrame
+            let st: VizState
+            if compact {
+                f = vm.viz.pump()
+                st = vm.viz.miniState
+            } else {
+                f = vm.viz.frame()
+                st = vm.viz.state
+            }
+            st.tick(frame: f, mode: m)
+            VizDraw.render(m, &ctx, size, f, st)
+            if !compact && !vm.viz.engineLive {
+                ctx.draw(
+                    ctx.resolve(Text("mock frames").font(.uiMicro)
+                                .foregroundColor(Ui.inkSoft.opacity(0.55))),
+                    at: CGPoint(x: 6, y: size.height - 8), anchor: .leading)
+            }
+        }
+        let canvas = Group {
+            if vm.playing {
+                TimelineView(.animation(
+                    minimumInterval: compact ? 1.0 / 30 : 1.0 / 60)) { _ in
+                    core
                 }
-                st.tick(frame: f, mode: m)
-                VizDraw.render(m, &ctx, size, f, st)
-                if !compact && !vm.viz.engineLive {
-                    ctx.draw(
-                        ctx.resolve(Text("mock frames").font(.uiMicro)
-                                    .foregroundColor(Ui.inkSoft.opacity(0.55))),
-                        at: CGPoint(x: 6, y: size.height - 8), anchor: .leading)
-                }
+            } else {
+                core
             }
         }
         if compact {

@@ -61,11 +61,17 @@ struct LyraApp: App {
         // Menu-bar mini player — .window style hosts arbitrary SwiftUI
         // (sliders/gestures work; `.menu` style kills them). isInserted
         // is our own toggle, independent of Tahoe's kill switch.
-        // The setter hops a runloop tick — writing an @Published through
-        // the binding mid-update resonated into a publish-in-update loop.
+        // The system commits the current state through this binding on
+        // every scene re-eval — writing an @Published there re-published
+        // → re-eval → commit → set: a perpetual churn loop. Guarded: a
+        // same-value commit is dropped before it can publish, and a real
+        // toggle hops a runloop tick out of the in-flight transaction.
         MenuBarExtra(isInserted: Binding(
             get: { prefs.menuBarExtra },
-            set: { v in DispatchQueue.main.async { prefs.menuBarExtra = v } })) {
+            set: { v in
+                guard v != prefs.menuBarExtra else { return }
+                DispatchQueue.main.async { prefs.menuBarExtra = v }
+            })) {
             MiniPlayerView()
                 .preferredColorScheme(.light)
         } label: {
@@ -100,11 +106,19 @@ struct MenuBarLabel: View {
         case "note":
             Image(systemName: "music.note")
         case "pulse":
-            TimelineView(.animation(minimumInterval: 1.0 / 15)) { _ in
+            if vm.playing {
+                TimelineView(.animation(minimumInterval: 1.0 / 15)) { _ in
+                    pulseCanvas
+                }
+            } else {
                 pulseCanvas
             }
         default:
-            TimelineView(.animation(minimumInterval: 1.0 / 15)) { _ in
+            if vm.playing {
+                TimelineView(.animation(minimumInterval: 1.0 / 15)) { _ in
+                    spectrumCanvas
+                }
+            } else {
                 spectrumCanvas
             }
         }
@@ -187,9 +201,17 @@ struct MiniPlayerView: View {
             .tint(Ui.ink)
             Slider(value: $vm.volume, in: 0...1.42)
                 .tint(Ui.accent)
-            Text("\(vm.fmt(vm.displayPosition)) / \(vm.fmt(vm.current?.duration ?? 0))")
-                .font(.uiMono)
-                .foregroundStyle(Ui.inkSoft)
+            // displayPosition is a plain var — 0.5s cadence while playing,
+            // static at rest (see ViewModel for why these aren't @Published).
+            Group {
+                if vm.playing {
+                    TimelineView(.periodic(from: .now, by: 0.5)) { _ in
+                        timeText
+                    }
+                } else {
+                    timeText
+                }
+            }
             // Escape hatch for a pet lost under real windows.
             if pet.isOut || pet.userHidden {
                 Button { pet.summonOrRecall() } label: {
@@ -203,5 +225,11 @@ struct MiniPlayerView: View {
         .frame(width: 240)
         .background(Ui.surface)
         .onAppear { vm.startPolling() }
+    }
+
+    private var timeText: some View {
+        Text("\(vm.fmt(vm.displayPosition)) / \(vm.fmt(vm.current?.duration ?? 0))")
+            .font(.uiMono)
+            .foregroundStyle(Ui.inkSoft)
     }
 }
