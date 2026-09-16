@@ -12,7 +12,7 @@
 
 use lyra_core::{AudioFormat, LibraryTrack, LyraError};
 use rusqlite::{params, Connection};
-use rusqlite_migration::{M, Migrations};
+use rusqlite_migration::{Migrations, M};
 use std::path::{Path, PathBuf};
 
 const MIGRATIONS: &[&str] = &[
@@ -143,7 +143,10 @@ fn folder_art_rank(dir: &Path, p: &Path) -> Option<u8> {
     }
     let stem = p.file_stem()?.to_str()?.to_lowercase();
     let ext = p.extension()?.to_str()?.to_lowercase();
-    if !matches!(ext.as_str(), "jpg" | "jpeg" | "png" | "webp" | "gif" | "bmp") {
+    if !matches!(
+        ext.as_str(),
+        "jpg" | "jpeg" | "png" | "webp" | "gif" | "bmp"
+    ) {
         return None;
     }
     if matches!(stem.as_str(), "back" | "inlay" | "booklet" | "disc" | "cd")
@@ -273,11 +276,7 @@ impl Library {
     /// Record the art outcome for a track without touching other columns.
     /// `None` writes '' — "checked, no embedded art" (sticky marker so
     /// artless files aren't re-probed every scan).
-    pub fn set_track_artwork(
-        &self,
-        path: &str,
-        hash: Option<&str>,
-    ) -> Result<(), LyraError> {
+    pub fn set_track_artwork(&self, path: &str, hash: Option<&str>) -> Result<(), LyraError> {
         self.conn.execute(
             "UPDATE tracks SET artwork_hash=?1 WHERE path=?2",
             params![hash.unwrap_or(""), path],
@@ -290,12 +289,7 @@ impl Library {
     /// the `artwork` row is shared across every track that resolves to it.
     /// Returns None when there's no cache dir (in-memory lib) or the
     /// bytes fail validation — art must never fail a scan.
-    pub fn ingest_artwork(
-        &self,
-        bytes: &[u8],
-        mime: &str,
-        source: &str,
-    ) -> Option<String> {
+    pub fn ingest_artwork(&self, bytes: &[u8], mime: &str, source: &str) -> Option<String> {
         use sha2::Digest;
         let root = self.artwork_dir.as_ref()?;
 
@@ -323,14 +317,12 @@ impl Library {
             std::fs::create_dir_all(&dir).ok()?;
             std::fs::write(&full, bytes).ok()?;
             if let Ok(img) = image::load_from_memory(bytes) {
-                let _ = img.thumbnail(64, 64).save_with_format(
-                    dir.join("64.jpg"),
-                    image::ImageFormat::Jpeg,
-                );
-                let _ = img.thumbnail(256, 256).save_with_format(
-                    dir.join("256.jpg"),
-                    image::ImageFormat::Jpeg,
-                );
+                let _ = img
+                    .thumbnail(64, 64)
+                    .save_with_format(dir.join("64.jpg"), image::ImageFormat::Jpeg);
+                let _ = img
+                    .thumbnail(256, 256)
+                    .save_with_format(dir.join("256.jpg"), image::ImageFormat::Jpeg);
             }
         }
         self.conn
@@ -356,8 +348,7 @@ impl Library {
             .prepare("SELECT path FROM tracks")?
             .query_map([], |r| r.get(0))?
             .collect::<Result<_, _>>()?;
-        let alive: std::collections::HashSet<&str> =
-            alive.iter().map(String::as_str).collect();
+        let alive: std::collections::HashSet<&str> = alive.iter().map(String::as_str).collect();
         let stale: Vec<String> = existing
             .into_iter()
             .filter(|p| !alive.contains(p.as_str()))
@@ -419,21 +410,13 @@ impl Library {
                     album_artist: r.get("album_artist")?,
                     genre: r.get("genre")?,
                     year: r.get::<_, Option<i64>>("year")?.map(|v| v as u32),
-                    track_number: r
-                        .get::<_, Option<i64>>("track_no")?
-                        .map(|v| v as u32),
+                    track_number: r.get::<_, Option<i64>>("track_no")?.map(|v| v as u32),
                     duration_secs: r.get("duration_secs")?,
                     format: format_from(&fmt),
                     codec: r.get::<_, Option<String>>("codec")?.unwrap_or_default(),
-                    sample_rate: r
-                        .get::<_, Option<i64>>("sample_rate")?
-                        .map(|v| v as u32),
-                    channels: r
-                        .get::<_, Option<i64>>("channels")?
-                        .map(|v| v as u32),
-                    bits_per_sample: r
-                        .get::<_, Option<i64>>("bit_depth")?
-                        .map(|v| v as u32),
+                    sample_rate: r.get::<_, Option<i64>>("sample_rate")?.map(|v| v as u32),
+                    channels: r.get::<_, Option<i64>>("channels")?.map(|v| v as u32),
+                    bits_per_sample: r.get::<_, Option<i64>>("bit_depth")?.map(|v| v as u32),
                     artwork_hash: r
                         .get::<_, Option<String>>("artwork_hash")?
                         .filter(|s| !s.is_empty()), // '' = "checked, none"
@@ -451,10 +434,73 @@ impl Library {
         Ok(())
     }
 
+    /// Opaque key/value slot (the `settings` table). The remote scanner
+    /// keeps its resume cursor here — no schema migration for scanner
+    /// state, just a namespaced key.
+    pub fn get_setting(&self, key: &str) -> Result<Option<String>, LyraError> {
+        let v: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT value FROM settings WHERE key=?1",
+                params![key],
+                |r| r.get(0),
+            )
+            .ok();
+        Ok(v)
+    }
+
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<(), LyraError> {
+        self.conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    /// Drop a setting. The remote scanner clears its resume cursor on a
+    /// completed pass — a stale end-of-list cursor would make every later
+    /// scan a no-op and hide remote changes.
+    pub fn clear_setting(&self, key: &str) -> Result<(), LyraError> {
+        self.conn
+            .execute("DELETE FROM settings WHERE key=?1", params![key])?;
+        Ok(())
+    }
+
+    /// Like [`Library::prune_missing`], but scoped to one root prefix —
+    /// a remote scan must never delete local rows (or another host's).
+    /// Same empty-list guard: an empty scan is a failure, not a deletion.
+    pub fn prune_prefix(&self, alive: &[String], prefix: &str) -> Result<usize, LyraError> {
+        if alive.is_empty() {
+            return Ok(0);
+        }
+        let existing: Vec<String> = self
+            .conn
+            .prepare("SELECT path FROM tracks")?
+            .query_map([], |r| r.get(0))?
+            .collect::<Result<_, _>>()?;
+        let alive: std::collections::HashSet<&str> = alive.iter().map(String::as_str).collect();
+        let stale: Vec<String> = existing
+            .into_iter()
+            .filter(|p| p.starts_with(prefix) && !alive.contains(p.as_str()))
+            .collect();
+        let mut removed = 0;
+        let mut stmt = self.conn.prepare("DELETE FROM tracks WHERE path=?1")?;
+        for p in &stale {
+            removed += stmt.execute(params![p])?;
+        }
+        Ok(removed)
+    }
+
     pub fn sources(&self) -> Result<Vec<Source>, LyraError> {
         let mut stmt = self.conn.prepare("SELECT uri, kind FROM sources")?;
         let rows = stmt
-            .query_map([], |r| Ok(Source { uri: r.get(0)?, kind: r.get(1)? }))?
+            .query_map([], |r| {
+                Ok(Source {
+                    uri: r.get(0)?,
+                    kind: r.get(1)?,
+                })
+            })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     }
@@ -464,9 +510,9 @@ impl Library {
 #[derive(Debug, Default, Clone, serde::Serialize)]
 pub struct SyncStats {
     pub walked: u64,
-    pub probed: u64,   // files actually re-probed (new or mtime-changed)
-    pub skipped: u64,  // unchanged — mtime matched the DB row
-    pub pruned: u64,   // rows removed for vanished files
+    pub probed: u64,  // files actually re-probed (new or mtime-changed)
+    pub skipped: u64, // unchanged — mtime matched the DB row
+    pub pruned: u64,  // rows removed for vanished files
     pub elapsed_ms: u64,
 }
 
@@ -614,8 +660,7 @@ impl Library {
                         _ => "image/jpeg",
                     };
                     if let Some(h) = self.ingest_artwork(&bytes, mime, "file") {
-                        let _ = self
-                            .set_track_artwork(&track_path.display().to_string(), Some(&h));
+                        let _ = self.set_track_artwork(&track_path.display().to_string(), Some(&h));
                     }
                 }
             }
@@ -657,8 +702,7 @@ impl Library {
             let mut checked_embedded = false;
             if self.needs_scan(&path_str, mtime)? {
                 let (mut track, art) = lyra_formats::probe_track_full(p);
-                hash = art
-                    .and_then(|a| self.ingest_artwork(&a.data, a.mime, "embedded"));
+                hash = art.and_then(|a| self.ingest_artwork(&a.data, a.mime, "embedded"));
                 track.artwork_hash = hash.clone().or_else(|| Some(String::new()));
                 self.upsert_track(&track, mtime, size)?;
                 checked_embedded = true;
@@ -679,7 +723,8 @@ impl Library {
                     if let Ok(rd) = std::fs::read_dir(d) {
                         for e in rd.flatten() {
                             if let Some(r) = folder_art_rank(d, &e.path()) {
-                                cands.entry(d.to_path_buf())
+                                cands
+                                    .entry(d.to_path_buf())
                                     .or_insert_with(Vec::new)
                                     .push((r, e.path()));
                             }
@@ -726,10 +771,18 @@ impl Library {
             .query_row(
                 "SELECT sample_rate, samples_per_bucket, peaks FROM waveform_peaks WHERE path=?1",
                 params![path],
-                |r| Ok((r.get::<_, f32>(0)?, r.get::<_, i64>(1)?, r.get::<_, Vec<u8>>(2)?)),
+                |r| {
+                    Ok((
+                        r.get::<_, f32>(0)?,
+                        r.get::<_, i64>(1)?,
+                        r.get::<_, Vec<u8>>(2)?,
+                    ))
+                },
             )
             .ok();
-        let Some((rate, spb, blob)) = row else { return Ok(None) };
+        let Some((rate, spb, blob)) = row else {
+            return Ok(None);
+        };
         let mut peaks = Vec::with_capacity(blob.len() / 8);
         for pair in blob.chunks_exact(8) {
             let lo = f32::from_le_bytes(pair[..4].try_into().unwrap());
@@ -767,10 +820,18 @@ mod tests {
     #[test]
     fn upsert_search_prune() {
         let lib = Library::open_memory().unwrap();
-        lib.upsert_track(&track("/a/one.flac", "Scarlet Begonias", "Grateful Dead"), 100, 10e6 as i64)
-            .unwrap();
-        lib.upsert_track(&track("/a/two.flac", "Fire on the Mountain", "Grateful Dead"), 100, 10e6 as i64)
-            .unwrap();
+        lib.upsert_track(
+            &track("/a/one.flac", "Scarlet Begonias", "Grateful Dead"),
+            100,
+            10e6 as i64,
+        )
+        .unwrap();
+        lib.upsert_track(
+            &track("/a/two.flac", "Fire on the Mountain", "Grateful Dead"),
+            100,
+            10e6 as i64,
+        )
+        .unwrap();
         assert_eq!(lib.all_tracks().unwrap().len(), 2);
         assert_eq!(lib.all_tracks().unwrap()[0].format, AudioFormat::Flac);
 
@@ -784,16 +845,17 @@ mod tests {
         assert!(lib.needs_scan("/a/new.flac", 1).unwrap());
 
         // upsert same path replaces, doesn't duplicate
-        lib.upsert_track(&track("/a/one.flac", "Scarlet Begonias", "Grateful Dead"), 200, 10e6 as i64)
-            .unwrap();
+        lib.upsert_track(
+            &track("/a/one.flac", "Scarlet Begonias", "Grateful Dead"),
+            200,
+            10e6 as i64,
+        )
+        .unwrap();
         assert_eq!(lib.all_tracks().unwrap().len(), 2);
 
         // prune keeps alive, drops stale; empty list never prunes
         assert_eq!(lib.prune_missing(&[]).unwrap(), 0);
-        assert_eq!(
-            lib.prune_missing(&["/a/one.flac".to_string()]).unwrap(),
-            1
-        );
+        assert_eq!(lib.prune_missing(&["/a/one.flac".to_string()]).unwrap(), 1);
         assert_eq!(lib.all_tracks().unwrap().len(), 1);
     }
 
@@ -821,8 +883,49 @@ mod tests {
         assert!(p.join("256.jpg").is_file());
         // Same bytes dedupe to the same hash; junk never caches.
         assert_eq!(lib.ingest_artwork(&png, "image/png", "file").unwrap(), h);
-        assert!(lib.ingest_artwork(b"not an image", "image/png", "embedded").is_none());
+        assert!(lib
+            .ingest_artwork(b"not an image", "image/png", "embedded")
+            .is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn settings_roundtrip_and_clear() {
+        let lib = Library::open_memory().unwrap();
+        assert_eq!(lib.get_setting("k").unwrap(), None);
+        lib.set_setting("k", "v1").unwrap();
+        assert_eq!(lib.get_setting("k").unwrap().as_deref(), Some("v1"));
+        lib.set_setting("k", "v2").unwrap();
+        assert_eq!(lib.get_setting("k").unwrap().as_deref(), Some("v2"));
+        lib.clear_setting("k").unwrap();
+        assert_eq!(lib.get_setting("k").unwrap(), None);
+    }
+
+    #[test]
+    fn prune_prefix_is_scoped() {
+        let lib = Library::open_memory().unwrap();
+        for p in [
+            "/local/a.flac",
+            "sftp://h/m/keep.flac",
+            "sftp://h/m/stale.flac",
+        ] {
+            lib.upsert_track(&track(p, "T", "A"), 1, 1).unwrap();
+        }
+        // empty alive never prunes; scoped prune keeps other roots
+        assert_eq!(lib.prune_prefix(&[], "sftp://h/m").unwrap(), 0);
+        assert_eq!(
+            lib.prune_prefix(&["sftp://h/m/keep.flac".to_string()], "sftp://h/m")
+                .unwrap(),
+            1
+        );
+        let paths: Vec<_> = lib
+            .all_tracks()
+            .unwrap()
+            .into_iter()
+            .map(|t| t.path)
+            .collect();
+        assert!(paths.contains(&"/local/a.flac".to_string()));
+        assert!(paths.contains(&"sftp://h/m/keep.flac".to_string()));
     }
 
     #[test]
@@ -835,7 +938,8 @@ mod tests {
         lib.set_track_artwork("/a/one.flac", None).unwrap();
         assert!(!lib.needs_art("/a/one.flac").unwrap());
         assert_eq!(lib.all_tracks().unwrap()[0].artwork_hash, None); // '' → None out
-        lib.set_track_artwork("/a/one.flac", Some("abc123")).unwrap();
+        lib.set_track_artwork("/a/one.flac", Some("abc123"))
+            .unwrap();
         assert_eq!(
             lib.all_tracks().unwrap()[0].artwork_hash,
             Some("abc123".into())
@@ -845,10 +949,15 @@ mod tests {
     #[test]
     fn waveform_peaks_roundtrip_and_cascade() {
         let lib = Library::open_memory().unwrap();
-        lib.upsert_track(&track("/a/one.flac", "Scarlet Begonias", "Grateful Dead"), 100, 10e6 as i64)
-            .unwrap();
+        lib.upsert_track(
+            &track("/a/one.flac", "Scarlet Begonias", "Grateful Dead"),
+            100,
+            10e6 as i64,
+        )
+        .unwrap();
         let peaks = vec![(-0.5f32, 0.9f32), (-0.2, 0.3), (0.0, 0.0)];
-        lib.upsert_peaks("/a/one.flac", 44100.0, 735, &peaks).unwrap();
+        lib.upsert_peaks("/a/one.flac", 44100.0, 735, &peaks)
+            .unwrap();
 
         let (rate, spb, back) = lib.peaks_for("/a/one.flac").unwrap().unwrap();
         assert_eq!(rate, 44100.0);
@@ -856,14 +965,19 @@ mod tests {
         assert_eq!(back, peaks);
 
         // upsert overwrites; unknown path yields None; FK must exist
-        lib.upsert_peaks("/a/one.flac", 44100.0, 735, &peaks[..1]).unwrap();
+        lib.upsert_peaks("/a/one.flac", 44100.0, 735, &peaks[..1])
+            .unwrap();
         assert_eq!(lib.peaks_for("/a/one.flac").unwrap().unwrap().2.len(), 1);
         assert!(lib.peaks_for("/a/ghost.flac").unwrap().is_none());
-        assert!(lib.upsert_peaks("/a/ghost.flac", 44100.0, 735, &peaks).is_err());
+        assert!(lib
+            .upsert_peaks("/a/ghost.flac", 44100.0, 735, &peaks)
+            .is_err());
 
         // pruning the track cascades its peaks
-        lib.upsert_track(&track("/a/two.flac", "Fire", "GD"), 100, 1).unwrap();
-        lib.upsert_peaks("/a/two.flac", 44100.0, 735, &peaks).unwrap();
+        lib.upsert_track(&track("/a/two.flac", "Fire", "GD"), 100, 1)
+            .unwrap();
+        lib.upsert_peaks("/a/two.flac", 44100.0, 735, &peaks)
+            .unwrap();
         lib.prune_missing(&["/a/two.flac".to_string()]).unwrap();
         assert!(lib.peaks_for("/a/one.flac").unwrap().is_none());
         assert!(lib.peaks_for("/a/two.flac").unwrap().is_some());
