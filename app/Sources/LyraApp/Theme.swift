@@ -10,7 +10,7 @@ enum Ui {
     static let surface = Color(red: 0.992, green: 0.984, blue: 0.957) // card white
     static let border = Color(red: 0.800, green: 0.760, blue: 0.680)  // hairline
     static let ink = Color(red: 0.278, green: 0.239, blue: 0.204)     // warm ink
-    static let inkSoft = Color(red: 0.541, green: 0.482, blue: 0.412) // muted ink
+    static let inkSoft = Color(red: 0.475, green: 0.420, blue: 0.355) // muted ink
     static let accent = Color(red: 0.780, green: 0.447, blue: 0.278)  // terracotta
     static let mint = Color(red: 0.396, green: 0.729, blue: 0.647)    // icon moon
     static let indigo = Color(red: 0.290, green: 0.337, blue: 0.643)  // icon planet
@@ -62,21 +62,54 @@ extension View {
     }
 }
 
-/// Sharp rectangular button — the system .bordered look is rounded and
-/// fights the square language. `prominent` = filled accent.
+/// Sharp rectangular button — ghost style: a quiet hairline at rest,
+/// accent text + faint accent wash on hover so it reads as a control
+/// without a heavy filled box. `prominent` = filled accent for the one
+/// primary action in a view.
 struct SharpButtonStyle: ButtonStyle {
     var prominent = false
-    @Environment(\.isEnabled) private var enabled
 
     func makeBody(configuration: ButtonStyleConfiguration) -> some View {
-        configuration.label
+        SharpButtonLabel(prominent: prominent,
+                         isPressed: configuration.isPressed) {
+            configuration.label
+        }
+    }
+}
+
+/// Hover state as a class — bare @State is the SwiftUIMacros variant under
+/// CLT swiftc (mutating setter, unusable from immutable self); @Published
+/// on an ObservableObject is a real property wrapper and works.
+private final class HoverState: ObservableObject {
+    @Published var hovering = false
+}
+
+private struct SharpButtonLabel<Label: View>: View {
+    let prominent: Bool
+    let isPressed: Bool
+    @ViewBuilder let label: () -> Label
+    @Environment(\.isEnabled) private var enabled
+    @ObservedObject private var hover = HoverState()
+    private var hovering: Bool { hover.hovering }
+
+    var body: some View {
+        label()
             .font(.uiBodyStrong)
-            .foregroundStyle(prominent ? Color.white : Ui.ink)
+            .foregroundStyle(
+                prominent ? Color.white
+                : (hovering && enabled) ? Ui.accent : Ui.ink)
             .padding(.horizontal, Ui.s12)
-            .padding(.vertical, 6)
-            .background(prominent ? Ui.accent : Ui.surface)
-            .overlay(Rectangle().stroke(prominent ? Ui.accent : Ui.border, lineWidth: 1))
-            .opacity(enabled ? (configuration.isPressed ? 0.7 : 1) : 0.45)
+            .padding(.vertical, 5)
+            .background(
+                prominent ? Ui.accent.opacity(isPressed ? 0.8 : 1)
+                : (hovering && enabled) ? Ui.accent.opacity(0.08) : Color.clear)
+            .overlay(Rectangle().stroke(
+                prominent ? Ui.accent
+                : Ui.border.opacity(hovering && enabled ? 1 : 0.55),
+                lineWidth: 1))
+            .opacity(enabled ? 1 : 0.45)
+            .animation(.easeOut(duration: 0.12), value: hovering)
+            .onHover { hover.hovering = $0 }
     }
 }
 

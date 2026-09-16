@@ -45,7 +45,7 @@ struct Track: Identifiable, Hashable {
         duration = 0
         format = URL(fileURLWithPath: name).pathExtension.uppercased()
         codec = format
-        trackNumber = 0
+        trackNumber = idx + 1
         source = .torrent(id: torrentId, fileIdx: idx)
     }
 
@@ -566,7 +566,8 @@ struct ContentView: View {
             }
             .scrollContentBackground(.hidden)
             .background(Ui.bg)
-            .navigationSplitViewColumnWidth(min: 170, ideal: 190, max: 240)
+            .tint(Ui.accent)
+            .navigationSplitViewColumnWidth(min: 150, ideal: 190, max: 320)
         } detail: {
             VStack(spacing: 0) {
                 detailView
@@ -575,6 +576,7 @@ struct ContentView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Ui.bg)
+            .tint(Ui.accent)
         }
         .tint(Ui.accent)
         .frame(minWidth: 780, minHeight: 560)
@@ -640,7 +642,7 @@ struct ContentView: View {
                         .buttonStyle(.sharp)
                     if vm.addingTorrent {
                         ProgressView().controlSize(.small)
-                        Text("resolving…").font(.caption).foregroundStyle(Ui.inkSoft)
+                        Text("resolving…").font(.uiCaption).foregroundStyle(Ui.inkSoft)
                     }
                 }
                 .uiCard()
@@ -672,14 +674,14 @@ struct ContentView: View {
                 HStack(spacing: 8) {
                     Image(systemName: "trash").foregroundStyle(Ui.inkSoft)
                     Text("\(vm.orphans.count) leftover item\(vm.orphans.count == 1 ? "" : "s") · \(vm.fmtBytes(vm.orphans.reduce(0) { $0 + $1.bytes }))")
-                        .font(.caption).foregroundStyle(Ui.inkSoft)
+                        .font(.uiCaption).foregroundStyle(Ui.inkSoft)
                     Button("Clean up") { vm.purgeOrphans() }
                         .buttonStyle(.sharp)
                         .help("Delete download folders left behind by removed torrents")
                 }
             }
             if !vm.scanStatus.isEmpty {
-                Text(vm.scanStatus).font(.caption).foregroundStyle(Ui.inkSoft)
+                Text(vm.scanStatus).font(.uiCaption).foregroundStyle(Ui.inkSoft)
             }
             if vm.tracks.isEmpty {
                 Spacer()
@@ -688,7 +690,7 @@ struct ContentView: View {
                     Text("No tunes yet").font(.uiHeadline)
                         .foregroundStyle(Ui.ink)
                     Text("Scan a folder or drop a magnet to fill the sky with music.")
-                        .font(.caption)
+                        .font(.uiCaption)
                         .foregroundStyle(Ui.inkSoft)
                 }
                 .frame(maxWidth: .infinity)
@@ -697,22 +699,27 @@ struct ContentView: View {
                 Table(vm.sortedTracks, selection: $vm.selectedTracks,
                       sortOrder: $vm.sortOrder) {
                     TableColumn("#", value: \.trackNumber) { t in
-                        Text("\(t.trackNumber)")
-                    }.width(30)
+                        Text(t.trackNumber > 0 ? "\(t.trackNumber)" : "—")
+                            .foregroundStyle(Ui.inkSoft)
+                    }.width(min: 26, ideal: 34, max: 50)
                     TableColumn("Title", value: \.title)
-                    TableColumn("Artist", value: \.artist).width(140)
-                    TableColumn("Album", value: \.album).width(150)
+                        .width(min: 140, ideal: 280, max: 560)
+                    TableColumn("Artist", value: \.artist)
+                        .width(min: 80, ideal: 150, max: 320)
+                    TableColumn("Album", value: \.album)
+                        .width(min: 80, ideal: 160, max: 340)
                     TableColumn("Time", value: \.duration) { t in
                         Text(vm.fmt(t.duration)).monospaced()
-                    }.width(50)
+                    }.width(min: 42, ideal: 54, max: 80)
                     TableColumn("Codec", value: \.codec) { t in
                         Text(t.codec).font(.uiMicro)
                             .foregroundStyle(Ui.indigo)
                             .padding(.horizontal, 6).padding(.vertical, 1)
                             .background(Ui.indigo.opacity(0.12))
                             .overlay(Rectangle().stroke(Ui.indigo.opacity(0.3), lineWidth: 1))
-                    }.width(56)
+                    }.width(min: 48, ideal: 62, max: 90)
                 }
+                .tint(Ui.accent)
                 .id(vm.contentID) // force rebuild — 100k-row diffing stalls
                 .scrollContentBackground(.hidden)
                 .tableStyle(.inset(alternatesRowBackgrounds: false))
@@ -738,7 +745,7 @@ struct ContentView: View {
                 }
                 HStack {
                     Text("\(vm.sortedTracks.count) tracks")
-                        .font(.caption).foregroundStyle(Ui.inkSoft)
+                        .font(.uiCaption).foregroundStyle(Ui.inkSoft)
                     Spacer()
                     Button("Play selected") { vm.playSelection(vm.selectedTracks) }
                         .disabled(vm.selectedTracks.isEmpty)
@@ -767,7 +774,7 @@ struct ContentView: View {
                     Text(vm.current?.title ?? "Nothing playing").font(.uiHeadline).lineLimit(1)
                         .foregroundStyle(vm.current == nil ? Ui.inkSoft : Ui.ink)
                     Text(vm.lastError ?? [vm.current?.artist, vm.current?.album].compactMap { $0 }.joined(separator: " — "))
-                        .font(.caption)
+                        .font(.uiCaption)
                         .foregroundStyle(vm.lastError != nil ? .red : Ui.inkSoft)
                         .lineLimit(1)
                 }
@@ -799,7 +806,7 @@ struct ContentView: View {
                     .fixedSize()
                 Spacer()
                 if vm.clip {
-                    Text("CLIP").font(.caption2.bold()).foregroundStyle(.red)
+                    Text("CLIP").font(.uiMicro.bold()).foregroundStyle(.red)
                 }
                 spectrumMini
                 Image(systemName: "speaker.wave.2.fill").foregroundStyle(Ui.inkSoft)
@@ -835,7 +842,7 @@ struct ContentView: View {
             Text("Parametric EQ").font(.uiTitle)
                 .foregroundStyle(Ui.ink)
             Text("Curve drawn from the same biquad coefficients the audio path uses — not an approximation.")
-                .font(.caption).foregroundStyle(Ui.inkSoft)
+                .font(.uiCaption).foregroundStyle(Ui.inkSoft)
 
             // response curve + analyzer underlay
             eqCurveView
@@ -865,7 +872,7 @@ struct ContentView: View {
                             .frame(width: 20, height: 110)
                         }
                         Text(freqLabel(eqFreqs[i]))
-                            .font(.caption2.monospaced())
+                            .font(.uiMono)
                             .foregroundStyle(Ui.inkSoft)
                     }
                     .frame(maxWidth: .infinity)
@@ -879,7 +886,7 @@ struct ContentView: View {
                 .buttonStyle(.sharp)
                 Spacer()
                 Text("±12dB · 31Hz band is a low shelf")
-                    .font(.caption2).foregroundStyle(Ui.inkSoft)
+                    .font(.uiMicro).foregroundStyle(Ui.inkSoft)
             }
             Spacer()
         }
@@ -977,7 +984,7 @@ struct ContentView: View {
                             Image(systemName: "iphone").foregroundStyle(Ui.mint)
                             Text(d.name).lineLimit(1)
                             Text(String(d.id.prefix(10)))
-                                .font(.caption.monospaced())
+                                .font(.uiMono)
                                 .foregroundStyle(Ui.inkSoft)
                             Spacer()
                             Button("Revoke") { vm.revokeDevice(d.id) }
@@ -990,18 +997,18 @@ struct ContentView: View {
             if let code = vm.pairCode {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Enter this code on the device — it binds one pairing handshake, it is not a credential:")
-                        .font(.caption).foregroundStyle(Ui.inkSoft)
+                        .font(.uiCaption).foregroundStyle(Ui.inkSoft)
                     Text(code)
                         .font(.system(size: 40, weight: .bold, design: .monospaced))
                         .foregroundStyle(Ui.accent)
                         .textSelection(.enabled)
                     Text("Host key fingerprint: \(vm.pairFp)")
-                        .font(.caption.monospaced()).foregroundStyle(Ui.inkSoft)
+                        .font(.uiMono).foregroundStyle(Ui.inkSoft)
                 }
                 .uiCard(padding: 16)
             }
             Text("SPAKE2(code) → Noise XXpsk3 → pinned X25519 keys. Reconnects use plain XX — the pinned key is the identity.")
-                .font(.caption2).foregroundStyle(Ui.inkSoft.opacity(0.7))
+                .font(.uiMicro).foregroundStyle(Ui.inkSoft.opacity(0.7))
             Spacer()
         }
         .frame(maxWidth: .infinity, alignment: .leading)

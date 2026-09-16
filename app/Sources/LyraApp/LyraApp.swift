@@ -35,6 +35,7 @@ struct LyraApp: App {
                            set: { vm.setExclusiveOutput($0) }))
             }
             CommandGroup(replacing: .newItem) {}
+            SidebarCommands() // View-menu sidebar toggle + shortcut
         }
 
         // Menu-bar mini player — .window style hosts arbitrary SwiftUI
@@ -57,7 +58,7 @@ struct MiniPlayerView: View {
                 Text(vm.current?.title ?? "Nothing playing").font(.uiHeadline)
                     .foregroundStyle(Ui.ink).lineLimit(1)
                 Text([vm.current?.artist, vm.current?.album].compactMap { $0 }.joined(separator: " — "))
-                    .font(.caption).foregroundStyle(Ui.inkSoft).lineLimit(1)
+                    .font(.uiCaption).foregroundStyle(Ui.inkSoft).lineLimit(1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             HStack(spacing: 12) {
