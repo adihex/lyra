@@ -1,0 +1,21 @@
+[package]
+name = "lyra-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "lyra CLI and lyra-mcp stdio bridge (thin socket clients)"
+
+[[bin]]
+name = "lyra"
+path = "src/bin/lyra.rs"
+
+[[bin]]
+name = "lyra-mcp"
+path = "src/bin/lyra-mcp.rs"
+
+[dependencies]
+lyra-ipc = { path = "../lyra-ipc" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+clap = { version = "4", features = ["derive"] }
