@@ -3,7 +3,11 @@ import UniformTypeIdentifiers
 
 /// One scanned library row — mirrors LibraryTrack's camelCase JSON.
 struct Track: Identifiable, Hashable {
-    let id: String // path
+    enum Source: Hashable {
+        case file
+        case torrent(id: Int, fileIdx: Int)
+    }
+    let id: String // path or torrent://id/idx
     let path: String
     var title: String
     var artist: String
@@ -13,6 +17,7 @@ struct Track: Identifiable, Hashable {
     var format: String
     var codec: String
     var trackNumber: Int
+    var source: Source = .file
 
     init(_ d: [String: Any]) {
         path = d["path"] as? String ?? ""
@@ -26,6 +31,31 @@ struct Track: Identifiable, Hashable {
         codec = d["codec"] as? String ?? format
         trackNumber = d["trackNumber"] as? Int ?? 0
     }
+
+    /// A file inside a torrent — playable via stream-while-downloading.
+    init(torrentId: Int, file d: [String: Any]) {
+        let idx = d["index"] as? Int ?? 0
+        path = "torrent://\(torrentId)/\(idx)"
+        id = path
+        let name = d["path"] as? String ?? "file \(idx)"
+        title = URL(fileURLWithPath: name).deletingPathExtension().lastPathComponent
+        artist = "torrent #\(torrentId)"
+        album = ""
+        albumArtist = ""
+        duration = 0
+        format = URL(fileURLWithPath: name).pathExtension.uppercased()
+        codec = format
+        trackNumber = 0
+        source = .torrent(id: torrentId, fileIdx: idx)
+    }
+
+    /// Extensions symphonia can actually decode — filters nfo/txt/jpg out
+    /// of torrent file lists.
+    static let audioExts: Set<String> = [
+        "flac", "mp3", "m4a", "aac", "aiff", "aif", "wav", "wave",
+        "ogg", "oga", "opus", "wv", "ape", "shn", "alac", "mp4", "mka", "mkv",
+    ]
+    var isAudio: Bool { Track.audioExts.contains(format.lowercased()) }
 }
 
 /// ISO-center EQ bands for the 10-band parametric.
@@ -47,6 +77,9 @@ final class ViewModel: ObservableObject {
     @Published var scanStatus = ""
     @Published var libraryRoot: String?
     @Published var contentID = UUID() // bump → Table skips dataset diffing
+    @Published var magnetInput = ""
+    @Published var showMagnetEntry = false
+    @Published var addingTorrent = false
 
     // now playing
     @Published var current: Track?
@@ -174,15 +207,55 @@ final class ViewModel: ObservableObject {
         }
     }
 
+    /// Accepts a magnet URI or a local .torrent path. Blocks in the FFI on
+    /// magnet metadata resolve — runs on a background queue; audio files in
+    /// the torrent land in the table as playable rows.
+    func addTorrent() {
+        let spec = magnetInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !spec.isEmpty, !addingTorrent else { return }
+        addingTorrent = true
+        lastError = nil
+        DispatchQueue.global(qos: .userInitiated).async {
+            let id = LyraTorrent.shared.add(spec)
+            let rows = id >= 0 ? LyraTorrent.shared.files(id) : []
+            DispatchQueue.main.async {
+                self.addingTorrent = false
+                if id < 0 {
+                    self.lastError = "Torrent add failed (\(id)) — bad magnet/file or no peers for metadata"
+                    return
+                }
+                self.magnetInput = ""
+                self.showMagnetEntry = false
+                let newTracks = rows
+                    .map { Track(torrentId: id, file: $0) }
+                    .filter(\.isAudio)
+                if newTracks.isEmpty {
+                    self.lastError = "Torrent #\(id): no playable audio files (\(rows.count) total)"
+                } else {
+                    self.tracks.append(contentsOf: newTracks)
+                    self.contentID = UUID()
+                    self.scanStatus = "torrent #\(id): \(newTracks.count) playable of \(rows.count) files — streams on demand"
+                }
+            }
+        }
+    }
+
     func play(_ t: Track) {
-        if LyraPlayer.shared.play(path: t.path) {
+        let ok: Bool
+        switch t.source {
+        case .file:
+            ok = LyraPlayer.shared.play(path: t.path)
+        case .torrent(let id, let idx):
+            ok = LyraPlayer.shared.playTorrent(id, file: idx)
+        }
+        if ok {
             current = t
             lastError = nil
             position = 0
             pushEQ()
             publishNowPlaying(t)
         } else {
-            lastError = "Cannot open \(URL(fileURLWithPath: t.path).lastPathComponent)"
+            lastError = "Cannot open \(t.title)"
         }
     }
 
@@ -306,8 +379,28 @@ struct ContentView: View {
                     Text(URL(fileURLWithPath: root).lastPathComponent)
                         .foregroundStyle(.secondary)
                 }
+                Button {
+                    vm.showMagnetEntry.toggle()
+                } label: {
+                    Label("Add torrent", systemImage: "link.badge.plus")
+                }
+                .help("Paste a magnet URI or pick up a .torrent file — audio streams on demand")
                 Button(vm.scanning ? "Scanning…" : "Scan folder…") { vm.scanFolder() }
                     .disabled(vm.scanning)
+            }
+            if vm.showMagnetEntry {
+                HStack(spacing: 8) {
+                    Image(systemName: "link").foregroundStyle(.secondary)
+                    TextField("magnet:?xt=… or /path/to/file.torrent", text: $vm.magnetInput)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit { vm.addTorrent() }
+                    Button("Add") { vm.addTorrent() }
+                        .disabled(vm.magnetInput.isEmpty || vm.addingTorrent)
+                    if vm.addingTorrent {
+                        ProgressView().controlSize(.small)
+                        Text("resolving…").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
             }
             if !vm.scanStatus.isEmpty {
                 Text(vm.scanStatus).font(.caption).foregroundStyle(.secondary)
@@ -342,7 +435,7 @@ struct ContentView: View {
                     Button("Play") { vm.playSelection(items) }
                     Divider()
                     Button("Reveal in Finder") {
-                        if let id = items.first {
+                        if let id = items.first, !id.hasPrefix("torrent://") {
                             NSWorkspace.shared.activateFileViewerSelecting(
                                 [URL(fileURLWithPath: id)])
                         }

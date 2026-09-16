@@ -2495,6 +2495,7 @@ dependencies = [
  "lyra-fs",
  "lyra-remote",
  "lyra-store",
+ "lyra-torrent",
  "mimalloc",
  "serde_json",
  "tokio",

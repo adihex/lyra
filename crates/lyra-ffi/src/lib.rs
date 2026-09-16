@@ -335,3 +335,122 @@ pub extern "C" fn lyra_remote_start(port: u16) -> c_int {
     });
     0
 }
+
+// ── Torrents ─────────────────────────────────────────────────────────────
+// One global rqbit session per app process — download_dir must live inside
+// the app container (Swift passes its Application Support path).
+
+static TORRENT: std::sync::OnceLock<
+    Result<std::sync::Arc<lyra_torrent::TorrentEngine>, String>,
+> = std::sync::OnceLock::new();
+
+fn torrent() -> Result<&'static std::sync::Arc<lyra_torrent::TorrentEngine>, c_int> {
+    match TORRENT.get() {
+        Some(Ok(e)) => Ok(e),
+        Some(Err(_)) => Err(1),
+        None => Err(2), // not initialized
+    }
+}
+
+/// Initialize the torrent session. Idempotent — first call wins. 0 ok.
+#[no_mangle]
+pub extern "C" fn lyra_torrent_init(download_dir: *const c_char) -> c_int {
+    init_logging();
+    let dir = match unsafe { CStr::from_ptr(download_dir) }.to_str() {
+        Ok(p) => PathBuf::from(p),
+        Err(_) => return 2,
+    };
+    let res = lyra_torrent::TorrentEngine::new(dir)
+        .map(std::sync::Arc::new)
+        .map_err(|e| e.to_string());
+    if let Err(e) = &res {
+        tracing::error!("torrent init: {e}");
+    }
+    let _ = TORRENT.set(res);
+    match TORRENT.get() {
+        Some(Ok(_)) => 0,
+        _ => 1,
+    }
+}
+
+/// Add a magnet URI or local .torrent path → torrent id (≥0), −1 bad spec,
+/// −2 add failure, −3 engine not initialized. Blocks on metadata resolve
+/// for magnets — call off the main thread.
+#[no_mangle]
+pub extern "C" fn lyra_torrent_add(spec: *const c_char) -> c_int {
+    let spec = match unsafe { CStr::from_ptr(spec) }.to_str() {
+        Ok(s) if !s.is_empty() => s,
+        _ => return -1,
+    };
+    match torrent() {
+        Err(c) => -3 - c,
+        Ok(e) => e.add(spec).map(|id| id as c_int).unwrap_or(-2),
+    }
+}
+
+/// JSON [{index,path,len}] for a resolved torrent. Null on failure.
+#[no_mangle]
+pub extern "C" fn lyra_torrent_files(id: c_int) -> *mut c_char {
+    let e = match torrent() {
+        Ok(e) => e,
+        Err(_) => return std::ptr::null_mut(),
+    };
+    match e.files(id as usize) {
+        Ok(fs) => {
+            let j = serde_json::json!(fs
+                .iter()
+                .map(|f| serde_json::json!({"index": f.index, "path": f.path, "len": f.len}))
+                .collect::<Vec<_>>());
+            CString::new(j.to_string()).unwrap().into_raw()
+        }
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+/// JSON stats snapshot {progress_bytes,total_bytes,finished}. Null on failure.
+#[no_mangle]
+pub extern "C" fn lyra_torrent_stats(id: c_int) -> *mut c_char {
+    let e = match torrent() {
+        Ok(e) => e,
+        Err(_) => return std::ptr::null_mut(),
+    };
+    match e.stats(id as usize) {
+        Ok(j) => CString::new(j.to_string()).unwrap().into_raw(),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+/// Stream-play file `file_idx` of torrent `id`: pieces fetch on demand in
+/// read order, CachingSource absorbs seek latency for the decoder.
+/// Returns 0 if the engine accepted the source.
+#[no_mangle]
+pub unsafe extern "C" fn lyra_engine_play_torrent(
+    e: *mut lyra_engine::Engine,
+    id: c_int,
+    file_idx: c_int,
+) -> c_int {
+    if e.is_null() {
+        return 2;
+    }
+    let eng = match torrent() {
+        Ok(e) => e,
+        Err(c) => return c,
+    };
+    let src = match eng.open_file(id as usize, file_idx as usize) {
+        Ok(s) => s,
+        Err(_) => return 1,
+    };
+    let ext = eng
+        .files(id as usize)
+        .ok()
+        .and_then(|fs| fs.into_iter().find(|f| f.index == file_idx as usize))
+        .and_then(|f| {
+            std::path::Path::new(&f.path)
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(String::from)
+        });
+    let cached = lyra_fs::CachingSource::wrap(src);
+    unsafe { &*e }.play(cached, ext.as_deref());
+    0
+}

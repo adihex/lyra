@@ -14,6 +14,7 @@ lyra-remote = { path = "../lyra-remote" }
 lyra-fs = { path = "../lyra-fs" }
 lyra-engine = { path = "../lyra-engine" }
 lyra-store = { path = "../lyra-store" }
+lyra-torrent = { path = "../lyra-torrent" }
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true

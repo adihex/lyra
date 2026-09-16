@@ -86,7 +86,21 @@ impl TorrentEngine {
         self.add_opts(spec, AddOpts::default())
     }
 
-    pub fn add_opts(&self, spec: &str, add: AddOpts) -> Result<usize, LyraError> {
+    pub fn add_opts(&self, spec: &str, mut add: AddOpts) -> Result<usize, LyraError> {
+        // rqbit ignores `x.pe` peer hints — extract them ourselves so
+        // trackerless magnets ("magnet:?xt=…&x.pe=1.2.3.4:6881") work.
+        if spec.starts_with("magnet:") {
+            for peer in spec
+                .split('&')
+                .filter_map(|kv| kv.strip_prefix("x.pe=").or_else(|| {
+                    kv.strip_prefix("?x.pe=")
+                }))
+            {
+                if let Ok(addr) = peer.parse::<std::net::SocketAddr>() {
+                    add.initial_peers.get_or_insert_with(Vec::new).push(addr);
+                }
+            }
+        }
         let source = if spec.starts_with("magnet:") {
             librqbit::AddTorrent::from_url(spec)
         } else {
@@ -113,8 +127,20 @@ impl TorrentEngine {
                 return Err(LyraError::Remote("list-only response".into()))
             }
         };
-        // Resolve magnet metadata before returning so callers can list files.
-        let _ = self.rt.block_on(handle.wait_until_initialized());
+        // Resolve magnet metadata before returning so callers can list
+        // files — capped so a dead magnet can't hang the caller forever.
+        let h = handle.clone();
+        let init = self.rt.block_on(async move {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(45),
+                h.wait_until_initialized(),
+            )
+            .await
+        });
+        match init {
+            Ok(Ok(())) => {}
+            _ => return Err(LyraError::Remote("metadata resolve timed out".into())),
+        }
         info!(id, "torrent added");
         Ok(id)
     }

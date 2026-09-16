@@ -36,4 +36,11 @@ char  *lyra_lib_tracks(void *l);                  /* JSON array */
 char  *lyra_lib_search(void *l, const char *q);   /* JSON array */
 void   lyra_lib_free(void *l);
 
+/* ── torrents (one global session) ── */
+int   lyra_torrent_init(const char *download_dir);
+int   lyra_torrent_add(const char *spec);          /* id >=0, <0 error; blocks on magnet metadata */
+char *lyra_torrent_files(int id);                  /* JSON [{index,path,len}] */
+char *lyra_torrent_stats(int id);                  /* JSON {progress_bytes,total_bytes,finished} */
+int   lyra_engine_play_torrent(void *e, int id, int file_idx);
+
 #endif

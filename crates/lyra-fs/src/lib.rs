@@ -41,6 +41,20 @@ pub trait ByteSource: Send + Sync {
     fn describe(&self) -> String;
 }
 
+/// Shared sources (e.g. TorrentFileSource behind Arc) compose with
+/// wrappers like CachingSource without extra plumbing.
+impl<T: ByteSource + ?Sized> ByteSource for Arc<T> {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
+        (**self).read_at(offset, buf)
+    }
+    fn len(&self) -> u64 {
+        (**self).len()
+    }
+    fn describe(&self) -> String {
+        (**self).describe()
+    }
+}
+
 // ── Local ────────────────────────────────────────────────────────────────
 
 pub struct LocalFile {

@@ -91,6 +91,13 @@ final class LyraPlayer {
         guard let e = engine else { return false }
         return path.withCString { lyra_engine_play_file(e, $0) } == 0
     }
+
+    /// Stream a file out of a torrent — pieces fetch on demand.
+    @discardableResult
+    func playTorrent(_ torrentId: Int, file fileIdx: Int) -> Bool {
+        guard let e = engine else { return false }
+        return lyra_engine_play_torrent(e, Int32(torrentId), Int32(fileIdx)) == 0
+    }
     func pause() { lyra_engine_pause(engine) }
     func resume() { lyra_engine_resume(engine) }
     func stop() { lyra_engine_stop(engine) }
@@ -127,5 +134,42 @@ final class LyraPlayer {
         defer { lyra_string_free(raw) }
         let json = String(cString: raw)
         return try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any]
+    }
+}
+
+/// Torrent session — one rqbit process-wide; downloads land inside the app
+/// container so the sandbox permits reads/writes.
+final class LyraTorrent {
+    static let shared = LyraTorrent()
+
+    private init() {
+        let dir = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Lyra/torrents", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        if lyra_torrent_init(dir.path) != 0 {
+            NSLog("lyra: torrent engine init failed")
+        }
+    }
+
+    /// Magnet URI or .torrent path → torrent id (≥0). Blocks on magnet
+    /// metadata resolve — call off the main thread.
+    func add(_ spec: String) -> Int {
+        Int(spec.withCString { lyra_torrent_add($0) })
+    }
+
+    /// [{index,path,len}] for a resolved torrent.
+    func files(_ id: Int) -> [[String: Any]] {
+        guard let raw = lyra_torrent_files(Int32(id)) else { return [] }
+        defer { lyra_string_free(raw) }
+        return (try? JSONSerialization.jsonObject(with: Data(String(cString: raw).utf8)))
+            as? [[String: Any]] ?? []
+    }
+
+    /// {progress_bytes,total_bytes,finished}
+    func stats(_ id: Int) -> [String: Any]? {
+        guard let raw = lyra_torrent_stats(Int32(id)) else { return nil }
+        defer { lyra_string_free(raw) }
+        return try? JSONSerialization.jsonObject(with: Data(String(cString: raw).utf8)) as? [String: Any]
     }
 }
