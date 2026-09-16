@@ -1,0 +1,81 @@
+name: release
+
+# Tag push `v*` or manual dispatch → release Rust core → swiftc →
+# ad-hoc-signed .app → UDZO dmg. Ad-hoc signing means Gatekeeper shows
+# "unidentified developer" on first open (right-click → Open). The
+# Developer ID + notarization path needs Apple secrets — see BLUEPRINT §6.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version stamped into the bundle (e.g. 0.2.0)
+        required: true
+      create_release:
+        description: Also create a GitHub release (defaults on for tags)
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  dmg:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust + cmake + ninja from mise.toml. CARGO=cargo skips the mbx
+      # shim so rust-cache can cache target/ as a normal directory.
+      - uses: jdx/mise-action@v3
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Version stamp
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            V="${GITHUB_REF_NAME#v}"
+          else
+            V="${{ inputs.version }}"
+          fi
+          echo "version=$V" >> "$GITHUB_ENV"
+          plutil -replace CFBundleShortVersionString -string "$V" Info.plist
+          plutil -replace CFBundleVersion -string "${GITHUB_RUN_NUMBER}" Info.plist
+
+      - name: Build app (release)
+        run: make app PROFILE=release CARGO=cargo
+
+      - name: Package DMG
+        run: |
+          mkdir -p .build/dmg
+          cp -R .build/Lyra.app .build/dmg/
+          ln -s /Applications .build/dmg/Applications
+          hdiutil create -volname "Lyra" -srcfolder .build/dmg \
+            -ov -format UDZO ".build/Lyra-${{ env.version }}.dmg"
+          shasum -a 256 ".build/Lyra-${{ env.version }}.dmg"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Lyra-${{ env.version }}-dmg
+          path: .build/Lyra-*.dmg
+          if-no-files-found: error
+
+      - name: Attach to GitHub release
+        if: >-
+          github.ref_type == 'tag' ||
+          (github.event_name == 'workflow_dispatch' && inputs.create_release)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            TAG="$GITHUB_REF_NAME"
+          else
+            TAG="v${{ env.version }}"
+          fi
+          # create handles the tag not existing yet (dispatch runs);
+          # upload --clobber covers re-runs where the release exists.
+          gh release create "$TAG" .build/Lyra-*.dmg \
+            --title "Lyra $TAG" --generate-notes 2>/dev/null \
+          || gh release upload "$TAG" .build/Lyra-*.dmg --clobber

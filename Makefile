@@ -2,6 +2,7 @@
 # For release we'd move to XcodeGen for Sparkle's nested-signing (see BLUEPRINT § packaging).
 
 CARGO    := mise exec -- cargo
+PROFILE  := debug
 SWIFTC   := xcrun swiftc
 APP      := .build/Lyra.app
 APPBIN   := $(APP)/Contents/MacOS/Lyra
@@ -16,9 +17,9 @@ check:
 	$(CARGO) check --workspace
 
 rust:
-	$(CARGO) build -p lyra-ffi
+	$(CARGO) build -p lyra-ffi $(if $(filter release,$(PROFILE)),--release,)
 	@mkdir -p $(LIBDIR)
-	@cp target/debug/liblyra_ffi.a $(LIBDIR)/
+	@cp target/$(PROFILE)/liblyra_ffi.a $(LIBDIR)/
 
 app: rust $(APPBIN) $(APP)/Contents/Info.plist $(APP)/Contents/Resources/AppIcon.icns $(APP)/Contents/Resources/Assets.car sign
 
