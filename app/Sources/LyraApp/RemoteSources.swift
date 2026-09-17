@@ -142,6 +142,75 @@ final class RemoteSources: ObservableObject {
     }
 }
 
+/// A user-managed Torznab endpoint — a Jackett/Prowlarr indexer base
+/// (…/api/v2.0/indexers/{id} or /all) plus its API key. URL+name persist
+/// in UserDefaults; the key lives in Keychain, never in the model.
+struct TorznabEndpoint: Codable, Identifiable, Hashable {
+    var id = UUID()
+    var name = ""
+    var url = ""
+}
+
+/// The persisted set of Torznab endpoints; changes re-sync the search
+/// engine's External-tier providers in one shot.
+final class TorznabEndpoints: ObservableObject {
+    static let shared = TorznabEndpoints()
+    @Published private(set) var all: [TorznabEndpoint] = []
+    private let defaultsKey = "torznabEndpoints"
+
+    private init() {
+        if let data = UserDefaults.standard.data(forKey: defaultsKey),
+           let list = try? JSONDecoder().decode([TorznabEndpoint].self, from: data) {
+            all = list
+        }
+    }
+
+    private func save() {
+        if let data = try? JSONEncoder().encode(all) {
+            UserDefaults.standard.set(data, forKey: defaultsKey)
+        }
+    }
+
+    func upsert(_ e: TorznabEndpoint, apikey: String?) {
+        var v = e
+        if v.name.isEmpty { v.name = v.url }
+        if let i = all.firstIndex(where: { $0.id == v.id }) { all[i] = v }
+        else { all.append(v) }
+        save()
+        if let k = apikey {
+            if k.isEmpty { Keychain.remove(v.id.uuidString) }
+            else { Keychain.set(k, for: v.id.uuidString) }
+        }
+        apply()
+    }
+
+    func remove(_ e: TorznabEndpoint) {
+        all.removeAll { $0.id == e.id }
+        Keychain.remove(e.id.uuidString)
+        save()
+        apply()
+    }
+
+    func apikey(for e: TorznabEndpoint) -> String? {
+        Keychain.get(e.id.uuidString)
+    }
+
+    /// Push the whole list into the engine — additions, edits and
+    /// removals all land in one sync_external swap.
+    func apply() { applyTo(LyraSearch.shared) }
+
+    /// LyraSearch.init calls this directly — `.shared` can't be touched
+    /// mid-initialization (static-let recursion).
+    func applyTo(_ s: LyraSearch) {
+        let payload: [[String: Any]] = all.map { e in
+            ["url": e.url,
+             "apikey": apikey(for: e) ?? "",
+             "name": e.name]
+        }
+        s.syncTorznab(payload)
+    }
+}
+
 /// FFI wrapper — scan/test/pin (remote library) sit beside LyraPlayer's
 /// playRemote. All blocking calls; callers go through DispatchQueue.
 final class LyraFS {

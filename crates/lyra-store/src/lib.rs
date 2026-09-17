@@ -122,6 +122,14 @@ CREATE TABLE track_maps (
 CREATE INDEX idx_track_maps_status ON track_maps(status);
 ALTER TABLE tracks ADD COLUMN audio_hash TEXT;
 "#,
+    // v5: ledger remembers the artwork hash it produced — torrent rows
+    // (and any metadata-keyed fetch) have no tracks.artwork_hash to
+    // stamp, so the ledger is their only durable record. NULL on rows
+    // predating the column; art_fetch_due treats ok-with-null-hash as
+    // due once, so they backfill on the next fetch attempt.
+    r#"
+ALTER TABLE artwork_fetch ADD COLUMN hash TEXT;
+"#,
 ];
 
 /// AudioFormat <-> its serde-lowercase string ("flac", "m4a", …).
@@ -342,14 +350,19 @@ impl Library {
         Ok(row)
     }
 
-    /// Fetch-ledger row for an album: (state, next_retry_at).
-    pub fn art_fetch_row(&self, album_key: &str) -> Result<Option<(String, Option<i64>)>, LyraError> {
+    /// Fetch-ledger row for an album: (state, hash, next_retry_at).
+    /// `hash` is the artwork hash the fetch produced — present only on
+    /// 'ok' rows written since the column existed.
+    pub fn art_fetch_row(
+        &self,
+        album_key: &str,
+    ) -> Result<Option<(String, Option<String>, Option<i64>)>, LyraError> {
         let row = self
             .conn
             .query_row(
-                "SELECT state, next_retry_at FROM artwork_fetch WHERE album_key=?1",
+                "SELECT state, hash, next_retry_at FROM artwork_fetch WHERE album_key=?1",
                 params![album_key],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .ok();
         Ok(row)
@@ -357,18 +370,20 @@ impl Library {
 
     /// True when the ledger says this album may be queried now —
     /// no row yet, or a retryable row whose next_retry_at has passed.
-    /// 'ok' and NULL-retry rows are terminal answers, not prompts.
+    /// 'ok' and NULL-retry rows are terminal answers, not prompts —
+    /// except ok-without-hash, a pre-v5 row that backfills once.
     pub fn art_fetch_due(&self, album_key: &str) -> Result<bool, LyraError> {
         Ok(match self.art_fetch_row(album_key)? {
             None => true,
-            Some((state, retry)) => {
-                state != "ok"
-                    && retry.is_some_and(|t| {
-                        t <= std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_secs() as i64)
-                            .unwrap_or(0)
-                    })
+            Some((state, hash, retry)) => {
+                (state == "ok" && hash.is_none())
+                    || (state != "ok"
+                        && retry.is_some_and(|t| {
+                            t <= std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_secs() as i64)
+                                .unwrap_or(0)
+                        }))
             }
         })
     }
@@ -382,18 +397,20 @@ impl Library {
         state: &str,
         http_status: Option<i64>,
         next_retry_at: Option<i64>,
+        hash: Option<&str>,
     ) -> Result<(), LyraError> {
         self.conn.execute(
             "INSERT INTO artwork_fetch
-                 (album_key, mbid, state, http_status, attempts, attempted_at, next_retry_at)
-             VALUES (?1,?2,?3,?4,1,unixepoch(),?5)
+                 (album_key, mbid, state, http_status, attempts, attempted_at, next_retry_at, hash)
+             VALUES (?1,?2,?3,?4,1,unixepoch(),?5,?6)
              ON CONFLICT(album_key) DO UPDATE SET
                  mbid=excluded.mbid, state=excluded.state,
                  http_status=excluded.http_status,
                  attempts=artwork_fetch.attempts+1,
                  attempted_at=excluded.attempted_at,
-                 next_retry_at=excluded.next_retry_at",
-            params![album_key, mbid, state, http_status, next_retry_at],
+                 next_retry_at=excluded.next_retry_at,
+                 hash=excluded.hash",
+            params![album_key, mbid, state, http_status, next_retry_at, hash],
         )?;
         Ok(())
     }
@@ -449,13 +466,24 @@ impl Library {
         if !full.exists() {
             std::fs::create_dir_all(&dir).ok()?;
             std::fs::write(&full, bytes).ok()?;
+        }
+        // Thumbs derive from the bytes, not from `full` being new — a
+        // crash between the write and the thumb pass leaves full-only
+        // entries, so check each thumb independently.
+        let miss64 = !dir.join("64.jpg").exists();
+        let miss256 = !dir.join("256.jpg").exists();
+        if miss64 || miss256 {
             if let Ok(img) = image::load_from_memory(bytes) {
-                let _ = img
-                    .thumbnail(64, 64)
-                    .save_with_format(dir.join("64.jpg"), image::ImageFormat::Jpeg);
-                let _ = img
-                    .thumbnail(256, 256)
-                    .save_with_format(dir.join("256.jpg"), image::ImageFormat::Jpeg);
+                if miss64 {
+                    let _ = img
+                        .thumbnail(64, 64)
+                        .save_with_format(dir.join("64.jpg"), image::ImageFormat::Jpeg);
+                }
+                if miss256 {
+                    let _ = img
+                        .thumbnail(256, 256)
+                        .save_with_format(dir.join("256.jpg"), image::ImageFormat::Jpeg);
+                }
             }
         }
         self.conn

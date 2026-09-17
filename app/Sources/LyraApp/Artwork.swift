@@ -25,14 +25,30 @@ enum Artwork {
     }
 
     /// Sync load with NSCache — thumbs are small; safe on any thread.
+    /// A thumb missing from disk (crashed ingest, pruned cache) falls back
+    /// to full.<ext> rather than rendering a placeholder.
     static func image(_ hash: String?, size: Int = 64) -> NSImage? {
         guard let hash, !hash.isEmpty else { return nil }
         let key = "\(hash)@\(size)" as NSString
         if let hit = cache.object(forKey: key) { return hit }
-        let u = url(hash, size: size)
-        guard let img = NSImage(contentsOfFile: u.path) else { return nil }
+        var img = NSImage(contentsOfFile: url(hash, size: size).path)
+        if img == nil {
+            let dir = root.appendingPathComponent("\(hash.prefix(2))/\(hash)")
+            img = (try? FileManager.default.contentsOfDirectory(
+                at: dir, includingPropertiesForKeys: nil))?
+                .first { $0.lastPathComponent.hasPrefix("full.") }
+                .flatMap { NSImage(contentsOfFile: $0.path) }
+        }
+        guard let img else { return nil }
         cache.setObject(img, forKey: key)
         return img
+    }
+
+    /// Synchronous cache peek — body reads this so a recompose after the
+    /// async load lands renders instantly instead of waiting on the loader.
+    static func cached(_ hash: String?, px: Int = 64) -> NSImage? {
+        guard let hash, !hash.isEmpty else { return nil }
+        return cache.object(forKey: "\(hash)@\(px)" as NSString)
     }
 
     static func imageAsync(_ hash: String?, size: Int = 64,
@@ -55,6 +71,9 @@ enum Artwork {
                 .first { $0.lastPathComponent.hasPrefix("full.") }
             let img = hit.flatMap { NSImage(contentsOfFile: $0.path) }
                 ?? image(hash, size: 256)
+            if let img {
+                cache.setObject(img, forKey: "\(hash)@0" as NSString)
+            }
             DispatchQueue.main.async { done(img) }
         }
     }
@@ -79,6 +98,22 @@ final class LyraArt {
         return try? JSONSerialization.jsonObject(
             with: Data(String(cString: raw).utf8)) as? [String: Any]
     }
+
+    /// Metadata-driven fetch for rows that aren't in `tracks` — torrent
+    /// rows synthesize their tags, so the caller splits "Artist - Title"
+    /// and passes it explicitly. Same ledger + states as fetch(trackPath:).
+    @discardableResult
+    func fetchMeta(artist: String, album: String, title: String) -> [String: Any]? {
+        guard let lib = LyraLibrary.shared.handle,
+              let data = try? JSONSerialization.data(
+                  withJSONObject: ["artist": artist, "album": album, "title": title]),
+              let js = String(data: data, encoding: .utf8),
+              let raw = js.withCString({ lyra_art_fetch_meta(lib, $0) })
+        else { return nil }
+        defer { lyra_string_free(raw) }
+        return try? JSONSerialization.jsonObject(
+            with: Data(String(cString: raw).utf8)) as? [String: Any]
+    }
 }
 
 /// Square art tile with async load + album-initial placeholder — sits on
@@ -94,7 +129,7 @@ struct ArtImage: View {
 
     var body: some View {
         ZStack {
-            if let img = loader.image {
+            if let img = loader.image ?? Artwork.cached(hash, px: px) {
                 Image(nsImage: img)
                     .resizable()
                     .interpolation(.high)

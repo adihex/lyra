@@ -38,13 +38,28 @@ struct Track: Identifiable, Hashable {
     }
 
     /// A file inside a torrent — playable via stream-while-downloading.
+    /// File names arrive "01. Artist - Title [- decor]" — the track number
+    /// and artist/title split are parsed up front so rows show real tags
+    /// and the artwork fetch doesn't have to re-derive them.
     init(torrentId: Int, file d: [String: Any]) {
         let idx = d["index"] as? Int ?? 0
         path = "torrent://\(torrentId)/\(idx)"
         id = path
         let name = d["path"] as? String ?? "file \(idx)"
-        title = URL(fileURLWithPath: name).deletingPathExtension().lastPathComponent
-        artist = "torrent #\(torrentId)"
+        var stem = URL(fileURLWithPath: name)
+            .deletingPathExtension().lastPathComponent
+        if let r = stem.range(
+            of: #"^\d{1,3}\s*[\.\)\-–_]\s+"#, options: .regularExpression) {
+            stem.removeSubrange(r)
+        }
+        let parts = stem.components(separatedBy: " - ")
+        if parts.count > 1 {
+            artist = parts[0]
+            title = parts.dropFirst().joined(separator: " - ")
+        } else {
+            artist = "torrent #\(torrentId)"
+            title = stem
+        }
         album = ""
         albumArtist = ""
         duration = 0
@@ -190,6 +205,9 @@ final class ViewModel: ObservableObject {
     // ledger negative-caches not_found for 30d so re-asks are free.
     private var artInFlight = Set<String>()
     @Published var artBusy = false // bulk "fetch missing artwork" pass
+    /// Serial lane for artwork FFI — rusqlite's Connection isn't
+    /// reentrant, so parallel fetches on a global queue panic it.
+    private let artQueue = DispatchQueue(label: "lyra.art")
 
     // viz — raw buffer path, no JSON at 60Hz
     /// Spectrum snapshot cache for the EQ underlay — read at Canvas draw
@@ -660,6 +678,7 @@ final class ViewModel: ObservableObject {
                     self.refreshTorrents()
                     self.scanStatus = "torrent #\(id): \(newTracks.count) playable of \(rows.count) files — streams on demand"
                     self.probeTorrentDurations(newTracks)
+                    for t in newTracks { self.ensureArtwork(for: t) }
                 }
             }
         }
@@ -797,6 +816,9 @@ final class ViewModel: ObservableObject {
                     self.tracks.append(contentsOf: newRows)
                     self.contentID = UUID()
                     self.probeTorrentDurations(newRows)
+                    // Ledger-hit restores prior art instantly; unfetched
+                    // rows get one network shot then park via the ledger.
+                    for t in newRows { self.ensureArtwork(for: t) }
                 }
             }
         }
@@ -941,13 +963,42 @@ final class ViewModel: ObservableObject {
     /// Fetch cover art for an artless track — one in-flight call per
     /// track id; the ledger dedupes repeat album asks. Applies the hash
     /// album-wide so the library grid, Now Playing and stage all update.
+    /// Torrent rows aren't in `tracks` and carry synthesized tags
+    /// ("torrent #0"), so they take the metadata-driven fetch instead.
     func ensureArtwork(for t: Track) {
         guard (t.artworkHash ?? "").isEmpty,
-              !t.album.isEmpty, t.album != "Unknown Album",
               !artInFlight.contains(t.id)
         else { return }
+        if case .torrent = t.source {
+            // The torrent init already parsed "Artist - Title" out of the
+            // file name; the synthetic "torrent #N" artist means no parse —
+            // fall back to the torrent name's "Artist - Album" prefix.
+            var artist = t.artist.hasPrefix("torrent #") ? "" : t.artist
+            if artist.isEmpty { artist = Self.torrentArtist(from: t.album) }
+            guard !artist.isEmpty || !t.title.isEmpty else { return }
+            artInFlight.insert(t.id)
+            artQueue.async { [weak self] in
+                let res = LyraArt.shared.fetchMeta(
+                    artist: artist, album: "", title: t.title)
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.artInFlight.remove(t.id)
+                    // 'ok' carries a fresh hash; 'not_due' carries the
+                    // hash the ledger stored on an earlier fetch — either
+                    // way the tile just needs the string.
+                    if let h = res?["hash"] as? String, !h.isEmpty {
+                        if let i = self.tracks.firstIndex(where: { $0.id == t.id }) {
+                            self.tracks[i].artworkHash = h
+                        }
+                        if self.current?.id == t.id { self.current?.artworkHash = h }
+                    }
+                }
+            }
+            return
+        }
+        guard !t.album.isEmpty, t.album != "Unknown Album" else { return }
         artInFlight.insert(t.id)
-        DispatchQueue.global(qos: .utility).async { [weak self] in
+        artQueue.async { [weak self] in
             let res = LyraArt.shared.fetch(trackPath: t.id)
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -959,6 +1010,19 @@ final class ViewModel: ObservableObject {
                 }
             }
         }
+    }
+
+    /// "… - Album" torrent names carry the artist in the first segment —
+    /// minus leading tag clutter like "(Hard Rock) [CD]".
+    static func torrentArtist(from torrentName: String) -> String {
+        let parts = torrentName.components(separatedBy: " - ")
+        guard parts.count > 1 else { return "" }
+        var a = parts[0]
+        while let r = a.range(of: #"^\s*(\([^)]*\)|\[[^\]]*\])\s*"#,
+                              options: .regularExpression) {
+            a.removeSubrange(r)
+        }
+        return a.trimmingCharacters(in: .whitespaces)
     }
 
     /// Write a fetched hash onto every artless track sharing the album —
@@ -987,21 +1051,46 @@ final class ViewModel: ObservableObject {
         guard !artBusy else { return }
         var seen = Set<String>()
         let targets = tracks.filter {
-            ($0.artworkHash ?? "").isEmpty && !$0.album.isEmpty
+            if case .torrent = $0.source {
+                return ($0.artworkHash ?? "").isEmpty
+            }
+            return ($0.artworkHash ?? "").isEmpty && !$0.album.isEmpty
                 && $0.album != "Unknown Album"
         }.filter {
             seen.insert($0.albumArtist.lowercased() + "\u{1f}" + $0.album.lowercased()).inserted
         }
         guard !targets.isEmpty else { return }
         artBusy = true
-        DispatchQueue.global(qos: .utility).async { [weak self] in
+        artQueue.async { [weak self] in
+            var metaHashes: [(String, String)] = []
             for t in targets {
-                LyraArt.shared.fetch(trackPath: t.id)
+                if case .torrent = t.source {
+                    var artist = t.artist.hasPrefix("torrent #") ? "" : t.artist
+                    if artist.isEmpty { artist = Self.torrentArtist(from: t.album) }
+                    if let res = LyraArt.shared.fetchMeta(
+                        artist: artist, album: "", title: t.title),
+                       let h = res["hash"] as? String, !h.isEmpty {
+                        metaHashes.append((t.id, h))
+                    }
+                } else {
+                    LyraArt.shared.fetch(trackPath: t.id)
+                }
             }
             let rows = LyraLibrary.shared.tracks.map(Track.init)
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.tracks = rows
+                // The DB reload can't see torrent rows — keep the live
+                // ones and patch in any hashes the meta path fetched.
+                var merged = rows + self.tracks.filter {
+                    if case .torrent = $0.source { return true }
+                    return false
+                }
+                for (id, h) in metaHashes {
+                    if let i = merged.firstIndex(where: { $0.id == id }) {
+                        merged[i].artworkHash = h
+                    }
+                }
+                self.tracks = merged
                 self.contentID = UUID()
                 self.artBusy = false
             }
@@ -1164,6 +1253,7 @@ final class ViewModel: ObservableObject {
                         if !newTracks.isEmpty {
                             self?.tracks.append(contentsOf: newTracks)
                             self?.contentID = UUID()
+                            for t in newTracks { self?.ensureArtwork(for: t) }
                         }
                     }
                 }

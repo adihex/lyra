@@ -19,6 +19,7 @@ lyra-search = { path = "../lyra-search" }
 lyra-ipc = { path = "../lyra-ipc" }
 lyra-coach = { path = "../lyra-coach" }
 lyra-map = { path = "../lyra-map" }
+serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true

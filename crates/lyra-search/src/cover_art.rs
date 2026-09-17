@@ -80,7 +80,7 @@ struct MbRelease {
     group: Option<MbId>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 struct MbRecordings {
     #[serde(default)]
     recordings: Vec<MbRecording>,
@@ -226,7 +226,9 @@ impl CoverArtClient {
     /// Front cover for an album. `artist` should be the album artist when
     /// known — MB's artist clause matches the release's credited name.
     /// `title` (the track title) unlocks a recording-level fallback for
-    /// bootleg/ripped album tags that don't exist on MB at all.
+    /// bootleg/ripped album tags that don't exist on MB at all. An empty
+    /// album skips the album chain entirely (torrent rows synthesize the
+    /// album tag from a filename — artist+title is the honest query).
     ///
     /// Chain per album candidate (raw, then decoration-stripped):
     /// release-group front (canonical) → release fronts. Then, if a track
@@ -237,13 +239,15 @@ impl CoverArtClient {
         album: &str,
         title: Option<&str>,
     ) -> Result<CoverArt, ArtFetch> {
-        let mut albums = vec![album.to_string()];
-        if let Some(stripped) = strip_decorations(album) {
-            albums.push(stripped);
-        }
-        for cand in &albums {
-            if let Some(art) = self.album_front(artist, cand).await? {
-                return Ok(art);
+        if !album.is_empty() {
+            let mut albums = vec![album.to_string()];
+            if let Some(stripped) = strip_decorations(album) {
+                albums.push(stripped);
+            }
+            for cand in &albums {
+                if let Some(art) = self.album_front(artist, cand).await? {
+                    return Ok(art);
+                }
             }
         }
         if let Some(art) = self.recording_front(artist, title).await? {
@@ -307,14 +311,31 @@ impl CoverArtClient {
         let Some(title) = title.filter(|t| !t.is_empty()) else {
             return Ok(None);
         };
-        let q = format!(
-            "recording:\"{}\" AND artist:\"{}\"",
-            lucene_escape(title),
-            lucene_escape(artist)
-        );
-        let recs: MbRecordings = self
-            .mb_get("recording", &urlencoding::encode(&q))
-            .await?;
+        // Torrent display names arrive as "Artist - Title - Decor" — the
+        // title clause tries the raw value then the stripped one.
+        let mut titles = vec![title.to_string()];
+        if let Some(stripped) = strip_decorations(title) {
+            titles.push(stripped);
+        }
+        let mut recs = MbRecordings::default();
+        for cand in &titles {
+            let q = if artist.is_empty() {
+                format!("recording:\"{}\"", lucene_escape(cand))
+            } else {
+                format!(
+                    "recording:\"{}\" AND artist:\"{}\"",
+                    lucene_escape(cand),
+                    lucene_escape(artist)
+                )
+            };
+            let got: MbRecordings = self
+                .mb_get("recording", &urlencoding::encode(&q))
+                .await?;
+            if !got.recordings.is_empty() {
+                recs = got;
+                break;
+            }
+        }
         // Collect (release-group id, release id) pairs across the top
         // recordings, group id first so canonical art wins.
         let mut pairs: Vec<(Option<String>, String)> = Vec::new();

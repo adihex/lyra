@@ -883,6 +883,54 @@ mod tests {
         unsafe { lyra_search_free(s) };
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// Live Torznab smoke: register a Jackett/Prowlarr endpoint, search,
+    /// resolve the first row. Endpoint comes from env:
+    ///   LYRA_TORZNAB_URL / LYRA_TORZNAB_KEY
+    /// `cargo test -p lyra-ffi search_live_torznab -- --ignored`.
+    #[test]
+    #[ignore]
+    fn search_live_torznab() {
+        let url = std::env::var("LYRA_TORZNAB_URL")
+            .expect("LYRA_TORZNAB_URL not set");
+        let key = std::env::var("LYRA_TORZNAB_KEY").unwrap_or_default();
+        let dir = std::env::temp_dir().join(format!("lyra-search-{}", std::process::id()));
+        let dc = CString::new(dir.to_str().unwrap()).unwrap();
+        let s = lyra_search_new(dc.as_ptr());
+        assert!(!s.is_null());
+
+        let ep = serde_json::json!([{"url": url, "apikey": key, "name": "jackett"}]);
+        let ec = CString::new(ep.to_string()).unwrap();
+        let n = unsafe { lyra_search_sync_torznab(s, ec.as_ptr()) };
+        assert_eq!(n, 1, "endpoint registration failed");
+
+        let q = CString::new(r#"{"text":"aerosmith dream on","strict":false}"#).unwrap();
+        let raw = unsafe { lyra_search(s, q.as_ptr()) };
+        let body = unsafe { CStr::from_ptr(raw) }.to_str().unwrap().to_string();
+        unsafe { lyra_string_free(raw) };
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let rows = v["results"].as_array().cloned().unwrap_or_default();
+        println!("results: {} errors: {}", rows.len(), v["provider_errors"]);
+        assert!(!rows.is_empty(), "no rows: {body}");
+        let torznab = rows.iter().find(|r| {
+            r["provider"].as_str().unwrap_or("").starts_with("torznab")
+        });
+        let row = torznab.unwrap_or(&rows[0]).clone();
+        println!("row: {}", serde_json::to_string_pretty(&row).unwrap());
+
+        // Resolve — must yield an addable magnet/url.
+        let rc = CString::new(row.to_string()).unwrap();
+        let raw = unsafe { lyra_search_resolve(s, rc.as_ptr()) };
+        let body = unsafe { CStr::from_ptr(raw) }.to_str().unwrap().to_string();
+        unsafe { lyra_string_free(raw) };
+        println!("resolved: {}", &body[..body.len().min(600)]);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(v.get("addable").is_some(), "no addable: {body}");
+
+        unsafe { lyra_search_free(s) };
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
 }
 
 // ── Torrent search (lyra-search) ──────────────────────────────────────
@@ -918,8 +966,51 @@ pub extern "C" fn lyra_search_new(data_dir: *const c_char) -> *mut LyraSearch {
         std::sync::Arc::new(lyra_search::ArchiveOrgProvider::new()),
         std::sync::Arc::new(lyra_search::AcademicTorrentsProvider::new(dir)),
         std::sync::Arc::new(lyra_search::X1337Provider::new()),
+        std::sync::Arc::new(lyra_search::ApibayProvider::new()),
     ]);
     Box::into_raw(Box::new(LyraSearch { rt, engine }))
+}
+
+/// Replace the External-tier provider set from a JSON array of
+/// [{url,apikey,name?}] — user-managed Torznab endpoints (Jackett,
+/// Prowlarr). One call applies the whole list, so deletions propagate.
+/// Returns the registered count, −1 bad json/null.
+#[no_mangle]
+pub unsafe extern "C" fn lyra_search_sync_torznab(
+    s: *mut LyraSearch,
+    endpoints_json: *const c_char,
+) -> c_int {
+    if s.is_null() || endpoints_json.is_null() {
+        return -1;
+    }
+    let raw = unsafe { CStr::from_ptr(endpoints_json) }
+        .to_str()
+        .unwrap_or_default();
+    #[derive(serde::Deserialize)]
+    struct Ep {
+        url: String,
+        apikey: Option<String>,
+        name: Option<String>,
+    }
+    let eps: Vec<Ep> = match serde_json::from_str(raw) {
+        Ok(v) => v,
+        Err(_) => return -1,
+    };
+    let set: Vec<std::sync::Arc<dyn lyra_search::TorrentProvider>> = eps
+        .into_iter()
+        .filter(|e| e.url.starts_with("http"))
+        .map(|e| {
+            std::sync::Arc::new(lyra_search::TorznabProvider::new(
+                e.url,
+                e.apikey.unwrap_or_default(),
+                e.name.as_deref(),
+            )) as std::sync::Arc<dyn lyra_search::TorrentProvider>
+        })
+        .collect();
+    let n = set.len() as c_int;
+    let s = unsafe { &*s };
+    s.engine.sync_external(set);
+    n
 }
 
 #[no_mangle]

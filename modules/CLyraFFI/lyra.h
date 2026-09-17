@@ -74,6 +74,10 @@ void   lyra_lib_free(void *l);
    cached | ok{hash,mbid,applied} | no_track | no_album | no_artist |
    not_due{next_retry_at} | not_found | error{error} */
 char  *lyra_art_fetch(void *l, const char *path);
+/* Same fetch driven by explicit metadata {"artist","album","title"} —
+   for rows that aren't in tracks (torrent-materialized). Empty album
+   skips the album chain; recording fallback covers artist+title. */
+char  *lyra_art_fetch_meta(void *l, const char *query_json);
 
 /* ── torrents (one global session) ── */
 int   lyra_torrent_init(const char *download_dir);
@@ -93,6 +97,7 @@ void  *lyra_search_new(const char *data_dir);     /* provider caches under data_
 void   lyra_search_free(void *s);
 char  *lyra_search(void *s, const char *query_json);          /* SearchResponse JSON — free me; blocks, call off-main */
 char  *lyra_search_resolve(void *s, const char *result_json); /* {result,files,addable:{kind:magnet|torrent_url|torrent_b64,…}} or {"error":…} */
+int    lyra_search_sync_torznab(void *s, const char *endpoints_json); /* replace External set from [{url,apikey,name?}]; returns count, -1 bad */
 
 /* ── remote library (lyra-fs): profile JSON = {host,port,user,key_path,
  *    root_path,password?} — password selects Password auth over key/agent ── */

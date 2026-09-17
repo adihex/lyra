@@ -3,17 +3,18 @@
 
 use crate::{ProviderError, ProviderIssue, ResolvedTorrent, SearchQuery, SearchResponse, SearchResult, TorrentProvider};
 use std::collections::HashSet;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 pub struct SearchEngine {
-    providers: Vec<Arc<dyn TorrentProvider>>,
+    /// RwLock: user-configured providers (torznab) register post-build.
+    providers: RwLock<Vec<Arc<dyn TorrentProvider>>>,
     timeout: Duration,
 }
 
 impl SearchEngine {
     pub fn new(providers: Vec<Arc<dyn TorrentProvider>>) -> Self {
-        Self { providers, timeout: Duration::from_secs(8) }
+        Self { providers: RwLock::new(providers), timeout: Duration::from_secs(8) }
     }
 
     pub fn with_timeout(mut self, t: Duration) -> Self {
@@ -21,11 +22,28 @@ impl SearchEngine {
         self
     }
 
+    /// Register a provider after construction (External-tier config).
+    /// Replacing an existing id keeps call sites idempotent.
+    pub fn register(&self, p: Arc<dyn TorrentProvider>) {
+        let mut guard = self.providers.write().unwrap();
+        guard.retain(|x| x.id() != p.id());
+        guard.push(p);
+    }
+
+    /// Replace every External-tier provider with `set` — user-edited
+    /// endpoint lists apply as one swap, so removals just drop out.
+    pub fn sync_external(&self, set: Vec<Arc<dyn TorrentProvider>>) {
+        let mut guard = self.providers.write().unwrap();
+        guard.retain(|p| p.legal_tier() != crate::LegalTier::External);
+        guard.extend(set);
+    }
+
     /// Fan out to the query's providers (all when unspecified). One dead
     /// or slow provider surfaces in provider_errors, never fails the query.
     pub async fn search(&self, q: &SearchQuery) -> SearchResponse {
-        let jobs: Vec<_> = self
-            .providers
+        let providers: Vec<Arc<dyn TorrentProvider>> =
+            self.providers.read().unwrap().clone();
+        let jobs: Vec<_> = providers
             .iter()
             .filter(|p| {
                 q.providers
@@ -55,8 +73,7 @@ impl SearchEngine {
         // album-ness → depth/rate → downloads → name. Stable, so equal
         // keys keep provider order.
         let tier_of = |provider: &str| -> u8 {
-            match self
-                .providers
+            match providers
                 .iter()
                 .find(|p| p.id() == provider)
                 .map(|p| p.legal_tier())
@@ -80,10 +97,13 @@ impl SearchEngine {
     }
 
     pub async fn resolve(&self, r: &SearchResult) -> Result<ResolvedTorrent, ProviderError> {
-        let p = self
-            .providers
+        let providers = self.providers.read().unwrap();
+        let p = providers
             .iter()
             .find(|p| p.id() == r.provider)
+            .cloned();
+        drop(providers);
+        let p = p
             .ok_or_else(|| ProviderError::Unavailable(format!("no provider '{}'", r.provider)))?;
         p.resolve(r).await
     }

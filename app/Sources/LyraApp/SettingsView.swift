@@ -7,6 +7,10 @@ import SwiftUI
 struct SettingsView: View {
     @ObservedObject private var vm = ViewModel.shared
     @ObservedObject private var prefs = Prefs.shared
+    @ObservedObject private var torznab = TorznabEndpoints.shared
+    @State private var torzUrl = ""
+    @State private var torzKey = ""
+    @State private var torzName = ""
 
     var body: some View {
         Form {
@@ -42,6 +46,36 @@ struct SettingsView: View {
                     Text("Static").tag("off")
                     Text("Hidden").tag("hidden")
                 }
+            }
+            Section("Discover — Torznab Indexers") {
+                ForEach(torznab.all) { e in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(e.name).font(.uiBody)
+                            Text(e.url).font(.uiCaption).foregroundStyle(Ui.inkSoft)
+                                .lineLimit(1).truncationMode(.middle)
+                        }
+                        Spacer()
+                        Button("Remove") { torznab.remove(e) }
+                            .buttonStyle(.sharp)
+                    }
+                }
+                TextField("Label (optional)", text: $torzName)
+                TextField("Indexer URL — e.g. http://host:9117/api/v2.0/indexers/all", text: $torzUrl)
+                SecureField("API key", text: $torzKey)
+                HStack {
+                    Spacer()
+                    Button("Add indexer") {
+                        let e = TorznabEndpoint(name: torzName, url: torzUrl)
+                        guard !e.url.isEmpty else { return }
+                        torznab.upsert(e, apikey: torzKey)
+                        torzName = ""; torzUrl = ""; torzKey = ""
+                    }
+                    .buttonStyle(.sharp)
+                    .disabled(torzUrl.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+                Text("Jackett/Prowlarr endpoints — copy an indexer's Torznab feed URL and your API key. The key stays in Keychain.")
+                    .font(.uiCaption).foregroundStyle(Ui.inkSoft)
             }
             Section("System") {
                 Toggle("Launch at login", isOn: Binding(

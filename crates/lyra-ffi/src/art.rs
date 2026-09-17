@@ -78,8 +78,10 @@ pub unsafe extern "C" fn lyra_art_fetch(
     match lib.art_fetch_due(&key) {
         Ok(true) => {}
         Ok(false) => {
-            let (_, retry) = lib.art_fetch_row(&key).ok().flatten().unwrap_or_default();
-            return out(json!({"state": "not_due", "next_retry_at": retry}));
+            let (_, hash, retry) =
+                lib.art_fetch_row(&key).ok().flatten().unwrap_or_default();
+            return out(json!({"state": "not_due", "hash": hash,
+                              "next_retry_at": retry}));
         }
         Err(e) => return out(json!({"state": "error", "error": e.to_string()})),
     }
@@ -105,6 +107,7 @@ pub unsafe extern "C" fn lyra_art_fetch(
                         "ok",
                         Some(200),
                         None,
+                        Some(&h),
                     );
                     out(json!({
                         "state": "ok", "hash": h, "mbid": art.mbid,
@@ -118,6 +121,7 @@ pub unsafe extern "C" fn lyra_art_fetch(
                         "error",
                         None,
                         Some(now_secs() + DAY),
+                        None,
                     );
                     out(json!({"state": "error", "error": "image rejected"}))
                 }
@@ -126,17 +130,105 @@ pub unsafe extern "C" fn lyra_art_fetch(
         Err(ArtFetch::NotFound) => {
             // Negative cache: don't re-ask MB for a month.
             let _ = lib.art_fetch_record(&key, None, "not_found", Some(404),
-                                         Some(now_secs() + 30 * DAY));
+                                         Some(now_secs() + 30 * DAY), None);
             out(json!({"state": "not_found"}))
         }
         Err(ArtFetch::Http(s)) => {
             let _ = lib.art_fetch_record(&key, None, "error", Some(s as i64),
-                                         Some(now_secs() + DAY));
+                                         Some(now_secs() + DAY), None);
             out(json!({"state": "error", "error": format!("http {s}")}))
         }
         Err(e) => {
             let _ = lib.art_fetch_record(&key, None, "error", None,
-                                         Some(now_secs() + 6 * 3600));
+                                         Some(now_secs() + 6 * 3600), None);
+            out(json!({"state": "error", "error": e.to_string()}))
+        }
+    }
+}
+
+/// Same pipeline for rows that aren't in `tracks` — torrent-materialized
+/// rows carry synthesized metadata, so the caller passes it explicitly:
+/// `{"artist": "Aerosmith", "title": "Dream On", "album": ""}`. Empty
+/// album skips the album chain; the recording fallback covers
+/// artist+title. The returned hash applies in-memory only — there is no
+/// DB row to stamp.
+#[no_mangle]
+pub unsafe extern "C" fn lyra_art_fetch_meta(
+    lib: *mut Library,
+    query_json: *const c_char,
+) -> *mut c_char {
+    let Some(js) = cstr(query_json) else {
+        return out(json!({"state": "error", "error": "null query"}));
+    };
+    if lib.is_null() {
+        return out(json!({"state": "error", "error": "null lib"}));
+    }
+    let lib = unsafe { &*lib };
+    let q: serde_json::Value = match serde_json::from_str(js) {
+        Ok(v) => v,
+        Err(e) => return out(json!({"state": "error", "error": e.to_string()})),
+    };
+    let artist = q["artist"].as_str().unwrap_or("");
+    let album = q["album"].as_str().unwrap_or("");
+    let title = q["title"].as_str().unwrap_or("");
+    if artist.is_empty() && title.is_empty() {
+        return out(json!({"state": "no_artist"}));
+    }
+    // Ledger key rides on what was actually queried — album when present,
+    // else the title (album chain skipped server-side for empty album).
+    let key = if album.is_empty() {
+        format!("{}\u{1f}rec:{}", artist.to_lowercase(), title.to_lowercase())
+    } else {
+        Library::album_art_key(None, Some(artist), album)
+    };
+    match lib.art_fetch_due(&key) {
+        Ok(true) => {}
+        Ok(false) => {
+            // The ledger is the only record for metadata-keyed art —
+            // hand the stored hash back so torrent tiles re-render after
+            // relaunch without another fetch.
+            let (_, hash, _) =
+                lib.art_fetch_row(&key).ok().flatten().unwrap_or_default();
+            return out(json!({"state": "not_due", "hash": hash}));
+        }
+        Err(e) => return out(json!({"state": "error", "error": e.to_string()})),
+    }
+    let client = CoverArtClient::new();
+    let rt = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => return out(json!({"state": "error", "error": e.to_string()})),
+    };
+    match rt.block_on(client.fetch_front(artist, album,
+                                         (!title.is_empty()).then_some(title)))
+    {
+        Ok(art) => match lib.ingest_artwork(&art.bytes, &art.mime, "caa") {
+            Some(h) => {
+                let _ = lib.art_fetch_record(&key, Some(&art.mbid), "ok",
+                                             Some(200), None, Some(&h));
+                out(json!({"state": "ok", "hash": h, "mbid": art.mbid}))
+            }
+            None => {
+                let _ = lib.art_fetch_record(&key, Some(&art.mbid), "error",
+                                             None, Some(now_secs() + DAY), None);
+                out(json!({"state": "error", "error": "image rejected"}))
+            }
+        },
+        Err(ArtFetch::NotFound) => {
+            let _ = lib.art_fetch_record(&key, None, "not_found", Some(404),
+                                         Some(now_secs() + 30 * DAY), None);
+            out(json!({"state": "not_found"}))
+        }
+        Err(ArtFetch::Http(s)) => {
+            let _ = lib.art_fetch_record(&key, None, "error", Some(s as i64),
+                                         Some(now_secs() + DAY), None);
+            out(json!({"state": "error", "error": format!("http {s}")}))
+        }
+        Err(e) => {
+            let _ = lib.art_fetch_record(&key, None, "error", None,
+                                         Some(now_secs() + 6 * 3600), None);
             out(json!({"state": "error", "error": e.to_string()}))
         }
     }

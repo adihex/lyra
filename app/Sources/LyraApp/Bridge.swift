@@ -344,9 +344,20 @@ final class LyraSearch {
             .appendingPathComponent("Lyra/search", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         handle = dir.path.withCString { lyra_search_new($0) }
+        TorznabEndpoints.shared.applyTo(self)
     }
 
     deinit { lyra_search_free(handle) }
+
+    /// Replace the External-tier provider set — the user's Torznab
+    /// endpoints (Jackett/Prowlarr). Pass the persisted list on every
+    /// edit; an empty payload clears them.
+    func syncTorznab(_ endpoints: [[String: Any]]) {
+        guard let handle,
+              let data = try? JSONSerialization.data(withJSONObject: endpoints),
+              let js = String(data: data, encoding: .utf8) else { return }
+        _ = js.withCString { lyra_search_sync_torznab(handle, $0) }
+    }
 
     /// (results, provider_errors). `strict` (default) drops rows verified
     /// lossy; false keeps them flagged via `lossless:false` + `formats`.
