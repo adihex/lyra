@@ -9,15 +9,21 @@ struct LyraApp: App {
     @ObservedObject private var prefs = Prefs.shared
     // Touching the singleton here starts its policy timer at launch.
     @ObservedObject private var pet = DesktopPet.shared
+    // Observing the store republishes scene content on palette changes.
+    @ObservedObject private var theme = LyraTheme.shared
 
     var body: some Scene {
         WindowGroup(id: "main") {
             ContentView()
-                .preferredColorScheme(.light) // beige theme needs light chrome
+                .preferredColorScheme(theme.appearance.colorScheme)
+                .tint(theme.color(.tint))
                 .background(WindowOpener())
         }
-        .windowStyle(.titleBar)
-        .defaultSize(width: 960, height: 640)
+        // Hidden title bar: the lavender chassis runs edge to edge while
+        // the native traffic lights and sidebar toolbar stay put.
+        .windowStyle(.hiddenTitleBar)
+        .defaultSize(width: Bubble.Size.windowWidth,
+                     height: Bubble.Size.windowHeight)
         .commands {
             // Space/arrow transport belongs on a *menu* button — putting it
             // on a visible button fights AppKit's focused-button activation.
@@ -55,7 +61,8 @@ struct LyraApp: App {
         // Cmd-, — prefs home for the system surfaces (docs §10).
         Settings {
             SettingsView()
-                .preferredColorScheme(.light)
+                .preferredColorScheme(theme.appearance.colorScheme)
+                .tint(theme.color(.tint))
         }
 
         // Menu-bar mini player — .window style hosts arbitrary SwiftUI
@@ -73,7 +80,8 @@ struct LyraApp: App {
                 DispatchQueue.main.async { prefs.menuBarExtra = v }
             })) {
             MiniPlayerView()
-                .preferredColorScheme(.light)
+                .preferredColorScheme(theme.appearance.colorScheme)
+                .tint(theme.color(.tint))
         } label: {
             MenuBarLabel()
         }
@@ -161,6 +169,7 @@ struct MiniPlayerView: View {
     @ObservedObject private var vm = ViewModel.shared
     @ObservedObject private var pet = DesktopPet.shared
     @ObservedObject private var ticker = VizTicker.shared
+    @ObservedObject private var theme = LyraTheme.shared
 
     var body: some View {
         VStack(spacing: 10) {
@@ -197,31 +206,29 @@ struct MiniPlayerView: View {
 
             // Transport — prev / play-pause / next. Pause already covers
             // stop's job here; a fourth button read as clutter.
-            HStack(spacing: 16) {
+            HStack(spacing: Bubble.Space.lg) {
                 Button { vm.prev() } label: {
-                    Image(systemName: "backward.fill")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(Ui.ink)
-                        .sharpIconBox(32)
+                    Image(systemName: "backward.fill").font(.uiHeadline)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(BubbleButtonStyle(
+                    shape: .circle, diameter: Bubble.Size.compactKey))
+                .accessibilityLabel("Previous track")
                 .help("Previous track")
                 Button { vm.toggle() } label: {
                     Image(systemName: vm.playing ? "pause.fill" : "play.fill")
-                        .font(.system(size: 16, weight: .bold))
-                        .foregroundStyle(.white)
-                        .frame(width: 40, height: 40)
-                        .background(Ui.accent)
+                        .font(.bubbleGlyph)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(BubbleButtonStyle(
+                    prominent: true, shape: .circle,
+                    diameter: Bubble.Size.transportKey))
+                .accessibilityLabel(vm.playing ? "Pause" : "Play")
                 .help(vm.playing ? "Pause" : "Play")
                 Button { vm.next() } label: {
-                    Image(systemName: "forward.fill")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(Ui.ink)
-                        .sharpIconBox(32)
+                    Image(systemName: "forward.fill").font(.uiHeadline)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(BubbleButtonStyle(
+                    shape: .circle, diameter: Bubble.Size.compactKey))
+                .accessibilityLabel("Next track")
                 .help("Next track")
             }
 
@@ -246,9 +253,9 @@ struct MiniPlayerView: View {
                 .buttonStyle(.plain)
             }
         }
-        .padding()
-        .frame(width: 240)
-        .background(Ui.surface)
+        .frame(width: Bubble.Size.inspector)
+        .bubbleTray(padding: Bubble.Space.md)
+        .background(Color.bubbleChassis)
         .onAppear { vm.startPolling() }
     }
 }

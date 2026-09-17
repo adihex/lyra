@@ -135,9 +135,9 @@ struct DiscoverResult: Identifiable {
     }
 }
 
-/// View model. Built with CLT swiftc (no Xcode) — bare `@State` is a
-/// SwiftUIMacros convenience macro unavailable here; ObservableObject +
-/// @Published + @StateObject are plain property wrappers and work.
+/// View model — one shared ObservableObject so the window, menu, and
+/// mini player all observe the same @Published state; object-backed
+/// state stays stable across view recomposition.
 final class ViewModel: ObservableObject {
     static let shared = ViewModel() // one VM — window, menu, mini player
 
@@ -1305,6 +1305,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
     case eq = "Equalizer"
     case visuals = "Visuals"
     case remote = "Remote"
+    case designLab = "Design Lab"
     var id: String { rawValue }
     var icon: String {
         switch self {
@@ -1315,6 +1316,7 @@ enum SidebarItem: String, CaseIterable, Identifiable {
         case .eq: "slider.horizontal.3"
         case .visuals: "waveform"
         case .remote: "iphone.radiowaves.left.and.right"
+        case .designLab: "square.grid.3x3.fill"
         }
     }
 }
@@ -1322,34 +1324,34 @@ enum SidebarItem: String, CaseIterable, Identifiable {
 struct ContentView: View {
     @ObservedObject private var vm = ViewModel.shared
     @ObservedObject private var remotes = RemoteSources.shared
+    @ObservedObject private var theme = LyraTheme.shared
 
     var body: some View {
         NavigationSplitView(columnVisibility: $vm.columnVis) {
             // Manual nav — List's selection pill can't be tinted (system
-            // accent only); buttons give us the square accent highlight.
-            VStack(alignment: .leading, spacing: 2) {
+            // accent only); BubbleButtonStyle gives us the accent keycap
+            // for the current item instead.
+            VStack(alignment: .leading, spacing: Bubble.Space.xs) {
                 ForEach(SidebarItem.allCases) { item in
                     Button { vm.selection = item } label: {
-                        HStack(spacing: 8) {
+                        HStack(spacing: Bubble.Space.sm) {
                             Image(systemName: item.icon)
-                                .frame(width: 18)
+                                .frame(width: Bubble.Size.sidebarGlyph)
                             Text(item.rawValue)
                         }
                         .font(.uiBodyStrong)
-                        .foregroundStyle(vm.selection == item ? .white : Ui.ink)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, Ui.s12)
-                        .padding(.vertical, 7)
-                        .background(vm.selection == item ? Ui.accent : Color.clear)
-                        .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(BubbleButtonStyle(selected: vm.selection == item))
+                    .accessibilityAddTraits(vm.selection == item ? .isSelected : [])
                 }
                 Spacer()
             }
-            .padding(Ui.s8)
+            .padding(Bubble.Space.sm)
             .background(Ui.bg)
-            .navigationSplitViewColumnWidth(min: 150, ideal: 190, max: 320)
+            .navigationSplitViewColumnWidth(min: Bubble.Size.sidebarMin,
+                                            ideal: Bubble.Size.sidebarIdeal,
+                                            max: Bubble.Size.sidebarMax)
         } detail: {
             VStack(spacing: 0) {
                 detailView
@@ -1363,7 +1365,12 @@ struct ContentView: View {
             .toolbarBackground(.visible, for: .windowToolbar)
         }
         .tint(Ui.accent)
-        .frame(minWidth: 780, minHeight: 560)
+        // App-wide defaults for the main window — menus opt out (they
+        // never render these styles anyway).
+        .font(.uiBody)
+        .toggleStyle(.bubble)
+        .frame(minWidth: Bubble.Size.windowMinWidth,
+               minHeight: Bubble.Size.windowMinHeight)
     }
 
     @ViewBuilder private var detailView: some View {
@@ -1380,6 +1387,7 @@ struct ContentView: View {
             case .eq: eqPane
             case .visuals: VisualsPane()
             case .remote: remotePane
+            case .designLab: BubbleDesignLabView()
             case .none: Text("Select a section").foregroundStyle(Ui.inkSoft)
             }
         }
@@ -1394,15 +1402,24 @@ struct ContentView: View {
                 // explicit search field — .searchable(placement:.toolbar)
                 // landed in the collapsed sidebar strip; an inline field is
                 // deterministic about where it lives.
-                HStack(spacing: 4) {
+                HStack(spacing: Bubble.Space.xs) {
                     Image(systemName: "magnifyingglass").foregroundStyle(Ui.inkSoft)
                     TextField("Filter…", text: $vm.query)
                         .textFieldStyle(.plain)
                 }
-                .padding(.horizontal, 10).padding(.vertical, 6)
-                .background(Ui.surface)
-                .overlay(Rectangle().stroke(Ui.border, lineWidth: 1))
-                .frame(minWidth: 90, idealWidth: 200, maxWidth: 260)
+                .padding(.horizontal, Bubble.Space.md)
+                .padding(.vertical, Bubble.Space.sm - Bubble.Stroke.fine)
+                .background(
+                    RoundedRectangle(cornerRadius: Bubble.Size.fieldRadius,
+                                     style: .continuous)
+                        .fill(Color.bubbleKeycap))
+                .overlay(
+                    RoundedRectangle(cornerRadius: Bubble.Size.fieldRadius,
+                                     style: .continuous)
+                        .strokeBorder(Bubble.trayRim, lineWidth: Bubble.Stroke.fine))
+                .frame(minWidth: Bubble.Size.searchMin,
+                       idealWidth: Bubble.Size.searchIdeal,
+                       maxWidth: Bubble.Size.searchMax)
                 Spacer()
                 if let root = vm.libraryRoot {
                     Text(URL(fileURLWithPath: root).lastPathComponent)
@@ -1665,13 +1682,13 @@ struct ContentView: View {
 
     private func trackRow(_ t: Track, widths w: [CGFloat]) -> some View {
         let sel = vm.selectedTracks.contains(t.id)
-        let soft: Color = sel ? .white.opacity(0.85) : Ui.inkSoft
+        let soft: Color = sel ? Ui.onAccent.opacity(0.85) : Ui.inkSoft
         return HStack(spacing: 0) {
             cell(t.trackNumber > 0 ? "\(t.trackNumber)" : "—", w[0], .uiCaption,
-                 sel ? .white.opacity(0.8) : Ui.inkSoft)
+                 sel ? Ui.onAccent.opacity(0.8) : Ui.inkSoft)
             HStack(spacing: 6) {
                 ArtImage(hash: t.artworkHash, label: t.album, size: 18)
-                Text(t.title).font(.uiBody).foregroundStyle(sel ? .white : Ui.ink)
+                Text(t.title).font(.uiBody).foregroundStyle(sel ? Ui.onAccent : Ui.ink)
                     .lineLimit(1)
             }
             .frame(width: w[1] - 16, alignment: .leading)
@@ -1680,10 +1697,10 @@ struct ContentView: View {
             cell(t.album, w[3], .uiBody, soft)
             cell(vm.fmt(t.duration), w[4], .uiMono, soft)
             Text(t.codec).font(.uiMicro)
-                .foregroundStyle(sel ? .white : Ui.indigo)
+                .foregroundStyle(sel ? Ui.onAccent : Ui.indigo)
                 .padding(.horizontal, 6).padding(.vertical, 1)
-                .background(sel ? Color.white.opacity(0.16) : Ui.indigo.opacity(0.12))
-                .overlay(Rectangle().stroke(sel ? Color.white.opacity(0.5) : Ui.indigo.opacity(0.3), lineWidth: 1))
+                .background(sel ? Ui.onAccent.opacity(0.16) : Ui.indigo.opacity(0.12))
+                .overlay(Rectangle().stroke(sel ? Ui.onAccent.opacity(0.5) : Ui.indigo.opacity(0.3), lineWidth: 1))
                 .frame(width: w[5], alignment: .center)
         }
         .frame(height: 27)
@@ -1800,25 +1817,35 @@ struct ContentView: View {
                 .frame(minWidth: 60, maxWidth: 200, alignment: .leading)
                 Spacer()
                 Button { vm.prev() } label: {
-                    Image(systemName: "backward.fill").sharpIconBox()
+                    Image(systemName: "backward.fill").font(.uiHeadline)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(BubbleButtonStyle(
+                    shape: .circle, diameter: Bubble.Size.compactKey))
+                .accessibilityLabel("Previous track")
+                .help("Previous track")
                 Button { vm.toggle() } label: {
                     Image(systemName: vm.playing ? "pause.fill" : "play.fill")
-                        .font(.system(size: 15, weight: .bold))
-                        .foregroundStyle(.white)
-                        .frame(width: 34, height: 34)
-                        .background(Ui.accent)
+                        .font(.bubbleGlyph)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(BubbleButtonStyle(
+                    prominent: true, shape: .circle,
+                    diameter: Bubble.Size.transportKey))
+                .accessibilityLabel(vm.playing ? "Pause" : "Play")
+                .help(vm.playing ? "Pause" : "Play")
                 Button { LyraPlayer.shared.stop() } label: {
-                    Image(systemName: "stop.fill").sharpIconBox()
+                    Image(systemName: "stop.fill").font(.uiHeadline)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(BubbleButtonStyle(
+                    shape: .circle, diameter: Bubble.Size.compactKey))
+                .accessibilityLabel("Stop")
+                .help("Stop")
                 Button { vm.next() } label: {
-                    Image(systemName: "forward.fill").sharpIconBox()
+                    Image(systemName: "forward.fill").font(.uiHeadline)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(BubbleButtonStyle(
+                    shape: .circle, diameter: Bubble.Size.compactKey))
+                .accessibilityLabel("Next track")
+                .help("Next track")
                 VizTick { positionLabel }
                 Spacer()
                 if vm.clip {
@@ -1828,11 +1855,11 @@ struct ContentView: View {
                 Image(systemName: "speaker.wave.2.fill").foregroundStyle(Ui.inkSoft)
                 Slider(value: $vm.volume, in: 0...1.42).frame(maxWidth: 100) // 1.42² ≈ 2x gain
             }
-            .padding(.horizontal, 10)
-            .padding(.bottom, 8)
+            .padding(.horizontal, Bubble.Space.sm)
+            .padding(.bottom, Bubble.Space.xs)
         }
-        .background(Ui.surface)
-        .overlay(alignment: .top) { Ui.border.frame(height: 1) }
+        // The bar sits in a shallow tray instead of a square white strip.
+        .bubbleTray(padding: Bubble.Space.sm)
     }
 
     /// Transport-bar viz: live thumbnail of the selected mode — clicking
@@ -2026,7 +2053,7 @@ struct ContentView: View {
                 Spacer(minLength: 4)
                 if r.lossless == true {
                     Text("LOSSLESS").font(.uiMicro)
-                        .foregroundStyle(.white)
+                        .foregroundStyle(Ui.onAccent)
                         .padding(.horizontal, 6).padding(.vertical, 2)
                         .background(Ui.mint)
                 } else if r.lossless == false {

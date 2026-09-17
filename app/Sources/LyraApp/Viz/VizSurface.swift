@@ -147,6 +147,8 @@ struct VizSurfaceView: View {
     var compact = false
     @ObservedObject private var vm = ViewModel.shared
     @ObservedObject private var ticker = VizTicker.shared
+    /// Palette/scheme changes invalidate the Canvas's cached frame too.
+    @ObservedObject private var theme = LyraTheme.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var effective: VizMode {

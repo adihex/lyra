@@ -12,40 +12,49 @@ import CoreGraphics
 /// Bodies in `scene.away` are skipped — when the desktop pet pops out,
 /// the icon literally empties to sky + faint orbit (desktop-pet.md §3).
 enum CosmosPaintCG {
-    private static func col(_ r: CGFloat, _ g: CGFloat, _ b: CGFloat,
-                            _ a: CGFloat = 1) -> CGColor {
-        CGColor(srgbRed: r, green: g, blue: b, alpha: a)
+    /// Per-draw immutable resources derived from the resolved
+    /// `PetPalette` — gradients/colors are built once per draw call
+    /// (not per star/pixel), keeping the painter a pure function of
+    /// (scene, frame, palette).
+    private struct Cast {
+        let bgGrad, glowGrad, planetGrad, moonGrad: CGGradient
+        let starWhite, starMint, plusCol, orbitCol, stripeCol: CGColor
+        let craterCol, moonSpotCol, accentCol: CGColor
+
+        init(_ p: PetPalette) {
+            func a(_ c: CGColor, _ alpha: CGFloat) -> CGColor {
+                c.copy(alpha: alpha)!
+            }
+            let rgb = CGColorSpaceCreateDeviceRGB()
+            bgGrad = CGGradient(colorsSpace: rgb,
+                colors: [p.skyTop, p.skyBottom] as CFArray,
+                locations: [0, 1])!
+            glowGrad = CGGradient(colorsSpace: rgb,
+                colors: [a(p.glow, 0.28), a(p.glow, 0)] as CFArray,
+                locations: [0, 1])!
+            planetGrad = CGGradient(colorsSpace: rgb,
+                colors: [p.bodyLight, p.bodyMid, p.bodyDark] as CFArray,
+                locations: [0, 0.55, 1])!
+            moonGrad = CGGradient(colorsSpace: rgb,
+                colors: [p.moonLight, p.moonDark] as CFArray,
+                locations: [0, 1])!
+            starWhite = p.glint
+            starMint = p.spark
+            plusCol = p.glint
+            orbitCol = p.ring
+            stripeCol = p.ring
+            craterCol = a(p.detail, 0.55)
+            moonSpotCol = a(p.detail, 0.5)
+            accentCol = p.note
+        }
     }
 
-    // gradients/colors are immutable — shared across every frame
-    private static let bgGrad = CGGradient(
-        colorsSpace: CGColorSpaceCreateDeviceRGB(),
-        colors: [col(0.14, 0.10, 0.36), col(0.02, 0.03, 0.09)] as CFArray,
-        locations: [0, 1])!
-    private static let glowGrad = CGGradient(
-        colorsSpace: CGColorSpaceCreateDeviceRGB(),
-        colors: [col(0.25, 0.85, 0.75, 0.28), col(0.25, 0.85, 0.75, 0)] as CFArray,
-        locations: [0, 1])!
-    private static let planetGrad = CGGradient(
-        colorsSpace: CGColorSpaceCreateDeviceRGB(),
-        colors: [col(0.45, 0.55, 0.95), col(0.16, 0.22, 0.55),
-                 col(0.07, 0.10, 0.28)] as CFArray,
-        locations: [0, 0.55, 1])!
-    private static let moonGrad = CGGradient(
-        colorsSpace: CGColorSpaceCreateDeviceRGB(),
-        colors: [col(0.85, 1.0, 0.95), col(0.45, 0.75, 0.72)] as CFArray,
-        locations: [0, 1])!
-    private static let starWhite = col(0.85, 0.9, 1)
-    private static let starMint = col(0.6, 0.95, 0.85)
-    private static let plusCol = col(0.9, 0.97, 1)
-    private static let orbitCol = col(0.7, 0.85, 1)
-    private static let stripeCol = col(0.65, 0.75, 1)
-    private static let craterCol = col(0.10, 0.16, 0.42, 0.55)
-    private static let moonSpotCol = col(0.3, 0.55, 0.55, 0.5)
-    private static let accentCol = col(0.780, 0.447, 0.278) // Ui.accent
-
+    /// `palette` comes from the view's effectiveAppearance — the
+    /// painter never reads the mutable theme store mid-frame.
     static func draw(_ ctx: CGContext, in bounds: CGRect,
-                     scene: CosmosScene, frame f: VizFrame) {
+                     scene: CosmosScene, frame f: VizFrame,
+                     palette: PetPalette) {
+        let cast = Cast(palette)
         let s = scene.state
         let saturnAway = scene.away.contains(.saturn)
         let moonAway = scene.away.contains(.moon)
@@ -67,10 +76,10 @@ enum CosmosPaintCG {
                            cornerHeight: S * 0.225, transform: nil))
         ctx.clip()
 
-        // ── background: base fill then the indigo diagonal ──
-        ctx.setFillColor(col(0.02, 0.03, 0.09))
+        // ── background: base fill then the sky diagonal ──
+        ctx.setFillColor(palette.skyBottom)
         ctx.fill(tile)
-        ctx.drawLinearGradient(bgGrad, start: P([0.3, 1]),
+        ctx.drawLinearGradient(cast.bgGrad, start: P([0.3, 1]),
                                end: P([0.7, 0]), options: [])
 
         // ── star field: alpha = base + hi-band flicker; <1px dropped ──
@@ -79,7 +88,7 @@ enum CosmosPaintCG {
             let star = s.stars[i]
             let d = CGFloat(star.r) * S / 1024
             if d * devPx < 1 { continue }
-            ctx.setFillColor(star.mint ? starMint : starWhite)
+            ctx.setFillColor(star.mint ? cast.starMint : cast.starWhite)
             ctx.setAlpha(min(CGFloat(star.alpha)
                              + CGFloat(hi * hashNoise(s.tick / 6, i)) * 0.5, 1))
             ctx.fillEllipse(in: CGRect(x: tile.minX + CGFloat(star.x) * S,
@@ -91,11 +100,11 @@ enum CosmosPaintCG {
         for (sx, sy, sr) in [(0.78, 0.82, 0.016), (0.2, 0.68, 0.012)]
             as [(CGFloat, CGFloat, CGFloat)] {
             let cx = tile.minX + sx * S, cy = tile.minY + sy * S, r = sr * S
-            ctx.setFillColor(plusCol)
+            ctx.setFillColor(cast.plusCol)
             ctx.setAlpha(0.9)
             ctx.fillEllipse(in: CGRect(x: cx - r * 0.35, y: cy - r * 0.35,
                                        width: r * 0.7, height: r * 0.7))
-            ctx.setStrokeColor(plusCol)
+            ctx.setStrokeColor(cast.plusCol)
             ctx.setAlpha(0.55)
             ctx.setLineWidth(r * 0.16)
             ctx.setLineCap(.round)
@@ -115,12 +124,12 @@ enum CosmosPaintCG {
         let bobY = saturnAway ? 0 : max(s.pulse, 0) * 0.020
         let pc = P(center + SIMD2(0, bobY))
 
-        // ── mint glow behind the planet — breathes with mids ──
+        // ── companion glow behind the planet — breathes with mids ──
         if !saturnAway {
             ctx.saveGState()
             ctx.setAlpha(CGFloat(s.glow / 0.28))
             ctx.drawRadialGradient(
-                glowGrad, startCenter: pc, startRadius: 0,
+                cast.glowGrad, startCenter: pc, startRadius: 0,
                 endCenter: pc, endRadius: S * 0.44,
                 options: [.drawsAfterEndLocation])
             ctx.restoreGState()
@@ -133,7 +142,7 @@ enum CosmosPaintCG {
         ctx.translateBy(x: P(center).x, y: P(center).y)
         ctx.rotate(by: CGFloat(tilt))
         ctx.scaleBy(x: 1, y: CGFloat(squash))
-        ctx.setStrokeColor(orbitCol)
+        ctx.setStrokeColor(cast.orbitCol)
         ctx.setAlpha(saturnAway ? 0.16 : min(0.16 + 0.30 * CGFloat(f.bass), 1))
         ctx.setLineWidth(S * 0.003)
         ctx.strokeEllipse(in: CGRect(x: -orbitPx, y: -orbitPx,
@@ -146,7 +155,7 @@ enum CosmosPaintCG {
             let gp = P(s.orbitPoint(s.moonAngle + .pi,
                                     tilt: tilt, squash: squash))
             let gr = S * 0.014
-            ctx.setFillColor(accentCol)
+            ctx.setFillColor(cast.accentCol)
             ctx.setAlpha(CGFloat(glintA) * 0.9)
             ctx.fillEllipse(in: CGRect(x: gp.x - gr, y: gp.y - gr,
                                        width: gr * 2, height: gr * 2))
@@ -163,13 +172,13 @@ enum CosmosPaintCG {
             ctx.addEllipse(in: CGRect(x: -pr, y: -pr, width: pr * 2, height: pr * 2))
             ctx.clip()
             ctx.drawRadialGradient(
-                planetGrad,
+                cast.planetGrad,
                 startCenter: CGPoint(x: -pr * 0.45, y: pr * 0.5),
                 startRadius: pr * 0.1,
                 endCenter: .zero, endRadius: pr * 1.6,
                 options: [.drawsAfterEndLocation])
             // latitude bands — drift on mids, same three curves as the icon
-            ctx.setStrokeColor(stripeCol)
+            ctx.setStrokeColor(cast.stripeCol)
             ctx.setAlpha(min(0.16 + CGFloat(mid) * 0.3, 1))
             ctx.setLineWidth(pr * 0.09 * (1 + CGFloat(mid) * 0.5))
             ctx.setLineCap(.round)
@@ -184,7 +193,7 @@ enum CosmosPaintCG {
             }
             // crater spots drop out below 64pt — icon-design detail gate
             if S >= 64 {
-                ctx.setFillColor(craterCol)
+                ctx.setFillColor(cast.craterCol)
                 ctx.setAlpha(1)
                 ctx.fillEllipse(in: CGRect(x: pr * 0.28, y: -pr * 0.30,
                                            width: pr * 0.34, height: pr * 0.34))
@@ -203,12 +212,12 @@ enum CosmosPaintCG {
                                       width: mr * 2, height: mr * 2))
             ctx.clip()
             ctx.drawRadialGradient(
-                moonGrad,
+                cast.moonGrad,
                 startCenter: CGPoint(x: mp.x - mr * 0.4, y: mp.y + mr * 0.4),
                 startRadius: 0,
                 endCenter: mp, endRadius: mr * 2.2,
                 options: [.drawsAfterEndLocation])
-            ctx.setFillColor(moonSpotCol)
+            ctx.setFillColor(cast.moonSpotCol)
             ctx.fillEllipse(in: CGRect(x: mp.x - mr * 0.15, y: mp.y - mr * 0.3,
                                        width: mr * 0.5, height: mr * 0.5))
             ctx.restoreGState()
@@ -220,7 +229,7 @@ enum CosmosPaintCG {
             let head = P([s.shootX, s.shootY])
             let tail = P([s.shootX - s.shootVX * 0.16,
                           s.shootY - s.shootVY * 0.16])
-            ctx.setStrokeColor(accentCol)
+            ctx.setStrokeColor(cast.accentCol)
             ctx.setLineCap(.round)
             ctx.setAlpha(CGFloat(t * t * 0.35))
             ctx.setLineWidth(S * 0.012)

@@ -480,18 +480,36 @@ final class DesktopPet: ObservableObject {
 /// move the system, double-click to recall, right-click for the menu.
 private final class PetBodyView: NSView {
     let body: CosmosScene.Body
+    /// Theme subscription — repaint on palette/appearance change even
+    /// while the pet is asleep and its drive timer is stopped. Deferred
+    /// to the run loop so `needsDisplay` doesn't fire mid-publisher.
+    private var themeWatch: AnyCancellable?
 
     init(body: CosmosScene.Body, frame: NSRect) {
         self.body = body
         super.init(frame: frame)
+        themeWatch = LyraTheme.shared.$palette
+            .combineLatest(LyraTheme.shared.$appearance)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.needsDisplay = true }
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        // OS light/dark flip (or app override) — palette roles resolve
+        // per appearance, so repaint with the new one.
+        needsDisplay = true
+    }
+
     override func draw(_ dirty: NSRect) {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
         let pet = DesktopPet.shared
-        PetPaint.draw(ctx, bounds, body, pet.sceneForPaint, fx: pet.fx(for: body))
+        let palette = PetPalette.resolve(LyraTheme.shared.palette,
+                                         appearance: effectiveAppearance)
+        PetPaint.draw(ctx, bounds, body, pet.sceneForPaint,
+                      fx: pet.fx(for: body), palette: palette)
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }

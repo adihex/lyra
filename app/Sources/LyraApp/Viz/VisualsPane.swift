@@ -8,6 +8,7 @@ struct VisualsPane: View {
     @ObservedObject private var vm = ViewModel.shared
     @ObservedObject private var pet = DesktopPet.shared
     @ObservedObject private var prefs = Prefs.shared
+    @ObservedObject private var theme = LyraTheme.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -82,7 +83,7 @@ struct VisualsPane: View {
                 Button { prefs.dockIconMode = mode } label: {
                     Text(label)
                         .font(.uiMicro)
-                        .foregroundStyle(active ? Color.white : Ui.ink)
+                        .foregroundStyle(active ? Ui.onAccent : Ui.ink)
                         .lineLimit(1)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
@@ -116,7 +117,7 @@ struct VisualsPane: View {
                 Button { pet.policy = p } label: {
                     Text(p.title)
                         .font(.uiMicro)
-                        .foregroundStyle(pet.policy == p ? Color.white : Ui.ink)
+                        .foregroundStyle(pet.policy == p ? Ui.onAccent : Ui.ink)
                         .lineLimit(1)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
@@ -131,7 +132,7 @@ struct VisualsPane: View {
             Button { pet.interactive.toggle() } label: {
                 Text(pet.interactive ? "Pettable" : "Ghost")
                     .font(.uiMicro)
-                    .foregroundStyle(pet.interactive ? Color.white : Ui.ink)
+                    .foregroundStyle(pet.interactive ? Ui.onAccent : Ui.ink)
                     .lineLimit(1)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
@@ -179,12 +180,13 @@ private struct FaceChip: View {
     let title: String
     let active: Bool
     let action: () -> Void
+    @ObservedObject private var theme = LyraTheme.shared
 
     var body: some View {
         Button(action: action) {
             Text(title)
                 .font(.uiCaption)
-                .foregroundStyle(active ? Color.white : Ui.ink)
+                .foregroundStyle(active ? Ui.onAccent : Ui.ink)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 4)
                 .background(active ? Ui.accent : Ui.surface)
@@ -201,12 +203,13 @@ private struct VizChip: View {
     let mode: VizMode
     let active: Bool
     let action: () -> Void
+    @ObservedObject private var theme = LyraTheme.shared
 
     var body: some View {
         Button(action: action) {
             Text(mode.displayName)
                 .font(.uiMicro)
-                .foregroundStyle(active ? Color.white : Ui.ink)
+                .foregroundStyle(active ? Ui.onAccent : Ui.ink)
                 .lineLimit(1)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 5)

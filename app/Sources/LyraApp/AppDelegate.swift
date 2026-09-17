@@ -12,6 +12,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate,
                          CSSearchableIndexDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Persisted appearance onto NSApp first — panels/pet/dock tile
+        // inherit it before they materialize.
+        LyraTheme.shared.start()
         UNUserNotificationCenter.current().delegate = self
         CSSearchableIndex.default().indexDelegate = self
         TrackNotifier.shared.registerCategory()

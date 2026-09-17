@@ -20,8 +20,11 @@ enum PetPaint {
         var glint: CGFloat = 0        // max(peakL, peakR) → ring glint
     }
 
+    /// `palette` is the immutable theme cast resolved by the view —
+    /// the painter stays a pure function of scene + fx + palette and
+    /// never reads the mutable theme store mid-frame.
     static func draw(_ ctx: CGContext, _ r: CGRect, _ body: CosmosScene.Body,
-                     _ s: CosmosScene, fx: FX) {
+                     _ s: CosmosScene, fx: FX, palette p: PetPalette) {
         ctx.saveGState()
         ctx.setAlpha(fx.alpha * (1 - 0.3 * fx.dim)) // sleep dims 30%
         let c = CGPoint(x: r.midX, y: r.midY)
@@ -29,29 +32,30 @@ enum PetPaint {
         ctx.scaleBy(x: fx.scale, y: fx.scale)
         ctx.translateBy(x: -c.x, y: -c.y)
 
-        if fx.dashT > 0 { drawDash(ctx, r, fx) }
-        drawAura(ctx, r, body, s, fx)
+        if fx.dashT > 0 { drawDash(ctx, r, fx, p) }
+        drawAura(ctx, r, body, s, fx, p)
 
         switch body {
-        case .saturn: drawSaturn(ctx, r, s, fx)
-        case .moon: drawMoon(ctx, r, s)
-        case .logo: drawLogo(ctx, r, s, spin: fx.spin)
+        case .saturn: drawSaturn(ctx, r, s, fx, p)
+        case .moon: drawMoon(ctx, r, s, p)
+        case .logo: drawLogo(ctx, r, s, spin: fx.spin, p)
         }
         ctx.restoreGState()
     }
 
-    // ── palette (make_icon.swift / Ui tokens) ──
-    private static func col(_ r: CGFloat, _ g: CGFloat, _ b: CGFloat,
-                            _ a: CGFloat = 1) -> CGColor {
-        CGColor(srgbRed: r, green: g, blue: b, alpha: a)
+    // ── palette: PetPalette CG colors, alpha via `a(_:)` ──
+    /// `copy(alpha:)` on a named role — preserves every existing alpha ramp.
+    private static func a(_ c: CGColor, _ alpha: CGFloat) -> CGColor {
+        c.copy(alpha: alpha)!
     }
 
-    /// Clip comet dash — terracotta streak trailing behind the body.
-    private static func drawDash(_ ctx: CGContext, _ r: CGRect, _ fx: FX) {
+    /// Clip comet dash — accent streak trailing behind the body.
+    private static func drawDash(_ ctx: CGContext, _ r: CGRect, _ fx: FX,
+                                 _ p: PetPalette) {
         let c = CGPoint(x: r.midX, y: r.midY)
         let s = min(r.width, r.height)
-        let a = 0.4 * (fx.dashT / 0.7)
-        ctx.setStrokeColor(col(0.78, 0.45, 0.28, a))
+        let al = 0.4 * (fx.dashT / 0.7)
+        ctx.setStrokeColor(a(p.note, al))
         ctx.setLineCap(.round)
         for (len, w) in [(s * 0.55, s * 0.05), (s * 0.32, s * 0.028)] as [(CGFloat, CGFloat)] {
             ctx.setLineWidth(w)
@@ -66,7 +70,7 @@ enum PetPaint {
     /// high bands (bands[48…63] mean).
     private static func drawAura(_ ctx: CGContext, _ r: CGRect,
                                  _ body: CosmosScene.Body, _ s: CosmosScene,
-                                 _ fx: FX) {
+                                 _ fx: FX, _ pal: PetPalette) {
         guard fx.hi > 0.02 else { return }
         let c = CGPoint(x: r.midX, y: r.midY)
         let n = body == .saturn ? 4 : 2
@@ -76,16 +80,17 @@ enum PetPaint {
             let p = CGPoint(x: c.x + rad * cos(th), y: c.y + rad * sin(th))
             let a = fx.hi * (0.15 + 0.85 * CGFloat(hashNoise(s.state.tick / 16, 40 + i * 13)))
             let sz = 1.0 + 1.6 * CGFloat(hashNoise(s.state.tick / 16, 80 + i * 7))
-            twinkle(ctx, p, sz, a)
+            twinkle(ctx, p, sz, a, pal)
         }
     }
 
     private static func twinkle(_ ctx: CGContext, _ p: CGPoint,
-                                _ r: CGFloat, _ a: CGFloat) {
-        ctx.setFillColor(col(0.9, 0.97, 1, a * 0.9))
+                                _ r: CGFloat, _ al: CGFloat,
+                                _ pal: PetPalette) {
+        ctx.setFillColor(a(pal.spark, al * 0.9))
         ctx.fillEllipse(in: CGRect(x: p.x - r * 0.35, y: p.y - r * 0.35,
                                    width: r * 0.7, height: r * 0.7))
-        ctx.setStrokeColor(col(0.9, 0.97, 1, a * 0.55))
+        ctx.setStrokeColor(a(pal.spark, al * 0.55))
         ctx.setLineWidth(max(0.6, r * 0.16))
         ctx.setLineCap(.round)
         ctx.move(to: CGPoint(x: p.x - r, y: p.y))
@@ -95,19 +100,20 @@ enum PetPaint {
         ctx.strokePath()
     }
 
-    // ── Saturn: indigo gas giant + tilted ring (bass kicks flip it) ──
+    // ── Saturn: palette gas giant + tilted ring (bass kicks flip it) ──
     private static func drawSaturn(_ ctx: CGContext, _ r: CGRect,
-                                   _ s: CosmosScene, _ fx: FX) {
+                                   _ s: CosmosScene, _ fx: FX,
+                                   _ p: PetPalette) {
         let c = CGPoint(x: r.midX, y: r.midY)
         let S = min(r.width, r.height)
         let pr = S * 0.26
         let tilt = -0.30 + CGFloat(s.state.orbitShape().tilt)
 
-        // mint glow behind — eased by the scene's glow channel
+        // companion glow behind — eased by the scene's glow channel
         let glow = CGGradient(
             colorsSpace: CGColorSpaceCreateDeviceRGB(),
-            colors: [col(0.25, 0.85, 0.75, CGFloat(s.state.glow)),
-                     col(0.25, 0.85, 0.75, 0)] as CFArray,
+            colors: [a(p.glow, CGFloat(s.state.glow)),
+                     a(p.glow, 0)] as CFArray,
             locations: [0, 1])!
         ctx.drawRadialGradient(glow, startCenter: c, startRadius: 0,
                                endCenter: c, endRadius: S * 0.5,
@@ -127,10 +133,10 @@ enum PetPaint {
         ctx.translateBy(x: c.x, y: c.y)
         ctx.rotate(by: tilt)
         ctx.clip(to: CGRect(x: -pr * 2.2, y: 0, width: pr * 4.4, height: pr * 2.2))
-        ctx.setStrokeColor(col(0.70, 0.82, 1, 0.45))
+        ctx.setStrokeColor(a(p.ring, 0.45))
         ctx.setLineWidth(pr * 0.18)
         ctx.strokeEllipse(in: rr)
-        ctx.setStrokeColor(col(0.85, 0.92, 1, 0.35))
+        ctx.setStrokeColor(a(p.glint, 0.35))
         ctx.setLineWidth(pr * 0.07)
         ctx.strokeEllipse(in: rr.insetBy(dx: -pr * 0.10, dy: -pr * 0.10))
         ctx.restoreGState()
@@ -142,8 +148,7 @@ enum PetPaint {
         ctx.clip()
         let planet = CGGradient(
             colorsSpace: CGColorSpaceCreateDeviceRGB(),
-            colors: [col(0.45, 0.55, 0.95), col(0.16, 0.22, 0.55),
-                     col(0.07, 0.10, 0.28)] as CFArray,
+            colors: [p.bodyLight, p.bodyMid, p.bodyDark] as CFArray,
             locations: [0, 0.55, 1])!
         ctx.drawRadialGradient(
             planet,
@@ -151,7 +156,7 @@ enum PetPaint {
             startRadius: pr * 0.1,
             endCenter: c, endRadius: pr * 1.6,
             options: [.drawsAfterEndLocation])
-        ctx.setStrokeColor(col(0.65, 0.75, 1, 0.16 + 0.15 * fx.mid))
+        ctx.setStrokeColor(a(p.ring, 0.16 + 0.15 * fx.mid))
         ctx.setLineWidth(pr * 0.09)
         ctx.setLineCap(.round)
         let drift = pr * 0.15 * sin(CGFloat(s.state.stripePhase) * 6)
@@ -165,7 +170,7 @@ enum PetPaint {
                                            y: y - pr * 0.18))
             ctx.strokePath()
         }
-        ctx.setFillColor(col(0.10, 0.16, 0.42, 0.55))
+        ctx.setFillColor(a(p.detail, 0.55))
         ctx.fillEllipse(in: CGRect(x: c.x + pr * 0.28, y: c.y - pr * 0.30,
                                    width: pr * 0.34, height: pr * 0.34))
         ctx.fillEllipse(in: CGRect(x: c.x - pr * 0.55, y: c.y - pr * 0.05,
@@ -177,10 +182,10 @@ enum PetPaint {
         ctx.translateBy(x: c.x, y: c.y)
         ctx.rotate(by: tilt)
         ctx.clip(to: CGRect(x: -pr * 2.2, y: -pr * 2.2, width: pr * 4.4, height: pr * 2.2))
-        ctx.setStrokeColor(col(0.70, 0.82, 1, 0.55))
+        ctx.setStrokeColor(a(p.ring, 0.55))
         ctx.setLineWidth(pr * 0.18)
         ctx.strokeEllipse(in: rr)
-        ctx.setStrokeColor(col(0.85, 0.92, 1, 0.4))
+        ctx.setStrokeColor(a(p.glint, 0.4))
         ctx.setLineWidth(pr * 0.07)
         ctx.strokeEllipse(in: rr.insetBy(dx: -pr * 0.10, dy: -pr * 0.10))
         ctx.restoreGState()
@@ -193,16 +198,16 @@ enum PetPaint {
                                  - sin(tilt) * (pr * 0.52) * sin(th),
                             y: c.y + sin(tilt) * (pr * 1.7) * cos(th)
                                  + cos(tilt) * (pr * 0.52) * sin(th))
-            ctx.setFillColor(col(1, 1, 1, fx.glint * 0.9))
+            ctx.setFillColor(a(p.glint, fx.glint * 0.9))
             ctx.fillEllipse(in: CGRect(x: g.x - 1.8, y: g.y - 1.8,
                                        width: 3.6, height: 3.6))
         }
         ctx.restoreGState()
     }
 
-    // ── Moon: mint gradient + one spot ──
+    // ── Moon: companion gradient + one spot ──
     private static func drawMoon(_ ctx: CGContext, _ r: CGRect,
-                                 _ s: CosmosScene) {
+                                 _ s: CosmosScene, _ p: PetPalette) {
         let c = CGPoint(x: r.midX, y: r.midY)
         let mr = min(r.width, r.height) * 0.32
         let bob = 1 - 0.06 * CGFloat(s.state.pulse)
@@ -215,21 +220,22 @@ enum PetPaint {
         ctx.clip()
         let g = CGGradient(
             colorsSpace: CGColorSpaceCreateDeviceRGB(),
-            colors: [col(0.85, 1.0, 0.95), col(0.45, 0.75, 0.72)] as CFArray,
+            colors: [p.moonLight, p.moonDark] as CFArray,
             locations: [0, 1])!
         ctx.drawRadialGradient(
             g, startCenter: CGPoint(x: c.x - mr * 0.4, y: c.y + mr * 0.4),
             startRadius: 0, endCenter: c, endRadius: mr * 2.2,
             options: [.drawsAfterEndLocation])
-        ctx.setFillColor(col(0.3, 0.55, 0.55, 0.5))
+        ctx.setFillColor(a(p.detail, 0.5))
         ctx.fillEllipse(in: CGRect(x: c.x - mr * 0.15, y: c.y - mr * 0.3,
                                    width: mr * 0.5, height: mr * 0.5))
         ctx.restoreGState()
     }
 
-    // ── Logo: the playful one — a terracotta note that tumbles ──
+    // ── Logo: the playful one — an accent note that tumbles ──
     private static func drawLogo(_ ctx: CGContext, _ r: CGRect,
-                                 _ s: CosmosScene, spin: CGFloat) {
+                                 _ s: CosmosScene, spin: CGFloat,
+                                 _ p: PetPalette) {
         let c = CGPoint(x: r.midX, y: r.midY)
         let S = min(r.width, r.height)
         ctx.saveGState()
@@ -237,7 +243,7 @@ enum PetPaint {
         ctx.rotate(by: sin(spin) * 0.55)          // rocking tumble
         let pulse = CGFloat(s.state.pulse)
         ctx.scaleBy(x: 1 + 0.05 * pulse, y: 1 - 0.08 * pulse)
-        ctx.setFillColor(col(0.78, 0.45, 0.28, 0.95)) // Ui.accent
+        ctx.setFillColor(a(p.note, 0.95))
         // double eighth note: two heads, two stems, one beam
         for hx in [-S * 0.16, S * 0.14] as [CGFloat] {
             ctx.saveGState()
