@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import MediaPlayer
 
@@ -6,6 +7,10 @@ import MediaPlayer
 /// The macOS trap (documented in research): the system cannot infer state
 /// from an audio session — `playbackState` MUST be set explicitly, or keys
 /// go to Music.app and Control Center shows nothing.
+enum VolumeKey {
+    case up, down, mute
+}
+
 final class MediaKeys {
     static let shared = MediaKeys()
     private var hooked = false
@@ -16,7 +21,8 @@ final class MediaKeys {
               onToggle: @escaping () -> Void,
               onNext: @escaping () -> Void,
               onPrev: @escaping () -> Void,
-              onSeek: @escaping (Double) -> Void) {
+              onSeek: @escaping (Double) -> Void,
+              onVolume: @escaping (VolumeKey) -> Void) {
         guard !hooked else { return }
         hooked = true
         let cc = MPRemoteCommandCenter.shared()
@@ -33,6 +39,28 @@ final class MediaKeys {
             return .success
         }
         self.getState = getState
+
+        // Hardware volume keys (F11/F12/mute) arrive as .systemDefined
+        // events with the aux-buttons subtype. Under exclusive HAL output
+        // the system mixer is bypassed, so they must steer our engine
+        // volume — a local monitor covers the focused window case; the
+        // system bezel still updates cosmetically either way.
+        NSEvent.addLocalMonitorForEvents(matching: .systemDefined) { e in
+            // subtype 8 = aux control buttons; data1 packs
+            // (keyCode << 16) | (state << 8) | repeat — 0xA = key-down.
+            guard e.subtype.rawValue == 8 else { return e }
+            let keyCode = (e.data1 & 0xFFFF_0000) >> 16
+            let keyDown = ((e.data1 & 0xFF00) >> 8) == 0xA
+            let repeat_ = (e.data1 & 0x1) != 0
+            guard keyDown || repeat_ else { return e }
+            switch keyCode {
+            case 0: onVolume(.up)      // NX_KEYTYPE_SOUND_UP
+            case 1: onVolume(.down)    // NX_KEYTYPE_SOUND_DOWN
+            case 7: onVolume(.mute)    // NX_KEYTYPE_MUTE
+            default: return e
+            }
+            return e // let the system bezel update too
+        }
     }
 
     private var getState: (() -> (playing: Bool, pos: Double))?

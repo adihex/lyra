@@ -196,6 +196,27 @@ final class ViewModel: ObservableObject {
     @Published var volume: Float = 1.0 {
         didSet { LyraPlayer.shared.setVolume(volume * volume) } // perceptual taper
     }
+    /// Pre-mute level for the hardware mute key — exclusive HAL output
+    /// bypasses the system mixer, so mute is ours to remember.
+    private var preMuteVolume: Float?
+
+    /// Hardware F11/F12/mute under exclusive output — the system mixer
+    /// isn't in the signal path, so the keys steer engine volume. Steps
+    /// match macOS's 16-notch bezel; mute restores the prior level.
+    func volumeKey(_ k: VolumeKey) {
+        switch k {
+        case .up: volume = min(volume + 1.0 / 16.0, 1.42)
+        case .down: volume = max(volume - 1.0 / 16.0, 0)
+        case .mute:
+            if let prev = preMuteVolume {
+                volume = prev
+                preMuteVolume = nil
+            } else {
+                preMuteVolume = volume
+                volume = 0
+            }
+        }
+    }
 
     // eq gains per band, dB
     @Published var eq: [Float] = Array(repeating: 0, count: 10)
@@ -245,7 +266,8 @@ final class ViewModel: ObservableObject {
             onToggle: { [weak self] in self?.toggle() },
             onNext: { [weak self] in self?.next() },
             onPrev: { [weak self] in self?.prev() },
-            onSeek: { pos in LyraPlayer.shared.seek(pos) }
+            onSeek: { pos in LyraPlayer.shared.seek(pos) },
+            onVolume: { [weak self] k in self?.volumeKey(k) }
         )
         // Persistent library: rows from the last sync load instantly.
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
