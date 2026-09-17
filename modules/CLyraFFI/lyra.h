@@ -69,6 +69,12 @@ char  *lyra_lib_tracks(void *l);                  /* JSON array */
 char  *lyra_lib_search(void *l, const char *q);   /* JSON array */
 void   lyra_lib_free(void *l);
 
+/* ── online artwork (Cover Art Archive via MusicBrainz) ── */
+/* Blocking network call — run off the main thread. JSON:
+   cached | ok{hash,mbid,applied} | no_track | no_album | no_artist |
+   not_due{next_retry_at} | not_found | error{error} */
+char  *lyra_art_fetch(void *l, const char *path);
+
 /* ── torrents (one global session) ── */
 int   lyra_torrent_init(const char *download_dir);
 int   lyra_torrent_add(const char *spec);          /* id >=0, <0 error; blocks on magnet metadata */

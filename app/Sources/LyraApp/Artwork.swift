@@ -60,6 +60,27 @@ enum Artwork {
     }
 }
 
+/// Online artwork fetch — Cover Art Archive resolved via MusicBrainz.
+/// The Rust side negative-caches in `artwork_fetch`, so repeat calls for
+/// an album with no art return `not_due` instantly rather than hitting
+/// the network. Blocking FFI — always call off the main thread.
+final class LyraArt {
+    static let shared = LyraArt()
+    private init() {}
+
+    /// Returns the fetch result dict — `state` is "ok"|"cached"|
+    /// "not_due"|"not_found"|"no_album"|"no_track"|"no_artist"|"error".
+    @discardableResult
+    func fetch(trackPath: String) -> [String: Any]? {
+        guard let lib = LyraLibrary.shared.handle,
+              let raw = trackPath.withCString({ lyra_art_fetch(lib, $0) })
+        else { return nil }
+        defer { lyra_string_free(raw) }
+        return try? JSONSerialization.jsonObject(
+            with: Data(String(cString: raw).utf8)) as? [String: Any]
+    }
+}
+
 /// Square art tile with async load + album-initial placeholder — sits on
 /// the sharp-editorial chrome (hairline border, no rounding).
 struct ArtImage: View {

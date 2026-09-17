@@ -7,10 +7,12 @@
 mod academic_torrents;
 mod archive_org;
 mod engine;
+pub mod cover_art;
 pub mod lossless;
 
 pub use academic_torrents::AcademicTorrentsProvider;
 pub use archive_org::ArchiveOrgProvider;
+pub use cover_art::CoverArtClient;
 pub use engine::SearchEngine;
 
 use async_trait::async_trait;

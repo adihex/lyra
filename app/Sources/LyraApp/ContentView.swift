@@ -186,6 +186,11 @@ final class ViewModel: ObservableObject {
     @Published var eq: [Float] = Array(repeating: 0, count: 10)
     @Published var eqCurve: (freqs: [Float], db: [Float]) = ([], [])
 
+    // artwork fetch — one in-flight CAA lookup per album; the Rust-side
+    // ledger negative-caches not_found for 30d so re-asks are free.
+    private var artInFlight = Set<String>()
+    @Published var artBusy = false // bulk "fetch missing artwork" pass
+
     // viz — raw buffer path, no JSON at 60Hz
     /// Spectrum snapshot cache for the EQ underlay — read at Canvas draw
     /// time, never published (same reason as displayPosition above).
@@ -914,6 +919,7 @@ final class ViewModel: ObservableObject {
             pushEQ()
             publishNowPlaying(t)
             TrackNotifier.shared.trackStarted(t, userInitiated: userInitiated)
+            ensureArtwork(for: t)
             // Duration fallback — playback fetches piece 0 anyway, so the
             // header probe rides along on data the swarm already sent.
             if t.duration == 0, case .torrent = t.source {
@@ -928,6 +934,78 @@ final class ViewModel: ObservableObject {
         guard let id = ids.first,
               let t = tracks.first(where: { $0.id == id }) else { return }
         play(t)
+    }
+
+    // ── Online artwork (Cover Art Archive via MusicBrainz) ───────────
+
+    /// Fetch cover art for an artless track — one in-flight call per
+    /// track id; the ledger dedupes repeat album asks. Applies the hash
+    /// album-wide so the library grid, Now Playing and stage all update.
+    func ensureArtwork(for t: Track) {
+        guard (t.artworkHash ?? "").isEmpty,
+              !t.album.isEmpty, t.album != "Unknown Album",
+              !artInFlight.contains(t.id)
+        else { return }
+        artInFlight.insert(t.id)
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let res = LyraArt.shared.fetch(trackPath: t.id)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.artInFlight.remove(t.id)
+                if res?["state"] as? String == "ok",
+                   let h = res?["hash"] as? String {
+                    self.applyArtwork(hash: h, album: t.album,
+                                      artistKey: t.albumArtist)
+                }
+            }
+        }
+    }
+
+    /// Write a fetched hash onto every artless track sharing the album —
+    /// mirrors the Rust-side set_album_artwork fan-out so rows that were
+    /// already loaded into memory refresh without a rescan.
+    private func applyArtwork(hash: String, album: String, artistKey: String) {
+        let key = artistKey.lowercased()
+        for i in tracks.indices
+        where tracks[i].album == album
+            && tracks[i].albumArtist.lowercased() == key
+            && (tracks[i].artworkHash ?? "").isEmpty {
+            tracks[i].artworkHash = hash
+        }
+        if let c = current, c.album == album,
+           c.albumArtist.lowercased() == key,
+           (c.artworkHash ?? "").isEmpty {
+            current?.artworkHash = hash
+        }
+    }
+
+    /// Bulk pass — every artless album in the library. Sequential blocking
+    /// calls on a utility queue; the client's 1.1s MB gate paces them.
+    /// Reloads rows at the end rather than patching so 'not_found' rows
+    /// also settle to their terminal '' marker.
+    func fetchMissingArtwork() {
+        guard !artBusy else { return }
+        var seen = Set<String>()
+        let targets = tracks.filter {
+            ($0.artworkHash ?? "").isEmpty && !$0.album.isEmpty
+                && $0.album != "Unknown Album"
+        }.filter {
+            seen.insert($0.albumArtist.lowercased() + "\u{1f}" + $0.album.lowercased()).inserted
+        }
+        guard !targets.isEmpty else { return }
+        artBusy = true
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            for t in targets {
+                LyraArt.shared.fetch(trackPath: t.id)
+            }
+            let rows = LyraLibrary.shared.tracks.map(Track.init)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.tracks = rows
+                self.contentID = UUID()
+                self.artBusy = false
+            }
+        }
     }
 
     /// Spotlight restore entry — select + play by track id.
@@ -1231,6 +1309,15 @@ struct ContentView: View {
                 }
                 .buttonStyle(.sharp)
                 .help("SSH/SFTP library roots — scan and stream without copying")
+                Button {
+                    vm.fetchMissingArtwork()
+                } label: {
+                    Label(vm.artBusy ? "Fetching…" : "Fetch artwork",
+                          systemImage: "photo.on.rectangle.angled")
+                }
+                .buttonStyle(.sharp)
+                .disabled(vm.artBusy)
+                .help("Cover Art Archive lookup for every album missing art — MusicBrainz-paced at ~1 album/s")
                 Button(vm.scanning ? "Scanning…" : "Scan folder…") { vm.scanFolder() }
                     .disabled(vm.scanning)
                     .buttonStyle(.sharpProminent)
@@ -1526,6 +1613,10 @@ struct ContentView: View {
                 Button("Show map") { vm.showMap(t) }
                 Button(vm.mapBusy ? "Analysing…" : "Analyse map") { vm.analyzeTrack(t) }
                     .disabled(vm.mapBusy)
+            }
+            if (t.artworkHash ?? "").isEmpty {
+                Divider()
+                Button("Fetch artwork") { vm.ensureArtwork(for: t) }
             }
         }
     }

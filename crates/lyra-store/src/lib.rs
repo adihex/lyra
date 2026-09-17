@@ -300,6 +300,123 @@ impl Library {
         Ok(())
     }
 
+    // ── Online artwork fetch (artwork_fetch ledger) ───────────────────
+
+    /// The artwork_fetch key convention — album artist when tagged, else
+    /// track artist, both lowercased, \x1f-separated from lower(album).
+    pub fn album_art_key(
+        album_artist: Option<&str>,
+        artist: Option<&str>,
+        album: &str,
+    ) -> String {
+        format!(
+            "{}\x1f{}",
+            album_artist.or(artist).unwrap_or("").to_lowercase(),
+            album.to_lowercase()
+        )
+    }
+
+    /// What a CAA fetch needs to know about a track row:
+    /// (album, artist, album_artist, artwork_hash, title).
+    pub fn track_art_query(
+        &self,
+        path: &str,
+    ) -> Result<
+        Option<(
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        )>,
+        LyraError,
+    > {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT album, artist, album_artist, artwork_hash, title FROM tracks WHERE path=?1",
+                params![path],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .ok();
+        Ok(row)
+    }
+
+    /// Fetch-ledger row for an album: (state, next_retry_at).
+    pub fn art_fetch_row(&self, album_key: &str) -> Result<Option<(String, Option<i64>)>, LyraError> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT state, next_retry_at FROM artwork_fetch WHERE album_key=?1",
+                params![album_key],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok();
+        Ok(row)
+    }
+
+    /// True when the ledger says this album may be queried now —
+    /// no row yet, or a retryable row whose next_retry_at has passed.
+    /// 'ok' and NULL-retry rows are terminal answers, not prompts.
+    pub fn art_fetch_due(&self, album_key: &str) -> Result<bool, LyraError> {
+        Ok(match self.art_fetch_row(album_key)? {
+            None => true,
+            Some((state, retry)) => {
+                state != "ok"
+                    && retry.is_some_and(|t| {
+                        t <= std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs() as i64)
+                            .unwrap_or(0)
+                    })
+            }
+        })
+    }
+
+    /// Upsert the ledger: attempts accumulates across retries,
+    /// next_retry_at = NULL freezes the outcome permanently.
+    pub fn art_fetch_record(
+        &self,
+        album_key: &str,
+        mbid: Option<&str>,
+        state: &str,
+        http_status: Option<i64>,
+        next_retry_at: Option<i64>,
+    ) -> Result<(), LyraError> {
+        self.conn.execute(
+            "INSERT INTO artwork_fetch
+                 (album_key, mbid, state, http_status, attempts, attempted_at, next_retry_at)
+             VALUES (?1,?2,?3,?4,1,unixepoch(),?5)
+             ON CONFLICT(album_key) DO UPDATE SET
+                 mbid=excluded.mbid, state=excluded.state,
+                 http_status=excluded.http_status,
+                 attempts=artwork_fetch.attempts+1,
+                 attempted_at=excluded.attempted_at,
+                 next_retry_at=excluded.next_retry_at",
+            params![album_key, mbid, state, http_status, next_retry_at],
+        )?;
+        Ok(())
+    }
+
+    /// Fan one fetched hash to every still-artless track on the album.
+    /// Joins on lower(COALESCE(album_artist, artist)) — compilations tag
+    /// album_artist; plain albums key off the track artist.
+    pub fn set_album_artwork(
+        &self,
+        album: &str,
+        artist_key: &str,
+        hash: &str,
+    ) -> Result<usize, LyraError> {
+        let n = self.conn.execute(
+            "UPDATE tracks SET artwork_hash=?1
+             WHERE (artwork_hash IS NULL OR artwork_hash='')
+               AND album=?2
+               AND lower(COALESCE(album_artist, artist))=lower(?3)",
+            params![hash, album, artist_key],
+        )?;
+        Ok(n)
+    }
+
     /// Cache image bytes → content-addressed file row → hash.
     /// Writes `full.<ext>` + 64/256 JPEG thumbs once per unique image;
     /// the `artwork` row is shared across every track that resolves to it.

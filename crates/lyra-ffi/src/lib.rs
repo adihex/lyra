@@ -18,6 +18,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 static INIT: Once = Once::new();
 
+mod art;
 mod coach;
 mod ipc;
 mod map;
