@@ -141,7 +141,7 @@ struct ArtImage: View {
             }
         }
         .frame(width: size, height: size)
-        .overlay(Ui.border.frame(width: 1))
+        .overlay(Rectangle().stroke(Ui.border, lineWidth: 1))
         .onAppear {
             // hop off the update pass — load() publishes `image` and a
             // sync write here faults "publishing during view updates"
