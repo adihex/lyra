@@ -1174,15 +1174,21 @@ struct ContentView: View {
     }
 
     @ViewBuilder private var detailView: some View {
-        switch vm.selection {
-        case .library: libraryPane
-        case .discover: discoverPane
-        case .coach: coachPane
-        case .map: mapPane
-        case .eq: eqPane
-        case .visuals: VisualsPane()
-        case .remote: remotePane
-        case .none: Text("Select a section").foregroundStyle(Ui.inkSoft)
+        // "mini" is QA-only (not a SidebarItem): hosts the menu-bar
+        // popover in the main window so it can be screenshotted.
+        if ProcessInfo.processInfo.environment["LYRA_DEBUG_PANE"] == "mini" {
+            MiniPlayerView()
+        } else {
+            switch vm.selection {
+            case .library: libraryPane
+            case .discover: discoverPane
+            case .coach: coachPane
+            case .map: mapPane
+            case .eq: eqPane
+            case .visuals: VisualsPane()
+            case .remote: remotePane
+            case .none: Text("Select a section").foregroundStyle(Ui.inkSoft)
+            }
         }
     }
 

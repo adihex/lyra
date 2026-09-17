@@ -155,6 +155,9 @@ struct MenuBarLabel: View {
 }
 
 /// Compact transport + now-playing for the menu-bar popover.
+/// The slider row is a *seek* bar — elapsed/remaining labels flank it so
+/// it can't be mistaken for volume. Volume gets its own speaker-labelled
+/// row below the transport.
 struct MiniPlayerView: View {
     @ObservedObject private var vm = ViewModel.shared
     @ObservedObject private var pet = DesktopPet.shared
@@ -169,34 +172,71 @@ struct MiniPlayerView: View {
                     .font(.uiCaption).foregroundStyle(Ui.inkSoft).lineLimit(1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            HStack(spacing: 12) {
+
+            // Seek — same binding pattern as the main window's seekSlider:
+            // engine clock drives, drag owns it until release.
+            VStack(spacing: 0) {
+                Slider(
+                    value: Binding(
+                        get: { vm.displayPosition },
+                        set: { vm.displayPosition = $0 }),
+                    in: 0...max(vm.current?.duration ?? 1, 1),
+                    onEditingChanged: { editing in
+                        if editing { vm.scrubbing = true } else { vm.scrubEnded() }
+                    }
+                )
+                .tint(Ui.accent)
+                .disabled(vm.current == nil)
+                HStack {
+                    Text(vm.fmt(vm.displayPosition))
+                    Spacer()
+                    Text("-\(vm.fmt(max((vm.current?.duration ?? 0) - vm.displayPosition, 0)))")
+                }
+                .font(.uiMono)
+                .foregroundStyle(Ui.inkSoft)
+            }
+
+            // Transport — prev / play-pause / next. Pause already covers
+            // stop's job here; a fourth button read as clutter.
+            HStack(spacing: 16) {
                 Button { vm.prev() } label: {
-                    Image(systemName: "backward.fill").sharpIconBox()
+                    Image(systemName: "backward.fill")
+                        .font(.system(size: 13, weight: .semibold))
+                        .sharpIconBox(32)
                 }
                 .buttonStyle(.plain)
+                .help("Previous track")
                 Button { vm.toggle() } label: {
                     Image(systemName: vm.playing ? "pause.fill" : "play.fill")
-                        .font(.system(size: 15, weight: .bold))
+                        .font(.system(size: 16, weight: .bold))
                         .foregroundStyle(.white)
-                        .frame(width: 34, height: 34)
+                        .frame(width: 40, height: 40)
                         .background(Ui.accent)
                 }
                 .buttonStyle(.plain)
-                Button { LyraPlayer.shared.stop() } label: {
-                    Image(systemName: "stop.fill").sharpIconBox()
-                }
-                .buttonStyle(.plain)
+                .help(vm.playing ? "Pause" : "Play")
                 Button { vm.next() } label: {
-                    Image(systemName: "forward.fill").sharpIconBox()
+                    Image(systemName: "forward.fill")
+                        .font(.system(size: 13, weight: .semibold))
+                        .sharpIconBox(32)
                 }
                 .buttonStyle(.plain)
+                .help("Next track")
             }
             .tint(Ui.ink)
-            Slider(value: $vm.volume, in: 0...1.42)
-                .tint(Ui.accent)
-            // displayPosition is a plain var — VizTicker cadence while
-            // playing, static at rest (see ViewModel: not @Published).
-            timeText
+
+            // Volume — speaker glyphs make the control unmistakable.
+            HStack(spacing: 8) {
+                Image(systemName: "speaker.fill")
+                    .font(.system(size: 9))
+                    .foregroundStyle(Ui.inkSoft)
+                Slider(value: $vm.volume, in: 0...1.42)
+                    .tint(Ui.accent)
+                Image(systemName: "speaker.wave.3.fill")
+                    .font(.system(size: 9))
+                    .foregroundStyle(Ui.inkSoft)
+            }
+
             // Escape hatch for a pet lost under real windows.
             if pet.isOut || pet.userHidden {
                 Button { pet.summonOrRecall() } label: {
@@ -210,11 +250,5 @@ struct MiniPlayerView: View {
         .frame(width: 240)
         .background(Ui.surface)
         .onAppear { vm.startPolling() }
-    }
-
-    private var timeText: some View {
-        Text("\(vm.fmt(vm.displayPosition)) / \(vm.fmt(vm.current?.duration ?? 0))")
-            .font(.uiMono)
-            .foregroundStyle(Ui.inkSoft)
     }
 }

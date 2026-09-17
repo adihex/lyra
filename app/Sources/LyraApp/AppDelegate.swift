@@ -26,8 +26,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate,
                 os_log("LYRA_AUTOPLAY %{public}@ → %{public}@", auto, ok ? "ok" : "FAILED")
             }
         }
-        // LYRA_DEBUG_PANE=visuals|library|discover|eq|remote — lane select for
-        // headless QA runs; combined with LYRA_AUTOPLAY it gives a
+        // LYRA_DEBUG_PANE=visuals|library|discover|eq|remote|mini — lane
+        // select for headless QA; "mini" hosts the menu-bar popover in the
+        // main window. Combined with LYRA_AUTOPLAY it gives a
         // deterministic "playing on the visuals pane" state.
         if let pane = ProcessInfo.processInfo.environment["LYRA_DEBUG_PANE"] {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
