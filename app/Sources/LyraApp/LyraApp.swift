@@ -93,72 +93,63 @@ private struct WindowOpener: View {
 }
 
 /// Live menu-bar label — VizTicker supplies the cadence while playing.
-/// Pure reads off the shared compositor: pump() stays owned by the
-/// transport-bar mini surface. At rest the label is a static note glyph —
-/// flattened hairline bars rendered as an invisible item.
+/// Canvas does NOT render inside MenuBarExtra label slots: the label is
+/// extracted as an image, and Canvas produces an empty one. Pre-rendered
+/// NSImage bitmaps marked `isTemplate` are the reliable animated-icon
+/// pattern — they draw correctly and adapt to the menu bar's tint.
 struct MenuBarLabel: View {
     @ObservedObject private var vm = ViewModel.shared
     @ObservedObject private var prefs = Prefs.shared
-    // VizTicker drives the cadence while playing; at rest the canvas
-    // renders once, statically. TimelineView can't live in a
-    // MenuBarExtra label slot — it never ticks there.
     @ObservedObject private var ticker = VizTicker.shared
 
-    /// Animated modes only differ while playing; at rest every mode shows
-    /// the same note glyph — hairline bars rendered as an invisible item.
-    private var live: Bool {
-        vm.playing && vm.viz.frame().level > 0.02
-    }
-
     var body: some View {
-        if !live {
+        switch (prefs.menuBarMode, vm.playing) {
+        case ("spectrum", true):
+            Image(nsImage: spectrumImage())
+        case ("pulse", true):
+            Image(nsImage: pulseImage())
+        default:
+            // At rest — or in "note" mode — a plain glyph is clearest.
             Image(systemName: "music.note")
-        } else {
-            switch prefs.menuBarMode {
-            case "note":
-                Image(systemName: "music.note")
-            case "pulse":
-                pulseCanvas
-            default:
-                spectrumCanvas
-            }
         }
     }
 
-    /// 8 ink bars off the first viz bands — still at rest.
-    private var spectrumCanvas: some View {
-        Canvas { ctx, size in
-            let f = vm.viz.frame()
-            let n = 8
-            let gap: CGFloat = 1.5
-            let w = (size.width - gap * CGFloat(n - 1)) / CGFloat(n)
+    /// 8 bars off the first viz bands — 1.5px stubs at zero so quiet
+    /// passages still show a live silhouette rather than a blank item.
+    /// pumpIfStale: with every window closed nothing else pumps the
+    /// compositor — this label becomes the fallback pump so the bars
+    /// actually carry spectrum instead of flatlining.
+    private func spectrumImage() -> NSImage {
+        let f = vm.viz.pumpIfStale(0.08)
+        let img = NSImage(size: NSSize(width: 22, height: 16), flipped: true) { _ in
+            NSColor.black.setFill()
+            let n = 8, gap: CGFloat = 1.5
+            let w = (22 - gap * CGFloat(n - 1)) / CGFloat(n)
             for i in 0..<n {
                 let v = i < f.bands.count
                     ? CGFloat(min(max(f.bands[i], 0), 1)) : 0
-                let h = max(size.height * v, 1.5)
-                ctx.fill(
-                    Path(CGRect(x: CGFloat(i) * (w + gap),
-                                y: size.height - h,
-                                width: w, height: h)),
-                    with: .color(.primary))
+                NSRect(x: CGFloat(i) * (w + gap), y: 16 - max(16 * v, 1.5),
+                       width: w, height: max(16 * v, 1.5)).fill()
             }
+            return true
         }
-        .frame(width: 22, height: 16)
+        img.isTemplate = true
+        return img
     }
 
     /// Single level dot — lowest-CPU animated mode.
-    private var pulseCanvas: some View {
-        Canvas { ctx, size in
-            let f = vm.viz.frame()
-            let v = CGFloat(min(max(f.level, 0), 1))
-            let r = 2 + v * (min(size.width, size.height) / 2 - 2)
-            ctx.fill(
-                Path(ellipseIn: CGRect(x: size.width / 2 - r,
-                                       y: size.height / 2 - r,
-                                       width: 2 * r, height: 2 * r)),
-                with: .color(.primary))
+    private func pulseImage() -> NSImage {
+        let f = vm.viz.pumpIfStale(0.08)
+        let v = CGFloat(min(max(f.level, 0), 1))
+        let r = 2 + v * 6
+        let img = NSImage(size: NSSize(width: 18, height: 16), flipped: true) { _ in
+            NSColor.black.setFill()
+            NSBezierPath(ovalIn: NSRect(x: 9 - r, y: 8 - r,
+                                        width: 2 * r, height: 2 * r)).fill()
+            return true
         }
-        .frame(width: 18, height: 16)
+        img.isTemplate = true
+        return img
     }
 }
 
@@ -210,6 +201,7 @@ struct MiniPlayerView: View {
                 Button { vm.prev() } label: {
                     Image(systemName: "backward.fill")
                         .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Ui.ink)
                         .sharpIconBox(32)
                 }
                 .buttonStyle(.plain)
@@ -226,12 +218,12 @@ struct MiniPlayerView: View {
                 Button { vm.next() } label: {
                     Image(systemName: "forward.fill")
                         .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Ui.ink)
                         .sharpIconBox(32)
                 }
                 .buttonStyle(.plain)
                 .help("Next track")
             }
-            .tint(Ui.ink)
 
             // Volume — speaker glyphs make the control unmistakable.
             HStack(spacing: 8) {
