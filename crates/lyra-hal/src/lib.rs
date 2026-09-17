@@ -152,6 +152,9 @@ impl HalDevice {
 
     /// Exclusive access — device won't accept other clients' streams while
     /// held. Drop releases (and on process exit the HAL reclaims anyway).
+    /// Snapshots the system mixer first: while we own the device, volume
+    /// keys still write the (bypassed) master volume/mute — invisible drift
+    /// the user would discover when the hog drops. Restored on release.
     pub fn hog(&self) -> Result<Hog, LyraError> {
         let a = addr(
             kAudioDevicePropertyHogMode,
@@ -163,10 +166,18 @@ impl HalDevice {
         if holder != me && holder != -1 {
             return Err(LyraError::Audio(format!("device hogged by pid {holder}")));
         }
+        let saved_vol: Option<f32> = get_prop(
+            self.id,
+            &addr(kAudioDevicePropertyVolumeScalar, kAudioObjectPropertyScopeOutput, kAudioObjectPropertyElementMain),
+        ).ok();
+        let saved_mute: Option<u32> = get_prop(
+            self.id,
+            &addr(kAudioDevicePropertyMute, kAudioObjectPropertyScopeOutput, kAudioObjectPropertyElementMain),
+        ).ok();
         if holder != me {
             set_prop(self.id, &a, &me)?;
         }
-        Ok(Hog { dev: self.id, released: AtomicBool::new(false) })
+        Ok(Hog { dev: self.id, released: AtomicBool::new(false), saved_vol, saved_mute })
     }
 
     /// Virtual output format: (channels, sample_rate, interleaved).
@@ -331,10 +342,13 @@ impl HalDevice {
     }
 }
 
-/// RAII hog-mode guard — releases on drop.
+/// RAII hog-mode guard — releases on drop, restoring the system mixer
+/// snapshot taken at acquisition.
 pub struct Hog {
     dev: AudioDeviceID,
     released: AtomicBool,
+    saved_vol: Option<f32>,
+    saved_mute: Option<u32>,
 }
 
 impl Hog {
@@ -346,6 +360,20 @@ impl Hog {
                 &addr(kAudioDevicePropertyHogMode, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain),
                 &free,
             );
+            if let Some(v) = self.saved_vol {
+                let _ = set_prop(
+                    self.dev,
+                    &addr(kAudioDevicePropertyVolumeScalar, kAudioObjectPropertyScopeOutput, kAudioObjectPropertyElementMain),
+                    &v,
+                );
+            }
+            if let Some(m) = self.saved_mute {
+                let _ = set_prop(
+                    self.dev,
+                    &addr(kAudioDevicePropertyMute, kAudioObjectPropertyScopeOutput, kAudioObjectPropertyElementMain),
+                    &m,
+                );
+            }
         }
     }
 }
