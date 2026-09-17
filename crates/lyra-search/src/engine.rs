@@ -51,12 +51,24 @@ impl SearchEngine {
             }
         }
         // Provider-native relevance is already within each block; the
-        // merge ranks across providers: lossless → album-ness →
-        // depth/rate → downloads → name. Stable, so equal keys keep
-        // provider order.
+        // merge ranks across providers: lossless → legal tier →
+        // album-ness → depth/rate → downloads → name. Stable, so equal
+        // keys keep provider order.
+        let tier_of = |provider: &str| -> u8 {
+            match self
+                .providers
+                .iter()
+                .find(|p| p.id() == provider)
+                .map(|p| p.legal_tier())
+            {
+                Some(crate::LegalTier::Clear) => 2,
+                Some(crate::LegalTier::Gray) => 1,
+                _ => 0,
+            }
+        };
         resp.results.sort_by(|a, b| {
-            rank_key(b)
-                .cmp(&rank_key(a))
+            rank_key(b, tier_of(&b.provider))
+                .cmp(&rank_key(a, tier_of(&a.provider)))
                 .then_with(|| a.name.cmp(&b.name))
         });
         let mut seen = HashSet::new();
@@ -77,15 +89,17 @@ impl SearchEngine {
     }
 }
 
-/// (tier, file_count, bit_depth, sample_rate, downloads, seeds) —
-/// compared descending. tier: 2 verified lossless, 1 unknown, 0 lossy.
-fn rank_key(r: &SearchResult) -> (u8, u64, u64, u64, u64, u64) {
+/// (lossless, legal_tier, file_count, bit_depth, sample_rate,
+/// downloads, seeds) — compared descending. lossless: 2 verified, 1
+/// unknown, 0 lossy. legal_tier: 2 Clear, 1 Gray, 0 External/unknown.
+fn rank_key(r: &SearchResult, legal: u8) -> (u8, u8, u64, u64, u64, u64, u64) {
     (
         match r.lossless {
             Some(true) => 2,
             None => 1,
             Some(false) => 0,
         },
+        legal,
         r.file_count.unwrap_or(0) as u64,
         r.bit_depth.unwrap_or(0) as u64,
         r.sample_rate.unwrap_or(0) as u64,
@@ -103,23 +117,29 @@ mod tests {
 
     struct Mock {
         id: &'static str,
+        tier: LegalTier,
         out: StdMutex<Option<Result<Vec<SearchResult>, ProviderError>>>,
         delay: Duration,
     }
 
     impl Mock {
         fn ok(id: &'static str, rs: Vec<SearchResult>) -> Self {
-            Self { id, out: StdMutex::new(Some(Ok(rs))), delay: Duration::ZERO }
+            Self { id, tier: LegalTier::Clear, out: StdMutex::new(Some(Ok(rs))), delay: Duration::ZERO }
         }
         fn err(id: &'static str, msg: &str) -> Self {
             Self {
                 id,
+                tier: LegalTier::Clear,
                 out: StdMutex::new(Some(Err(ProviderError::Unavailable(msg.into())))),
                 delay: Duration::ZERO,
             }
         }
         fn slow(id: &'static str, delay: Duration) -> Self {
-            Self { id, out: StdMutex::new(Some(Ok(vec![]))), delay }
+            Self { id, tier: LegalTier::Clear, out: StdMutex::new(Some(Ok(vec![]))), delay }
+        }
+        fn tier(mut self, t: LegalTier) -> Self {
+            self.tier = t;
+            self
         }
     }
 
@@ -132,7 +152,7 @@ mod tests {
             self.id
         }
         fn legal_tier(&self) -> LegalTier {
-            LegalTier::Clear
+            self.tier
         }
         fn capabilities(&self) -> ProviderCaps {
             ProviderCaps { seeds_known: false, needs_refresh: false, local_index: false }
@@ -227,6 +247,24 @@ mod tests {
         assert_eq!(resp.results.len(), 1);
         assert_eq!(resp.provider_errors[0].provider, "slow");
         assert_eq!(resp.provider_errors[0].error, "timeout");
+    }
+
+    #[tokio::test]
+    async fn gray_tier_ranks_below_clear_at_equal_quality() {
+        // Identical lossless rows from a Gray and a Clear provider —
+        // the Clear copy leads; lossless still beats a Clear lossy row.
+        let engine = SearchEngine::new(vec![
+            Arc::new(Mock::ok("gray-src", vec![
+                result("g1", "gray-src", Some("g1"), Some(true)),
+            ]).tier(LegalTier::Gray)),
+            Arc::new(Mock::ok("clear-src", vec![
+                result("c1", "clear-src", Some("c1"), Some(true)),
+                SearchResult { lossless: Some(false), ..result("c2", "clear-src", Some("c2"), Some(false)) },
+            ])),
+        ]);
+        let resp = engine.search(&SearchQuery::text("x")).await;
+        let ids: Vec<_> = resp.results.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, ["c1", "g1", "c2"]);
     }
 
     #[tokio::test]

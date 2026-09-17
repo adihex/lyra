@@ -917,6 +917,7 @@ pub extern "C" fn lyra_search_new(data_dir: *const c_char) -> *mut LyraSearch {
     let engine = lyra_search::SearchEngine::new(vec![
         std::sync::Arc::new(lyra_search::ArchiveOrgProvider::new()),
         std::sync::Arc::new(lyra_search::AcademicTorrentsProvider::new(dir)),
+        std::sync::Arc::new(lyra_search::X1337Provider::new()),
     ]);
     Box::into_raw(Box::new(LyraSearch { rt, engine }))
 }

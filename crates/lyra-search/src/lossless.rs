@@ -55,6 +55,17 @@ fn by_ext(ext: &str) -> Option<AudioClass> {
     })
 }
 
+/// Classify a free-text label that isn't a filename — torrent titles,
+/// provider tags. Skips the filename dot-branch so "R.A.M. [FLAC]"
+/// still matches flac.
+pub(crate) fn classify_title(label: &str) -> Option<AudioClass> {
+    let l = label.trim().to_lowercase();
+    if l.is_empty() {
+        return None;
+    }
+    by_label(&l).map(|c| with_depth(c, &l))
+}
+
 /// Provider format strings (IA "format" field values).
 fn by_label(l: &str) -> Option<AudioClass> {
     Some(match l {

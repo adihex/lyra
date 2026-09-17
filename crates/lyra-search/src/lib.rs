@@ -7,6 +7,7 @@
 mod academic_torrents;
 mod archive_org;
 mod engine;
+mod x1337x;
 pub mod cover_art;
 pub mod lossless;
 
@@ -14,6 +15,7 @@ pub use academic_torrents::AcademicTorrentsProvider;
 pub use archive_org::ArchiveOrgProvider;
 pub use cover_art::CoverArtClient;
 pub use engine::SearchEngine;
+pub use x1337x::X1337Provider;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
