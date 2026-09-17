@@ -967,6 +967,10 @@ pub extern "C" fn lyra_search_new(data_dir: *const c_char) -> *mut LyraSearch {
         std::sync::Arc::new(lyra_search::AcademicTorrentsProvider::new(dir)),
         std::sync::Arc::new(lyra_search::X1337Provider::new()),
         std::sync::Arc::new(lyra_search::ApibayProvider::new()),
+        std::sync::Arc::new(lyra_search::KnabenProvider::new()),
+        std::sync::Arc::new(lyra_search::TorrentsCsvProvider::new()),
+        std::sync::Arc::new(lyra_search::NyaaProvider::new()),
+        std::sync::Arc::new(lyra_search::SolidTorrentsProvider::new()),
     ]);
     Box::into_raw(Box::new(LyraSearch { rt, engine }))
 }
@@ -1070,5 +1074,36 @@ pub unsafe extern "C" fn lyra_search_resolve(
         Err(e) => CString::new(serde_json::json!({"error": e.to_string()}).to_string())
             .unwrap_or_default()
             .into_raw(),
+    }
+}
+
+#[cfg(test)]
+mod live_new_providers {
+    use crate::{lyra_search, lyra_search_free, lyra_search_new, lyra_string_free};
+    use std::ffi::{CStr, CString};
+
+    #[test]
+    #[ignore]
+    fn search_live_new_indexes() {
+        let dir = std::env::temp_dir().join(format!("lyra-search-{}", std::process::id()));
+        let dc = CString::new(dir.to_str().unwrap()).unwrap();
+        let s = lyra_search_new(dc.as_ptr());
+        assert!(!s.is_null());
+        let q = CString::new(r#"{"text":"aerosmith dream on","strict":false}"#).unwrap();
+        let raw = unsafe { lyra_search(s, q.as_ptr()) };
+        let body = unsafe { CStr::from_ptr(raw) }.to_str().unwrap().to_string();
+        unsafe { lyra_string_free(raw) };
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let rows = v["results"].as_array().cloned().unwrap_or_default();
+        let mut by: std::collections::BTreeMap<String, usize> = Default::default();
+        for r in &rows {
+            *by.entry(r["provider"].as_str().unwrap_or("?").to_string()).or_default() += 1;
+        }
+        println!("providers: {:?}", by);
+        for e in v["provider_errors"].as_array().cloned().unwrap_or_default() {
+            println!("err: {} -> {}", e["provider"], e["error"].as_str().unwrap_or("").chars().take(90).collect::<String>());
+        }
+        unsafe { lyra_search_free(s) };
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
