@@ -22,7 +22,8 @@ final class MediaKeys {
               onNext: @escaping () -> Void,
               onPrev: @escaping () -> Void,
               onSeek: @escaping (Double) -> Void,
-              onVolume: @escaping (VolumeKey) -> Void) {
+              onVolume: @escaping (VolumeKey) -> Void,
+              volumeGate: @escaping () -> Bool) {
         guard !hooked else { return }
         hooked = true
         let cc = MPRemoteCommandCenter.shared()
@@ -39,29 +40,43 @@ final class MediaKeys {
             return .success
         }
         self.getState = getState
+        self.onVolumeKey = onVolume
+        self.volumeGate = volumeGate
 
         // Hardware volume keys (F11/F12/mute) arrive as .systemDefined
-        // events with the aux-buttons subtype. Under exclusive HAL output
-        // the system mixer is bypassed, so they must steer our engine
-        // volume — a local monitor covers the focused window case; the
-        // system bezel still updates cosmetically either way.
+        // aux-button events — which macOS broadcasts to every app's local
+        // monitors, frontmost or not, no Input Monitoring needed (verified:
+        // an accessory sandboxed app receives them unfocused). Under
+        // exclusive HAL output the system mixer is bypassed, so while
+        // volumeGate() holds we steer the engine instead; the event still
+        // passes through so the bezel updates. This is how Audirvana and
+        // BitPerfect keep keys working in hog mode — mpv/VLC leave them
+        // dead there.
         NSEvent.addLocalMonitorForEvents(matching: .systemDefined) { e in
             // subtype 8 = aux control buttons; data1 packs
             // (keyCode << 16) | (state << 8) | repeat — 0xA = key-down.
-            guard e.subtype.rawValue == 8 else { return e }
+            guard e.subtype.rawValue == 8,
+                  let gate = MediaKeys.shared.volumeGate, gate(),
+                  let f = MediaKeys.shared.onVolumeKey else { return e }
             let keyCode = (e.data1 & 0xFFFF_0000) >> 16
             let keyDown = ((e.data1 & 0xFF00) >> 8) == 0xA
             let repeat_ = (e.data1 & 0x1) != 0
             guard keyDown || repeat_ else { return e }
             switch keyCode {
-            case 0: onVolume(.up)      // NX_KEYTYPE_SOUND_UP
-            case 1: onVolume(.down)    // NX_KEYTYPE_SOUND_DOWN
-            case 7: onVolume(.mute)    // NX_KEYTYPE_MUTE
+            case 0: f(.up)      // NX_KEYTYPE_SOUND_UP
+            case 1: f(.down)    // NX_KEYTYPE_SOUND_DOWN
+            case 7: f(.mute)    // NX_KEYTYPE_MUTE
             default: return e
             }
-            return e // let the system bezel update too
+            return e
         }
     }
+
+    /// Stored on the singleton because the monitor closure reads them per
+    /// event — volumeGate() is true only while exclusive output owns the
+    /// audible path, so keys still drive the system mixer otherwise.
+    var onVolumeKey: ((VolumeKey) -> Void)?
+    var volumeGate: (() -> Bool)?
 
     private var getState: (() -> (playing: Bool, pos: Double))?
 

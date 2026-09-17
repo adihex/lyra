@@ -267,7 +267,10 @@ final class ViewModel: ObservableObject {
             onNext: { [weak self] in self?.next() },
             onPrev: { [weak self] in self?.prev() },
             onSeek: { pos in LyraPlayer.shared.seek(pos) },
-            onVolume: { [weak self] k in self?.volumeKey(k) }
+            onVolume: { [weak self] k in self?.volumeKey(k) },
+            volumeGate: { [weak self] in
+                (self?.exclusiveOutput ?? false) && LyraPlayer.shared.isPlaying
+            }
         )
         // Persistent library: rows from the last sync load instantly.
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
