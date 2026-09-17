@@ -92,11 +92,10 @@ private struct WindowOpener: View {
     }
 }
 
-/// Live menu-bar label — TimelineView is the documented workaround for
-/// the server-level label cache (FB11857447, docs §1). Pure reads off
-/// the shared compositor: pump() stays owned by the transport-bar mini
-/// surface. At rest (paused engine → decayed frame) the bars flatten to
-/// a hairline so the item never vanishes.
+/// Live menu-bar label — VizTicker supplies the cadence while playing.
+/// Pure reads off the shared compositor: pump() stays owned by the
+/// transport-bar mini surface. At rest the label is a static note glyph —
+/// flattened hairline bars rendered as an invisible item.
 struct MenuBarLabel: View {
     @ObservedObject private var vm = ViewModel.shared
     @ObservedObject private var prefs = Prefs.shared
@@ -105,14 +104,24 @@ struct MenuBarLabel: View {
     // MenuBarExtra label slot — it never ticks there.
     @ObservedObject private var ticker = VizTicker.shared
 
+    /// Animated modes only differ while playing; at rest every mode shows
+    /// the same note glyph — hairline bars rendered as an invisible item.
+    private var live: Bool {
+        vm.playing && vm.viz.frame().level > 0.02
+    }
+
     var body: some View {
-        switch prefs.menuBarMode {
-        case "note":
+        if !live {
             Image(systemName: "music.note")
-        case "pulse":
-            pulseCanvas
-        default:
-            spectrumCanvas
+        } else {
+            switch prefs.menuBarMode {
+            case "note":
+                Image(systemName: "music.note")
+            case "pulse":
+                pulseCanvas
+            default:
+                spectrumCanvas
+            }
         }
     }
 
@@ -120,12 +129,11 @@ struct MenuBarLabel: View {
     private var spectrumCanvas: some View {
         Canvas { ctx, size in
             let f = vm.viz.frame()
-            let live = vm.playing && f.level > 0.02
             let n = 8
             let gap: CGFloat = 1.5
             let w = (size.width - gap * CGFloat(n - 1)) / CGFloat(n)
             for i in 0..<n {
-                let v = live && i < f.bands.count
+                let v = i < f.bands.count
                     ? CGFloat(min(max(f.bands[i], 0), 1)) : 0
                 let h = max(size.height * v, 1.5)
                 ctx.fill(
@@ -142,7 +150,7 @@ struct MenuBarLabel: View {
     private var pulseCanvas: some View {
         Canvas { ctx, size in
             let f = vm.viz.frame()
-            let v = vm.playing ? CGFloat(min(max(f.level, 0), 1)) : 0
+            let v = CGFloat(min(max(f.level, 0), 1))
             let r = 2 + v * (min(size.width, size.height) / 2 - 2)
             ctx.fill(
                 Path(ellipseIn: CGRect(x: size.width / 2 - r,
