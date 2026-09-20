@@ -8,10 +8,11 @@ import SwiftUI
 /// shooting stars alongside clip edges.
 extension VizDraw {
 
-    private static func cosmosCol(_ r: Double, _ g: Double, _ b: Double,
-                                  _ a: Double = 1) -> Color {
-        Color(red: r, green: g, blue: b).opacity(a)
-    }
+    /// Semantic theme colors only — the Cosmos cast wears the same
+    /// PetPalette roles as the dock tile and desktop pet (sky =
+    /// tray→chassis, planet = accent→tint→bodyDark, moon =
+    /// companion→secondaryInk). Dynamic providers resolve per
+    /// appearance; alpha ramps unchanged.
 
     static func cosmos(_ ctx: inout GraphicsContext, _ size: CGSize,
                        _ f: VizFrame, _ st: VizState) {
@@ -34,11 +35,11 @@ extension VizDraw {
 
         // ── background: full-bleed space ──
         ctx.fill(Path(CGRect(origin: .zero, size: size)),
-                 with: .color(cosmosCol(0.02, 0.03, 0.09)))
+                 with: .color(Color.bubbleChassis))
         ctx.fill(Path(CGRect(origin: .zero, size: size)),
                  with: .linearGradient(
-                    Gradient(colors: [cosmosCol(0.14, 0.10, 0.36),
-                                      cosmosCol(0.02, 0.03, 0.09)]),
+                    Gradient(colors: [Color.bubbleTray,
+                                      Color.bubbleChassis]),
                     startPoint: CGPoint(x: W * 0.3, y: H),
                     endPoint: CGPoint(x: W * 0.7, y: 0)))
 
@@ -52,9 +53,9 @@ extension VizDraw {
             let d = CGFloat(st_.r) * S / 1024
             let a = Double(st_.alpha) + Double(hi * hashNoise(s.tick / 6, i)) * 0.5
             ctx.fill(Path(ellipseIn: CGRect(x: x, y: y, width: d, height: d)),
-                     with: .color(cosmosCol(st_.mint ? 0.6 : 0.85,
-                                            st_.mint ? 0.95 : 0.9,
-                                            st_.mint ? 0.85 : 1, min(a, 1))))
+                     with: .color((st_.mint ? Color.bubbleAccent
+                                            : Color.bubbleKeycap)
+                                  .opacity(min(a, 1))))
         }
         // twinkle pluses — the icon's two
         for (sx, sy, sr) in [(0.78, 0.82, 0.016), (0.2, 0.68, 0.012)]
@@ -62,13 +63,13 @@ extension VizDraw {
             let cx = ox + sx * S, cy = oy + sy * S, r = sr * S
             ctx.fill(Path(ellipseIn: CGRect(x: cx - r * 0.35, y: cy - r * 0.35,
                                             width: r * 0.7, height: r * 0.7)),
-                     with: .color(cosmosCol(0.9, 0.97, 1, 0.9)))
+                     with: .color(Color.bubbleKeycap.opacity(0.9)))
             var plus = Path()
             plus.move(to: CGPoint(x: cx - r, y: cy))
             plus.addLine(to: CGPoint(x: cx + r, y: cy))
             plus.move(to: CGPoint(x: cx, y: cy - r))
             plus.addLine(to: CGPoint(x: cx, y: cy + r))
-            ctx.stroke(plus, with: .color(cosmosCol(0.9, 0.97, 1, 0.55)),
+            ctx.stroke(plus, with: .color(Color.bubbleKeycap.opacity(0.55)),
                        style: StrokeStyle(lineWidth: r * 0.16, lineCap: .round))
         }
 
@@ -79,12 +80,12 @@ extension VizDraw {
         let pc = P(center + SIMD2(0, bobY))
         let pr = S * CGFloat(CosmosSceneState.planetR)
 
-        // ── mint glow ──
+        // ── companion glow ──
         ctx.fill(Path(ellipseIn: CGRect(x: pc.x - S * 0.44, y: pc.y - S * 0.44,
                                         width: S * 0.88, height: S * 0.88)),
                  with: .radialGradient(
-                    Gradient(colors: [cosmosCol(0.25, 0.85, 0.75, Double(s.glow)),
-                                      cosmosCol(0.25, 0.85, 0.75, 0)]),
+                    Gradient(colors: [Color.bubbleCompanion.opacity(Double(s.glow)),
+                                      Color.bubbleCompanion.opacity(0)]),
                     center: pc, startRadius: 0, endRadius: S * 0.44))
 
         // ── orbit: circle ↔ live Lissajous of waveL×waveR (the moon
@@ -101,8 +102,8 @@ extension VizDraw {
         }
         orbit.closeSubpath()
         ctx.stroke(orbit,
-                   with: .color(cosmosCol(0.7, 0.85, 1,
-                                          min(0.16 + 0.30 * Double(f.bass), 1))),
+                   with: .color(Color.bubbleCompanion.opacity(
+                        min(0.16 + 0.30 * Double(f.bass), 1))),
                    lineWidth: max(S * 0.003, 0.8))
 
         // ring granulation — bands[0…31] as grains around the ellipse:
@@ -130,7 +131,7 @@ extension VizDraw {
             let gr = S * 0.014
             ctx.fill(Path(ellipseIn: CGRect(x: gp.x - gr, y: gp.y - gr,
                                             width: gr * 2, height: gr * 2)),
-                     with: .color(Ui.accent.opacity(Double(glintA) * 0.9)))
+                     with: .color(Color.bubbleAccent.opacity(Double(glintA) * 0.9)))
         }
 
         // ── planet: bob + squash, drifting latitude bands, craters ──
@@ -142,9 +143,9 @@ extension VizDraw {
         planetCtx.clip(to: Path(ellipseIn: prect))
         planetCtx.fill(Path(prect),
                        with: .radialGradient(
-                        Gradient(colors: [cosmosCol(0.45, 0.55, 0.95),
-                                          cosmosCol(0.16, 0.22, 0.55),
-                                          cosmosCol(0.07, 0.10, 0.28)]),
+                        Gradient(colors: [Color.bubbleAccent,
+                                          Color.bubbleTint,
+                                          Color.bubbleBodyDark]),
                         center: CGPoint(x: -pr * 0.45, y: pr * 0.5),
                         startRadius: pr * 0.1, endRadius: pr * 1.6))
         for k in [-1, 0, 1] as [CGFloat] {
@@ -156,17 +157,17 @@ extension VizDraw {
                           control1: CGPoint(x: -pr * 0.2 + drift, y: y + pr * 0.12),
                           control2: CGPoint(x: pr * 0.25 + drift, y: y - pr * 0.18))
             planetCtx.stroke(band,
-                             with: .color(cosmosCol(0.65, 0.75, 1,
-                                                    min(0.16 + Double(mid) * 0.3, 1))),
+                             with: .color(Color.bubbleCompanion.opacity(
+                                    min(0.16 + Double(mid) * 0.3, 1))),
                              style: StrokeStyle(lineWidth: pr * 0.09 * (1 + CGFloat(mid) * 0.5),
                                                 lineCap: .round))
         }
         planetCtx.fill(Path(ellipseIn: CGRect(x: pr * 0.28, y: -pr * 0.30,
                                               width: pr * 0.34, height: pr * 0.34)),
-                       with: .color(cosmosCol(0.10, 0.16, 0.42, 0.55)))
+                       with: .color(Color.bubbleLegend.opacity(0.55)))
         planetCtx.fill(Path(ellipseIn: CGRect(x: -pr * 0.55, y: -pr * 0.05,
                                               width: pr * 0.22, height: pr * 0.22)),
-                       with: .color(cosmosCol(0.10, 0.16, 0.42, 0.55)))
+                       with: .color(Color.bubbleLegend.opacity(0.55)))
 
         // ── moon on the blended orbit ──
         let mi = Int(((s.moonAngle.truncatingRemainder(dividingBy: 2 * .pi)
@@ -183,13 +184,13 @@ extension VizDraw {
         moonCtx.fill(Path(CGRect(x: mp.x - mr, y: mp.y - mr,
                                  width: mr * 2, height: mr * 2)),
                      with: .radialGradient(
-                        Gradient(colors: [cosmosCol(0.85, 1.0, 0.95),
-                                          cosmosCol(0.45, 0.75, 0.72)]),
+                        Gradient(colors: [Color.bubbleCompanion,
+                                          Color.bubbleSecondaryInk]),
                         center: CGPoint(x: mp.x - mr * 0.4, y: mp.y + mr * 0.4),
                         startRadius: 0, endRadius: mr * 2.2))
         moonCtx.fill(Path(ellipseIn: CGRect(x: mp.x - mr * 0.15, y: mp.y - mr * 0.3,
                                             width: mr * 0.5, height: mr * 0.5)),
-                     with: .color(cosmosCol(0.3, 0.55, 0.55, 0.5)))
+                     with: .color(Color.bubbleLegend.opacity(0.5)))
 
         // ── shooting star ──
         if s.shootTTL > 0 {

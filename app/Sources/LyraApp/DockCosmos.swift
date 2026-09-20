@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 
 /// The custom dock-tile content view. draw() is a PURE function of the
 /// shared scene + latest frame — the Dock re-renders on resize and
@@ -9,11 +10,41 @@ final class DockIconView: NSView {
     /// Latest eased frame, written by the driver's tick (pure read here).
     /// Named vizFrame — `frame` is NSView's own bounds-in-superview rect.
     var vizFrame = VizFrame.rest
+    /// Theme subscription — repaints the tile even while the driver is
+    /// idle (nothing playing). Never installs a timer or the tile itself.
+    private var themeWatch: AnyCancellable?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        themeWatch = LyraTheme.shared.$palette
+            .combineLatest(LyraTheme.shared.$appearance)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.repaintForTheme() }
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        repaintForTheme()
+    }
+
+    /// The Dock only snapshots when the view is its contentView — push
+    /// the tile's display() so an idle tile still picks up a theme flip
+    /// (NSView.display() only repaints locally; dockTile.display() is
+    /// the snapshot IPC that ships pixels to the Dock).
+    private func repaintForTheme() {
+        needsDisplay = true
+        if NSApp.dockTile.contentView === self { NSApp.dockTile.display() }
+    }
 
     override func draw(_ dirty: NSRect) {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+        let palette = PetPalette.resolve(LyraTheme.shared.palette,
+                                         appearance: effectiveAppearance)
         CosmosPaintCG.draw(ctx, in: bounds,
-                           scene: ViewModel.shared.viz.cosmos, frame: vizFrame)
+                           scene: ViewModel.shared.viz.cosmos,
+                           frame: vizFrame, palette: palette)
     }
 }
 

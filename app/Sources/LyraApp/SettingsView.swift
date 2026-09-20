@@ -8,12 +8,34 @@ struct SettingsView: View {
     @ObservedObject private var vm = ViewModel.shared
     @ObservedObject private var prefs = Prefs.shared
     @ObservedObject private var torznab = TorznabEndpoints.shared
+    @ObservedObject private var theme = LyraTheme.shared
     @State private var torzUrl = ""
     @State private var torzKey = ""
     @State private var torzName = ""
 
     var body: some View {
         Form {
+            Section("Appearance") {
+                Picker("Appearance", selection: $theme.appearance) {
+                    ForEach(LyraAppearance.allCases) { a in
+                        Text(a.title).tag(a)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .tint(Color.bubbleNativeSelectionTint)
+                Picker("Palette", selection: $theme.palette) {
+                    ForEach(LyraPalette.allCases) { p in
+                        HStack {
+                            PaletteSwatch(palette: p)
+                            Text(p.title)
+                        }
+                        .tag(p)
+                    }
+                }
+                .pickerStyle(.menu)
+                Text("Applies to Lyra, the mini-player, and your desktop pet.")
+                    .font(.uiCaption).foregroundStyle(Ui.inkSoft)
+            }
             Section("Playback") {
                 // Exclusive HAL output: hog mode + IOProc. Engine swaps
                 // at runtime; choice persists to the next launch.
@@ -93,6 +115,7 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .toggleStyle(.bubble)
         .frame(width: 460)
     }
 }

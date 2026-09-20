@@ -126,6 +126,8 @@ struct ArtImage: View {
     /// 64 for rows, 256 for the now-playing hero, 0 = full-resolution.
     var px: Int = 64
     @ObservedObject private var loader = ArtLoader()
+    /// Observing the store repaints the placeholder palette on theme change.
+    @ObservedObject private var theme = LyraTheme.shared
 
     var body: some View {
         ZStack {
@@ -152,7 +154,8 @@ struct ArtImage: View {
     }
 }
 
-/// @State is unavailable under CLT swiftc — the HoverState pattern again.
+/// ObservableObject-backed loader — the loaded image stays stable
+/// across view recomposition.
 final class ArtLoader: ObservableObject {
     @Published var image: NSImage?
     private var lastKey: String?
