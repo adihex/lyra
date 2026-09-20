@@ -49,7 +49,7 @@ fn rate_switch_roundtrip() {
     // Pick a different supported rate if one exists.
     let other = rates
         .iter()
-        .map(|&(mn, mx)| mx)
+        .map(|&(_mn, mx)| mx)
         .find(|&r| (r - orig).abs() > 0.5 && r >= 44100.0 && r <= 96000.0);
     let Some(other) = other else {
         eprintln!("single-rate device ({orig}) — skipping switch");
