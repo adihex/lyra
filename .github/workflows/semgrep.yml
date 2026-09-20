@@ -17,9 +17,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: semgrep/semgrep-oss-action@v1
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          generateSarif: "1"
+          python-version: "3.x"
+      - name: Install Semgrep
+        run: pip install semgrep
+      - name: Scan
+        # Default exit code is 0 even with findings (no --error flag);
+        # results land in code scanning via the SARIF upload below.
+        run: semgrep scan --config auto --sarif --output semgrep.sarif
       - name: Upload SARIF
         uses: github/codeql-action/upload-sarif@v3
         with:
