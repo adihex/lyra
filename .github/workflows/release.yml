@@ -56,7 +56,7 @@ jobs:
             -ov -format UDZO ".build/Lyra-${{ env.version }}.dmg"
           shasum -a 256 ".build/Lyra-${{ env.version }}.dmg"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: Lyra-${{ env.version }}-dmg
           path: .build/Lyra-*.dmg
