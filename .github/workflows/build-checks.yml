@@ -15,7 +15,7 @@ jobs:
   version-drift:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: jdx/mise-action@v3
 
@@ -33,7 +33,7 @@ jobs:
     # which this workspace has (platform HALs, optional db feature).
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -80,7 +80,7 @@ jobs:
     # for this file) — see the summary output for current numbers.
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # rust + cmake + ninja from mise.toml. CARGO=cargo skips the mbx
       # shim so rust-cache can cache target/ as a normal directory.

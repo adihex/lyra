@@ -19,7 +19,7 @@ jobs:
   coverage:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: jdx/mise-action@v3
       - uses: Swatinem/rust-cache@v2
 
@@ -49,7 +49,7 @@ jobs:
   timing:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: jdx/mise-action@v3
       - uses: Swatinem/rust-cache@v2
 
@@ -95,7 +95,7 @@ jobs:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: jdx/mise-action@v3
       - uses: Swatinem/rust-cache@v2
 
