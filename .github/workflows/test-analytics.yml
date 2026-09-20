@@ -20,7 +20,7 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: jdx/mise-action@v3
+      - uses: jdx/mise-action@v4
       - uses: Swatinem/rust-cache@v2
 
       - name: Install cargo-llvm-cov
@@ -50,7 +50,7 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: jdx/mise-action@v3
+      - uses: jdx/mise-action@v4
       - uses: Swatinem/rust-cache@v2
 
       # libtest's --report-time is nightly-only (-Z unstable-options);
@@ -96,7 +96,7 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: jdx/mise-action@v3
+      - uses: jdx/mise-action@v4
       - uses: Swatinem/rust-cache@v2
 
       - name: Repeat suite 5x (no retries, failures stay visible)
