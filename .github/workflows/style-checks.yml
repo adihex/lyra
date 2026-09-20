@@ -15,7 +15,7 @@ jobs:
   complexity:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: jdx/mise-action@v3
       - uses: Swatinem/rust-cache@v2
       - name: Clippy cognitive complexity
@@ -30,7 +30,7 @@ jobs:
   large-files:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Fail on oversized tracked files
         run: |
           MAX_BYTES=512000
@@ -68,7 +68,7 @@ jobs:
   tech-debt:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Require issue links on debt markers
         run: |
           # Split literals so this file's own pattern does not match the scan.
@@ -90,6 +90,6 @@ jobs:
   dep-age:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Verify dependency release age
         run: bash scripts/check-dep-age.sh
