@@ -312,8 +312,8 @@ impl Host {
     /// Open a pairing window — returns the 6-digit code to display.
     /// One window at a time; a new window rotates the code.
     pub fn open_pairing(&self) -> String {
-        use rand::Rng;
-        let code = format!("{:06}", rand::thread_rng().gen_range(0..1_000_000u32));
+        use rand::RngExt;
+        let code = format!("{:06}", rand::rng().random_range(0..1_000_000u32));
         *self.pairing.lock().unwrap() = Some(PairingSession { code: code.clone() });
         code
     }

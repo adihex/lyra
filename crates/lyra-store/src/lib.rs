@@ -461,7 +461,10 @@ impl Library {
             return None;
         }
 
-        let hash = format!("{:x}", sha2::Sha256::digest(bytes));
+        let hash: String = sha2::Sha256::digest(bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
         let ext = match mime {
             "image/png" => "png",
             "image/gif" => "gif",

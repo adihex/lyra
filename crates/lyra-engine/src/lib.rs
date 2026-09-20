@@ -604,7 +604,6 @@ fn worker_loop(st: WorkerState) {
                                 device_rate as usize,
                                 1024,
                                 2,
-                                2,
                                 rubato::FixedSync::Both,
                             )
                             .ok()
@@ -766,7 +765,7 @@ fn resample(rs: &mut rubato::Fft<f32>, interleaved: &[f32], pending: &mut Vec<f3
         let r: Vec<f32> = chunk.iter().skip(1).step_by(2).copied().collect();
         match SequentialSliceOfVecs::new(&[l, r], 2, need_frames)
             .map_err(|e| e.to_string())
-            .and_then(|a| rs.process(&a, 0, None).map_err(|e| e.to_string()))
+            .and_then(|a| rs.process(&a, None).map_err(|e| e.to_string()))
         {
             Ok(res) => out.extend_from_slice(&res.take_data()),
             Err(e) => warn!("resample: {e}"),

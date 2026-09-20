@@ -18,13 +18,13 @@
 //!   phone tap → host → engine round-trip is greppable as one operation.
 
 use lyra_core::{LyraError, PlayerCommand};
-use rand::Rng;
+use rand::RngExt;
 
 /// Mint a fresh request/operation ID: 16 lowercase hex chars (64 bits from
 /// the OS RNG — unique enough for correlation, not a secret).
 #[must_use]
 pub fn new_request_id() -> String {
-    format!("{:016x}", rand::thread_rng().gen::<u64>())
+    format!("{:016x}", rand::rng().random::<u64>())
 }
 
 /// IDs are 1–64 chars of `[A-Za-z0-9-_]`: safe for log grep, filenames,
