@@ -45,11 +45,8 @@ impl OfflineDecode {
         }
 
         let mut interleaved = Vec::new();
-        loop {
-            match dec.next_block()? {
-                Some(block) => interleaved.extend_from_slice(&block),
-                None => break,
-            }
+        while let Some(block) = dec.next_block()? {
+            interleaved.extend_from_slice(&block);
         }
         if interleaved.is_empty() {
             return Err(LyraError::Decode("no audio frames decoded".into()));
@@ -86,9 +83,7 @@ pub fn hash_source(source: &dyn ByteSource) -> Result<String, LyraError> {
     let mut offset = 0u64;
     let mut buf = vec![0u8; 1 << 20];
     loop {
-        let n = source
-            .read_at(offset, &mut buf)
-            .map_err(|e| LyraError::Io(e))?;
+        let n = source.read_at(offset, &mut buf).map_err(LyraError::Io)?;
         if n == 0 {
             break;
         }

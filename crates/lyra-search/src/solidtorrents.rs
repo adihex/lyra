@@ -62,7 +62,10 @@ impl SolidTorrentsProvider {
     }
 
     pub fn with_base(base: impl Into<String>) -> Self {
-        Self { base: base.into(), ..Self::new() }
+        Self {
+            base: base.into(),
+            ..Self::new()
+        }
     }
 
     fn result_from(&self, row: Row, q: &SearchQuery) -> Option<SearchResult> {
@@ -135,7 +138,11 @@ impl TorrentProvider for SolidTorrentsProvider {
         LegalTier::Gray
     }
     fn capabilities(&self) -> ProviderCaps {
-        ProviderCaps { seeds_known: true, needs_refresh: false, local_index: false }
+        ProviderCaps {
+            seeds_known: true,
+            needs_refresh: false,
+            local_index: false,
+        }
     }
 
     async fn search(&self, q: &SearchQuery) -> Result<Vec<SearchResult>, ProviderError> {
@@ -153,17 +160,24 @@ impl TorrentProvider for SolidTorrentsProvider {
             .error_for_status()?
             .json()
             .await?;
-        Ok(resp.results.into_iter().filter_map(|r| self.result_from(r, q)).collect())
+        Ok(resp
+            .results
+            .into_iter()
+            .filter_map(|r| self.result_from(r, q))
+            .collect())
     }
 
     async fn resolve(&self, r: &SearchResult) -> Result<ResolvedTorrent, ProviderError> {
         let magnet = r.magnet.clone().or_else(|| {
             r.infohash.as_ref().map(|ih| {
-                format!("magnet:?xt=urn:btih:{ih}&dn={}", urlencoding::encode(&r.name))
+                format!(
+                    "magnet:?xt=urn:btih:{ih}&dn={}",
+                    urlencoding::encode(&r.name)
+                )
             })
         });
-        let magnet = magnet
-            .ok_or_else(|| ProviderError::Unavailable(format!("{}: no magnet", r.id)))?;
+        let magnet =
+            magnet.ok_or_else(|| ProviderError::Unavailable(format!("{}: no magnet", r.id)))?;
         Ok(ResolvedTorrent {
             result: r.clone(),
             files: vec![],
@@ -186,10 +200,16 @@ mod tests {
     #[test]
     fn rows_parse_size_and_swarm_variants() {
         let p = SolidTorrentsProvider::new();
-        let q = SearchQuery { strict: false, ..SearchQuery::text("aerosmith") };
+        let q = SearchQuery {
+            strict: false,
+            ..SearchQuery::text("aerosmith")
+        };
         let resp: Resp = serde_json::from_str(RESP).unwrap();
-        let out: Vec<_> =
-            resp.results.into_iter().filter_map(|r| p.result_from(r, &q)).collect();
+        let out: Vec<_> = resp
+            .results
+            .into_iter()
+            .filter_map(|r| p.result_from(r, &q))
+            .collect();
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].provider, "solidtorrents");
         assert_eq!(out[0].size_bytes, Some(268435456));

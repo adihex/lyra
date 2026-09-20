@@ -60,7 +60,11 @@ fn hal_exclusive_plays() {
         std::thread::sleep(Duration::from_millis(100));
     }
     assert!(advanced, "HAL path: position never advanced");
-    eprintln!("HAL exclusive: pos={:.2}s, playing={}", e.position_secs(), e.is_playing());
+    eprintln!(
+        "HAL exclusive: pos={:.2}s, playing={}",
+        e.position_secs(),
+        e.is_playing()
+    );
     e.stop();
     e.shutdown();
 }

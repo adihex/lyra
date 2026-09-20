@@ -23,7 +23,7 @@ impl BeatDetect {
         let frames = interleaved.len() / 2;
         let dt = frames as f32 / self.rate;
         let mut e = 0f32;
-        for f in interleaved.chunks_exact(2) {
+        for f in interleaved.as_chunks::<2>().0 {
             let m = (f[0] + f[1]) * 0.5;
             if m.is_finite() {
                 e += m * m;
@@ -71,7 +71,10 @@ mod tests {
         for _ in 0..12 {
             last = b.push(&silence);
         }
-        assert!(last < p0 && last < 0.05, "pulse should decay to ~0, got {last}");
+        assert!(
+            last < p0 && last < 0.05,
+            "pulse should decay to ~0, got {last}"
+        );
     }
 
     #[test]

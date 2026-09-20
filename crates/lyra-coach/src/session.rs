@@ -248,8 +248,12 @@ impl Session {
             }
         }
         let hop = self.onset.hop();
-        for i in 0..n_onsets {
-            let onset = onsets[i].expect("staged onset");
+        for onset in onsets
+            .iter()
+            .take(n_onsets)
+            .map(|o| o.as_ref().expect("staged onset"))
+        {
+            let onset = *onset;
             self.staged.push(CoachEvent::Onset {
                 t: onset.t,
                 strength: onset.strength,

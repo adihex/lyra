@@ -10,8 +10,8 @@
 
 use crate::lossless;
 use crate::{
-    AddableTorrent, LegalTier, ProviderCaps, ProviderError, ResolvedTorrent,
-    SearchQuery, SearchResult, TorrentProvider,
+    AddableTorrent, LegalTier, ProviderCaps, ProviderError, ResolvedTorrent, SearchQuery,
+    SearchResult, TorrentProvider,
 };
 use async_trait::async_trait;
 
@@ -44,7 +44,10 @@ impl X1337Provider {
 
     /// Alternate mirror / test server.
     pub fn with_base(base: impl Into<String>) -> Self {
-        Self { base: base.into(), ..Self::new() }
+        Self {
+            base: base.into(),
+            ..Self::new()
+        }
     }
 
     /// One search-table row → SearchResult. Pure — fixtures test this
@@ -205,7 +208,11 @@ impl TorrentProvider for X1337Provider {
         LegalTier::Gray
     }
     fn capabilities(&self) -> ProviderCaps {
-        ProviderCaps { seeds_known: true, needs_refresh: false, local_index: false }
+        ProviderCaps {
+            seeds_known: true,
+            needs_refresh: false,
+            local_index: false,
+        }
     }
 
     async fn search(&self, q: &SearchQuery) -> Result<Vec<SearchResult>, ProviderError> {
@@ -291,7 +298,10 @@ mod tests {
 </ul></div>"#;
 
     fn q() -> SearchQuery {
-        SearchQuery { strict: false, ..SearchQuery::text("daft punk") }
+        SearchQuery {
+            strict: false,
+            ..SearchQuery::text("daft punk")
+        }
     }
 
     #[test]

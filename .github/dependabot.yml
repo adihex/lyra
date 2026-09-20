@@ -1,0 +1,27 @@
+version: 2
+updates:
+  # Rust workspace (Cargo.toml + crates/*/Cargo.toml + Cargo.lock).
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: America/Los_Angeles
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - rust
+
+  # CI / release workflows (uses: actions/*@v* in .github/workflows).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: America/Los_Angeles
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - ci

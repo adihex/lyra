@@ -7,6 +7,25 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 
+# Workspace-wide lint gates — every crate opts in via `[lints] workspace =
+# true`, and CI runs `cargo clippy -- -D warnings`, so these (plus all
+# default clippy/rustc warnings) fail the build rather than rotting.
+[workspace.lints.rust]
+# Unsafe blocks must stay explicit inside `unsafe fn` bodies — the FFI
+# boundary dereferences raw pointers throughout; implicit unsafe ops
+# would hide new ones from review.
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+# Every public unsafe FFI function documents its pointer contract for
+# the Swift side (see lyra-ffi `# Safety` sections).
+missing_safety_doc = "deny"
+# Raw-pointer params must mean `unsafe fn` — soundness, not style.
+not_unsafe_ptr_arg_deref = "deny"
+# Never hold a std Mutex/RwLock guard across `.await` (search fan-out
+# would stall provider re-registration).
+await_holding_lock = "deny"
+
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

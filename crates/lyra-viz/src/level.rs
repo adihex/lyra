@@ -34,7 +34,7 @@ impl Levels {
         self.block_clip = 0;
         let mut acc = [0f64; 2];
         let mut n = 0u64;
-        for frame in interleaved.chunks_exact(2) {
+        for frame in interleaved.as_chunks::<2>().0 {
             for (ch, s) in frame.iter().enumerate() {
                 let a = s.abs();
                 if !a.is_finite() {
@@ -52,11 +52,8 @@ impl Levels {
             n += 1;
         }
         if n > 0 {
-            for ch in 0..2 {
-                self.rms[ch] = ((acc[ch] / n as f64).sqrt() as f32)
-                    .max(1e-9)
-                    .log10()
-                    * 20.0;
+            for (rms, &a) in self.rms.iter_mut().zip(acc.iter()) {
+                *rms = ((a / n as f64).sqrt() as f32).max(1e-9).log10() * 20.0;
             }
         }
         // decay peaks once per block — call rate ≈ block cadence

@@ -8,9 +8,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use lyra_fs::{
-    AuthMethod, ByteSource, CachingSource, ExecOpen, ExecWalk, HeaderProbe,
-    RemoteProfile, RemoteScanner, ScanOptions, SftpOpener, SftpSource, SftpWalk,
-    Ssh2Backend, SshExecFile,
+    AuthMethod, ByteSource, CachingSource, ExecOpen, ExecWalk, HeaderProbe, RemoteProfile,
+    RemoteScanner, ScanOptions, SftpOpener, SftpSource, SftpWalk, Ssh2Backend, SshExecFile,
 };
 use serde_json::{json, Value};
 
@@ -53,6 +52,10 @@ fn out(v: Value) -> *mut c_char {
 /// Stream-play `remote_path` on the profile's host: SFTP random-access
 /// under the 1 MiB block cache, same shape as torrent streaming.
 /// 0 = engine accepted; 1 = open failed; 2 = bad args.
+///
+/// # Safety
+/// `e` must be a live engine handle or null (null returns 2).
+/// `profile_json` and `remote_path` may be null (returns 2); otherwise valid NUL-terminated C strings.
 #[no_mangle]
 pub unsafe extern "C" fn lyra_engine_play_remote(
     e: *mut lyra_engine::Engine,
@@ -65,7 +68,9 @@ pub unsafe extern "C" fn lyra_engine_play_remote(
     let (Some(pj), Some(path)) = (cstr(profile_json), cstr(remote_path)) else {
         return 2;
     };
-    let Some((profile, auth, t)) = parse_profile(pj) else { return 2 };
+    let Some((profile, auth, t)) = parse_profile(pj) else {
+        return 2;
+    };
     let src: Arc<dyn ByteSource> = if matches!(t, Transport::Exec) {
         match SshExecFile::open_profile(&profile, path) {
             Ok(s) => Arc::new(s),
@@ -105,6 +110,11 @@ pub unsafe extern "C" fn lyra_engine_play_remote(
 /// Remote scan into the library DB — SFTP walk + header probes, resumable
 /// via the store's scan cursor. Blocks; call off the main thread.
 /// Returns ScanStats JSON; null on failure.
+///
+/// # Safety
+/// `l` must be a live library handle or null (null returns null).
+/// `profile_json` may be null (returns null); otherwise a valid NUL-terminated C string.
+/// Free the non-null return with `lyra_string_free`.
 #[no_mangle]
 pub unsafe extern "C" fn lyra_remlib_scan(
     l: *mut lyra_store::Library,
@@ -164,6 +174,10 @@ pub unsafe extern "C" fn lyra_remlib_scan(
 
 /// Cheap health check — ssh `find` count over the root (no probing).
 /// Returns {ok:true, files:N, elapsed_ms} or {ok:false, error}.
+///
+/// # Safety
+/// `profile_json` may be null (returns null); otherwise a valid NUL-terminated C string.
+/// Free the non-null return with `lyra_string_free`.
 #[no_mangle]
 pub unsafe extern "C" fn lyra_remlib_test(profile_json: *const c_char) -> *mut c_char {
     let Some(pj) = cstr(profile_json) else {
@@ -185,6 +199,9 @@ pub unsafe extern "C" fn lyra_remlib_test(profile_json: *const c_char) -> *mut c
 
 /// Pin a remote subtree locally via rsync (delta + resume). `local_dir`
 /// must be inside the app's writable scope. 0 ok.
+///
+/// # Safety
+/// Each argument may be null (returns 2); otherwise valid NUL-terminated C strings.
 #[no_mangle]
 pub unsafe extern "C" fn lyra_remlib_pin(
     profile_json: *const c_char,
@@ -196,7 +213,9 @@ pub unsafe extern "C" fn lyra_remlib_pin(
     else {
         return 2;
     };
-    let Some((profile, _, _)) = parse_profile(pj) else { return 2 };
+    let Some((profile, _, _)) = parse_profile(pj) else {
+        return 2;
+    };
     match lyra_fs::pin(&profile, rdir, &PathBuf::from(ldir)) {
         Ok(()) => 0,
         Err(_) => 1,
@@ -229,7 +248,7 @@ mod tests {
         // SFTP walk + probe into a temp library — the real scan path.
         let db = std::env::temp_dir().join(format!("lyra-remfs-{}.db", std::process::id()));
         let dbc = CString::new(db.to_str().unwrap()).unwrap();
-        let lib = super::super::lyra_lib_open(dbc.as_ptr());
+        let lib = unsafe { super::super::lyra_lib_open(dbc.as_ptr()) };
         assert!(!lib.is_null());
         let raw = unsafe { super::lyra_remlib_scan(lib, pj.as_ptr()) };
         assert!(!raw.is_null());
@@ -238,7 +257,10 @@ mod tests {
         println!("scan: {s}");
         assert!(!s.contains("error"), "scan failed: {s}");
         let rows = unsafe { super::super::lyra_lib_tracks(lib) };
-        let tracks = unsafe { CStr::from_ptr(rows) }.to_str().unwrap().to_string();
+        let tracks = unsafe { CStr::from_ptr(rows) }
+            .to_str()
+            .unwrap()
+            .to_string();
         unsafe { super::super::lyra_string_free(rows) };
         println!("tracks: {}", &tracks[..tracks.len().min(300)]);
         assert!(tracks.contains("sftp://"), "no sftp rows: {tracks}");
@@ -252,7 +274,11 @@ mod tests {
         let rc = unsafe { super::lyra_engine_play_remote(e, pj.as_ptr(), path.as_ptr()) };
         assert_eq!(rc, 0, "play_remote rc={rc}");
         std::thread::sleep(std::time::Duration::from_secs(3));
-        assert_eq!(unsafe { super::super::lyra_engine_is_playing(e) }, 1, "not playing");
+        assert_eq!(
+            unsafe { super::super::lyra_engine_is_playing(e) },
+            1,
+            "not playing"
+        );
         unsafe { super::super::lyra_engine_free(e) };
         let _ = std::fs::remove_file(&db);
     }

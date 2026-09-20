@@ -60,7 +60,11 @@ impl ItemMeta {
         self.files
             .iter()
             .find(|f| f.name == format!("{id}_archive.torrent"))
-            .or_else(|| self.files.iter().find(|f| f.format.as_deref() == Some("Archive BitTorrent")))
+            .or_else(|| {
+                self.files
+                    .iter()
+                    .find(|f| f.format.as_deref() == Some("Archive BitTorrent"))
+            })
             .map(|f| f.name.as_str())
     }
 }
@@ -93,7 +97,10 @@ impl ArchiveOrgProvider {
 
     /// Whole-IA audio catalog (etree scope off) — still Clear-tier.
     pub fn all_collections() -> Self {
-        Self { collection: None, ..Self::new() }
+        Self {
+            collection: None,
+            ..Self::new()
+        }
     }
 
     async fn meta(&self, id: &str) -> Result<Arc<ItemMeta>, ProviderError> {
@@ -109,15 +116,26 @@ impl ArchiveOrgProvider {
             .json()
             .await?;
         let m = Arc::new(ItemMeta::from_json(&v));
-        self.meta_cache.lock().unwrap().insert(id.into(), Arc::clone(&m));
+        self.meta_cache
+            .lock()
+            .unwrap()
+            .insert(id.into(), Arc::clone(&m));
         Ok(m)
     }
 
     /// Pure row builder — doc from advancedsearch, meta from /metadata
     /// (None when the fetch failed: row survives, unverifiable).
-    fn result_from(doc: &Value, meta: Option<&ItemMeta>, q: &SearchQuery, base: &str) -> Option<SearchResult> {
+    fn result_from(
+        doc: &Value,
+        meta: Option<&ItemMeta>,
+        q: &SearchQuery,
+        base: &str,
+    ) -> Option<SearchResult> {
         let id = strs(&doc["identifier"]).into_iter().next()?;
-        let name = strs(&doc["title"]).into_iter().next().unwrap_or_else(|| id.clone());
+        let name = strs(&doc["title"])
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| id.clone());
 
         let mut classes: Vec<AudioClass> = Vec::new();
         let mut preview: Vec<ResultFile> = Vec::new();
@@ -138,9 +156,15 @@ impl ArchiveOrgProvider {
                     Some(c) => {
                         audio_count += 1;
                         classes.push(c);
-                        preview.push(ResultFile { path: f.name.clone(), size: f.size });
+                        preview.push(ResultFile {
+                            path: f.name.clone(),
+                            size: f.size,
+                        });
                     }
-                    None => others.push(ResultFile { path: f.name.clone(), size: f.size }),
+                    None => others.push(ResultFile {
+                        path: f.name.clone(),
+                        size: f.size,
+                    }),
                 }
             }
             let (f, l, d, r) = lossless::summarize(classes.iter());
@@ -155,25 +179,24 @@ impl ArchiveOrgProvider {
         // Format filter: a known file list without an acceptable codec is
         // rejected under strict, kept flagged otherwise. Unknown passes.
         let accepted = lossless::acceptable(q);
-        if meta.is_some()
-            && q.strict
-            && !classes.iter().any(|c| accepted.contains(&c.codec))
-        {
+        if meta.is_some() && q.strict && !classes.iter().any(|c| accepted.contains(&c.codec)) {
             return None;
         }
 
         Some(SearchResult {
-            torrent_url: torrent_name
-                .map(|t| format!("{base}/download/{id}/{t}")),
+            torrent_url: torrent_name.map(|t| format!("{base}/download/{id}/{t}")),
             source_page: Some(format!("{base}/details/{id}")),
             id,
             provider: "archive-org".into(),
             name,
-            infohash: strs(&doc["btih"]).into_iter().next().map(|s| s.to_lowercase()),
+            infohash: strs(&doc["btih"])
+                .into_iter()
+                .next()
+                .map(|s| s.to_lowercase()),
             magnet: None,
-            size_bytes: doc["item_size"].as_u64().or_else(|| {
-                doc["item_size"].as_str().and_then(|s| s.parse().ok())
-            }),
+            size_bytes: doc["item_size"]
+                .as_u64()
+                .or_else(|| doc["item_size"].as_str().and_then(|s| s.parse().ok())),
             file_count: meta.map(|_| audio_count),
             seeds: None,
             downloads: doc["downloads"].as_u64(),
@@ -196,7 +219,11 @@ fn strs(v: &Value) -> Vec<String> {
         Value::Number(n) => vec![n.to_string()],
         Value::Array(a) => a
             .iter()
-            .filter_map(|x| x.as_str().map(String::from).or_else(|| x.as_u64().map(|n| n.to_string())))
+            .filter_map(|x| {
+                x.as_str()
+                    .map(String::from)
+                    .or_else(|| x.as_u64().map(|n| n.to_string()))
+            })
             .collect(),
         _ => vec![],
     }
@@ -225,7 +252,11 @@ impl TorrentProvider for ArchiveOrgProvider {
         LegalTier::Clear
     }
     fn capabilities(&self) -> ProviderCaps {
-        ProviderCaps { seeds_known: false, needs_refresh: false, local_index: false }
+        ProviderCaps {
+            seeds_known: false,
+            needs_refresh: false,
+            local_index: false,
+        }
     }
 
     async fn search(&self, q: &SearchQuery) -> Result<Vec<SearchResult>, ProviderError> {
@@ -262,13 +293,19 @@ impl TorrentProvider for ArchiveOrgProvider {
             .error_for_status()?
             .json()
             .await?;
-        let docs = v["response"]["docs"].as_array().cloned().unwrap_or_default();
+        let docs = v["response"]["docs"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
 
         // Classify each row from its file list — the metadata call is
         // what makes rows verifiably lossless (and feeds files_preview).
         let rows = stream::iter(docs)
             .map(|doc| async move {
-                let id = strs(&doc["identifier"]).into_iter().next().unwrap_or_default();
+                let id = strs(&doc["identifier"])
+                    .into_iter()
+                    .next()
+                    .unwrap_or_default();
                 let meta = self.meta(&id).await.ok();
                 Self::result_from(&doc, meta.as_deref(), q, &self.base)
             })
@@ -283,17 +320,19 @@ impl TorrentProvider for ArchiveOrgProvider {
         let files = meta
             .files
             .iter()
-            .map(|f| ResultFile { path: f.name.clone(), size: f.size })
+            .map(|f| ResultFile {
+                path: f.name.clone(),
+                size: f.size,
+            })
             .collect();
         let addable = match meta.torrent_name(&r.id) {
             Some(t) => AddableTorrent::TorrentUrl(format!("{}/download/{}/{}", self.base, r.id, t)),
             None => {
                 // Dark/restricted items lack _archive.torrent — magnet
                 // fallback on btih + IA trackers.
-                let ih = r
-                    .infohash
-                    .as_deref()
-                    .ok_or_else(|| ProviderError::Unavailable(format!("{}: no torrent or btih", r.id)))?;
+                let ih = r.infohash.as_deref().ok_or_else(|| {
+                    ProviderError::Unavailable(format!("{}: no torrent or btih", r.id))
+                })?;
                 let mut m = format!("magnet:?xt=urn:btih:{ih}&dn={}", urlencode(&r.name));
                 for t in IA_TRACKERS {
                     m.push_str(&format!("&tr={}", urlencode(t)));
@@ -301,7 +340,11 @@ impl TorrentProvider for ArchiveOrgProvider {
                 AddableTorrent::Magnet(m)
             }
         };
-        Ok(ResolvedTorrent { result: r.clone(), files, addable })
+        Ok(ResolvedTorrent {
+            result: r.clone(),
+            files,
+            addable,
+        })
     }
 }
 
@@ -349,7 +392,10 @@ mod tests {
         assert_eq!(r.lossless, Some(true));
         assert_eq!(r.formats, ["flac", "mp3"]);
         assert_eq!(r.file_count, Some(3));
-        assert_eq!(r.infohash.as_deref(), Some("abc123def4567890abc123def4567890abc12345"));
+        assert_eq!(
+            r.infohash.as_deref(),
+            Some("abc123def4567890abc123def4567890abc12345")
+        );
         assert_eq!(
             r.torrent_url.as_deref(),
             Some("https://archive.org/download/gd1977-05-08.sbd.flac16/gd1977-05-08.sbd.flac16_archive.torrent")
@@ -359,7 +405,10 @@ mod tests {
         // MP3/OGG-only item: rejected under strict…
         assert!(ArchiveOrgProvider::result_from(&doc(1), Some(&mp3_meta), &q, BASE).is_none());
         // …kept flagged when strict=false.
-        let loose = SearchQuery { strict: false, ..SearchQuery::text("dead") };
+        let loose = SearchQuery {
+            strict: false,
+            ..SearchQuery::text("dead")
+        };
         let r2 = ArchiveOrgProvider::result_from(&doc(1), Some(&mp3_meta), &loose, BASE).unwrap();
         assert_eq!(r2.lossless, Some(false));
         assert_eq!(r2.formats, ["mp3", "ogg"]);

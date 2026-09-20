@@ -12,6 +12,12 @@ pub struct EventBatch<T: Copy, const N: usize> {
     len: usize,
 }
 
+impl<T: Copy, const N: usize> Default for EventBatch<T, N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<T: Copy, const N: usize> EventBatch<T, N> {
     pub const fn new() -> Self {
         EventBatch {

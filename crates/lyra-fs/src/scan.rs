@@ -239,7 +239,9 @@ pub struct ExecWalk {
 
 impl ExecWalk {
     pub fn new(profile: &RemoteProfile) -> Self {
-        Self { profile: profile.clone() }
+        Self {
+            profile: profile.clone(),
+        }
     }
 }
 
@@ -257,13 +259,18 @@ pub struct ExecOpen {
 
 impl ExecOpen {
     pub fn new(profile: &RemoteProfile) -> Self {
-        Self { profile: profile.clone() }
+        Self {
+            profile: profile.clone(),
+        }
     }
 }
 
 impl RemoteOpen for ExecOpen {
     fn open(&self, remote_path: &str) -> Result<Arc<dyn ByteSource>, LyraError> {
-        Ok(Arc::new(super::SshExecFile::open_profile(&self.profile, remote_path)?))
+        Ok(Arc::new(super::SshExecFile::open_profile(
+            &self.profile,
+            remote_path,
+        )?))
     }
 }
 
@@ -600,6 +607,11 @@ mod tests {
         assert!(
             src.backend().max_read_offset() <= 64 << 10,
             "read past the cap"
+        );
+        assert_eq!(
+            src.backend().opened_paths(),
+            ["/big.wav"],
+            "probe opened unexpected files"
         );
     }
 

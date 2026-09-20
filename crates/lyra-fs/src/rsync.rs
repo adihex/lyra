@@ -148,7 +148,7 @@ impl RsyncSource {
 
     fn read_staged(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
         let f = File::open(&self.local_path)?;
-        Ok(f.read_at(buf, offset)?)
+        f.read_at(buf, offset)
     }
 }
 

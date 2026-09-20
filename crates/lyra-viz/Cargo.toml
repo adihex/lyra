@@ -6,3 +6,6 @@ license.workspace = true
 
 [dependencies]
 rustfft = "6"
+
+[lints]
+workspace = true

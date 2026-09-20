@@ -1,0 +1,37 @@
+# Lyra naming + complexity conventions.
+#
+# Enforcement: CI runs `cargo clippy -- -D warnings`, and both
+# `disallowed_names` and `cognitive_complexity` are warn-by-default lints,
+# so any violation below fails the build instead of rotting.
+#
+# Naming convention: identifiers use descriptive domain language
+# (`freq_hz`, `frame_len`, `power_threshold`). Bare placeholder /
+# metasyntactic names are banned via `disallowed-names` (clippy's defaults
+# are `foo`, `baz`, `qux`; the rest are Lyra's extension).
+#
+# Intentionally NOT banned: `bar` (a music-domain term — bar numbers,
+# bar-snapped boundaries, e.g. `GridPos.bar`) and `data` (raw byte-buffer
+# fields). Keep this list clear of domain vocabulary — grep `crates/*`
+# before adding a word.
+disallowed-names = [
+  "foo",
+  "baz",
+  "qux",
+  "quux",
+  "corge",
+  "grault",
+  "garply",
+  "waldo",
+  "fred",
+  "plugh",
+  "xyzzy",
+  "thud",
+  "toto",
+  "tata",
+]
+
+# Complexity budget: functions above this cognitive complexity fail CI
+# (see the complexity job in `.github/workflows/style-checks.yml`).
+# The scoped crates pass at 25 today; the threshold is pinned here so
+# drift fails loudly instead of creeping up.
+cognitive-complexity-threshold = 25

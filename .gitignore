@@ -2,3 +2,37 @@ target/
 .build/
 app/.libs/
 .DS_Store
+
+# Environment secrets — never commit live credentials.
+# The checked-in template stays allowed.
+.env
+.env.*
+!.env.example
+
+# IDE configs (project-local only; tracked project files unaffected)
+.idea/
+.vscode/
+
+# OS artifacts
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.LSOverride
+.Trashes
+.Spotlight-V100
+._*
+
+# Editor / merge backups
+*~
+*.swp
+*.swo
+.*.swp
+#*#
+*.orig
+*.rej
+
+# macOS / Xcode derived state (source stays tracked)
+DerivedData/
+xcuserdata/
+.swiftpm/
+*.xcuserstate

@@ -43,7 +43,10 @@ fn plays_and_reports_position() {
         .try_init();
     let e = match Engine::new() {
         Ok(e) => e,
-        Err(err) => { eprintln!("engine init failed: {err}"); return; }
+        Err(err) => {
+            eprintln!("engine init failed: {err}");
+            return;
+        }
     };
     let src: Arc<dyn lyra_fs::ByteSource> =
         lyra_fs::CachingSource::wrap(LocalFile::open(&path).unwrap());

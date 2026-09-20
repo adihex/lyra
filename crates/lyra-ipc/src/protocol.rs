@@ -188,6 +188,12 @@ pub struct HelloBody {
     pub capabilities: usize,
 }
 
+impl Default for Hello {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Hello {
     pub fn new() -> Self {
         Self {
@@ -271,9 +277,12 @@ fn no_params() -> Value {
     serde_json::json!({"type": "object", "properties": {}})
 }
 
+/// A schema builder for one operation: returns its JSON-Schema value.
+type OpSchema = fn() -> Value;
+
 /// Full method/op table: envelope methods plus every `operation.submit` op
 /// from §1.2 (transport, modes, eq, queue, library, sources, introspection).
-pub static OPERATIONS: &[(&str, fn() -> Value)] = &[
+pub static OPERATIONS: &[(&str, OpSchema)] = &[
     // envelope methods
     ("capabilities", no_params),
     ("state.get", no_params),

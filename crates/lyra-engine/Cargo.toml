@@ -22,3 +22,6 @@ tracing-subscriber.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 lyra-hal = { path = "../lyra-hal" }
+
+[lints]
+workspace = true

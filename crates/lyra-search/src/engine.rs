@@ -1,7 +1,10 @@
 //! SearchEngine: fan-out over providers with per-provider timeout and
 //! error isolation, then merge — dedupe by infohash, lossless first.
 
-use crate::{ProviderError, ProviderIssue, ResolvedTorrent, SearchQuery, SearchResponse, SearchResult, TorrentProvider};
+use crate::{
+    ProviderError, ProviderIssue, ResolvedTorrent, SearchQuery, SearchResponse, SearchResult,
+    TorrentProvider,
+};
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -14,7 +17,10 @@ pub struct SearchEngine {
 
 impl SearchEngine {
     pub fn new(providers: Vec<Arc<dyn TorrentProvider>>) -> Self {
-        Self { providers: RwLock::new(providers), timeout: Duration::from_secs(8) }
+        Self {
+            providers: RwLock::new(providers),
+            timeout: Duration::from_secs(8),
+        }
     }
 
     pub fn with_timeout(mut self, t: Duration) -> Self {
@@ -41,14 +47,13 @@ impl SearchEngine {
     /// Fan out to the query's providers (all when unspecified). One dead
     /// or slow provider surfaces in provider_errors, never fails the query.
     pub async fn search(&self, q: &SearchQuery) -> SearchResponse {
-        let providers: Vec<Arc<dyn TorrentProvider>> =
-            self.providers.read().unwrap().clone();
+        let providers: Vec<Arc<dyn TorrentProvider>> = self.providers.read().unwrap().clone();
         let jobs: Vec<_> = providers
             .iter()
             .filter(|p| {
                 q.providers
                     .as_ref()
-                    .map_or(true, |ids| ids.iter().any(|i| i == p.id()))
+                    .is_none_or(|ids| ids.iter().any(|i| i == p.id()))
             })
             .map(|p| {
                 let timeout = self.timeout;
@@ -65,7 +70,10 @@ impl SearchEngine {
         for r in futures::future::join_all(jobs).await {
             match r {
                 Ok(rs) => resp.results.extend(rs),
-                Err((provider, error)) => resp.provider_errors.push(ProviderIssue { provider: provider.into(), error }),
+                Err((provider, error)) => resp.provider_errors.push(ProviderIssue {
+                    provider: provider.into(),
+                    error,
+                }),
             }
         }
         // Provider-native relevance is already within each block; the
@@ -97,14 +105,14 @@ impl SearchEngine {
     }
 
     pub async fn resolve(&self, r: &SearchResult) -> Result<ResolvedTorrent, ProviderError> {
-        let providers = self.providers.read().unwrap();
-        let p = providers
-            .iter()
-            .find(|p| p.id() == r.provider)
-            .cloned();
-        drop(providers);
-        let p = p
-            .ok_or_else(|| ProviderError::Unavailable(format!("no provider '{}'", r.provider)))?;
+        // Scope the read: the guard must not cross the provider's await —
+        // a slow resolve would stall torznab re-registration.
+        let p = {
+            let providers = self.providers.read().unwrap();
+            providers.iter().find(|p| p.id() == r.provider).cloned()
+        };
+        let p =
+            p.ok_or_else(|| ProviderError::Unavailable(format!("no provider '{}'", r.provider)))?;
         p.resolve(r).await
     }
 }
@@ -144,7 +152,12 @@ mod tests {
 
     impl Mock {
         fn ok(id: &'static str, rs: Vec<SearchResult>) -> Self {
-            Self { id, tier: LegalTier::Clear, out: StdMutex::new(Some(Ok(rs))), delay: Duration::ZERO }
+            Self {
+                id,
+                tier: LegalTier::Clear,
+                out: StdMutex::new(Some(Ok(rs))),
+                delay: Duration::ZERO,
+            }
         }
         fn err(id: &'static str, msg: &str) -> Self {
             Self {
@@ -155,7 +168,12 @@ mod tests {
             }
         }
         fn slow(id: &'static str, delay: Duration) -> Self {
-            Self { id, tier: LegalTier::Clear, out: StdMutex::new(Some(Ok(vec![]))), delay }
+            Self {
+                id,
+                tier: LegalTier::Clear,
+                out: StdMutex::new(Some(Ok(vec![]))),
+                delay,
+            }
         }
         fn tier(mut self, t: LegalTier) -> Self {
             self.tier = t;
@@ -175,7 +193,11 @@ mod tests {
             self.tier
         }
         fn capabilities(&self) -> ProviderCaps {
-            ProviderCaps { seeds_known: false, needs_refresh: false, local_index: false }
+            ProviderCaps {
+                seeds_known: false,
+                needs_refresh: false,
+                local_index: false,
+            }
         }
         async fn search(&self, _q: &SearchQuery) -> Result<Vec<SearchResult>, ProviderError> {
             if self.delay > Duration::ZERO {
@@ -219,18 +241,28 @@ mod tests {
     #[tokio::test]
     async fn merges_and_isolates_failures() {
         let engine = SearchEngine::new(vec![
-            Arc::new(Mock::ok("a", vec![result("1", "a", Some("AA"), Some(true))])),
+            Arc::new(Mock::ok(
+                "a",
+                vec![result("1", "a", Some("AA"), Some(true))],
+            )),
             Arc::new(Mock::err("b", "down")),
-            Arc::new(Mock::ok("c", vec![
-                result("2", "c", Some("aa"), None),              // dup infohash (case)
-                result("3", "c", Some("bb"), Some(false)),
-            ])),
+            Arc::new(Mock::ok(
+                "c",
+                vec![
+                    result("2", "c", Some("aa"), None), // dup infohash (case)
+                    result("3", "c", Some("bb"), Some(false)),
+                ],
+            )),
         ]);
         let resp = engine.search(&SearchQuery::text("x")).await;
         assert_eq!(resp.provider_errors.len(), 1);
         assert_eq!(resp.provider_errors[0].provider, "b");
         // "aa" dup: the lossless copy (provider a, ranked first) wins.
-        let ihs: Vec<_> = resp.results.iter().filter_map(|r| r.infohash.clone()).collect();
+        let ihs: Vec<_> = resp
+            .results
+            .iter()
+            .filter_map(|r| r.infohash.clone())
+            .collect();
         assert_eq!(ihs, ["AA", "bb"]);
         assert_eq!(resp.results[0].lossless, Some(true));
         assert_eq!(resp.results[1].lossless, Some(false));
@@ -244,23 +276,38 @@ mod tests {
             lossless: Some(true),
             ..result(id, "a", Some(id), Some(true))
         };
-        let engine = SearchEngine::new(vec![Arc::new(Mock::ok("a", vec![
-            SearchResult { lossless: Some(false), ..result("lossy", "a", Some("l0"), Some(false)) },
-            mk("flac-8trk", Some(8), None),
-            mk("flac-8trk-24", Some(8), Some(24)),
-            mk("flac-2trk", Some(2), Some(24)),
-            SearchResult { lossless: None, ..result("unknown", "a", Some("u"), None) },
-        ]))]);
+        let engine = SearchEngine::new(vec![Arc::new(Mock::ok(
+            "a",
+            vec![
+                SearchResult {
+                    lossless: Some(false),
+                    ..result("lossy", "a", Some("l0"), Some(false))
+                },
+                mk("flac-8trk", Some(8), None),
+                mk("flac-8trk-24", Some(8), Some(24)),
+                mk("flac-2trk", Some(2), Some(24)),
+                SearchResult {
+                    lossless: None,
+                    ..result("unknown", "a", Some("u"), None)
+                },
+            ],
+        ))]);
         let resp = engine.search(&SearchQuery::text("x")).await;
         let ids: Vec<_> = resp.results.iter().map(|r| r.id.as_str()).collect();
-        assert_eq!(ids, ["flac-8trk-24", "flac-8trk", "flac-2trk", "unknown", "lossy"]);
+        assert_eq!(
+            ids,
+            ["flac-8trk-24", "flac-8trk", "flac-2trk", "unknown", "lossy"]
+        );
     }
 
     #[tokio::test]
     async fn slow_provider_times_out_not_blocks() {
         let engine = SearchEngine::new(vec![
             Arc::new(Mock::slow("slow", Duration::from_secs(30))),
-            Arc::new(Mock::ok("fast", vec![result("1", "fast", None, Some(true))])),
+            Arc::new(Mock::ok(
+                "fast",
+                vec![result("1", "fast", None, Some(true))],
+            )),
         ])
         .with_timeout(Duration::from_millis(50));
         let resp = engine.search(&SearchQuery::text("x")).await;
@@ -274,13 +321,23 @@ mod tests {
         // Identical lossless rows from a Gray and a Clear provider —
         // the Clear copy leads; lossless still beats a Clear lossy row.
         let engine = SearchEngine::new(vec![
-            Arc::new(Mock::ok("gray-src", vec![
-                result("g1", "gray-src", Some("g1"), Some(true)),
-            ]).tier(LegalTier::Gray)),
-            Arc::new(Mock::ok("clear-src", vec![
-                result("c1", "clear-src", Some("c1"), Some(true)),
-                SearchResult { lossless: Some(false), ..result("c2", "clear-src", Some("c2"), Some(false)) },
-            ])),
+            Arc::new(
+                Mock::ok(
+                    "gray-src",
+                    vec![result("g1", "gray-src", Some("g1"), Some(true))],
+                )
+                .tier(LegalTier::Gray),
+            ),
+            Arc::new(Mock::ok(
+                "clear-src",
+                vec![
+                    result("c1", "clear-src", Some("c1"), Some(true)),
+                    SearchResult {
+                        lossless: Some(false),
+                        ..result("c2", "clear-src", Some("c2"), Some(false))
+                    },
+                ],
+            )),
         ]);
         let resp = engine.search(&SearchQuery::text("x")).await;
         let ids: Vec<_> = resp.results.iter().map(|r| r.id.as_str()).collect();
@@ -293,7 +350,10 @@ mod tests {
             Arc::new(Mock::ok("a", vec![result("1", "a", None, None)])),
             Arc::new(Mock::ok("b", vec![result("2", "b", None, None)])),
         ]);
-        let q = SearchQuery { providers: Some(vec!["b".into()]), ..SearchQuery::text("x") };
+        let q = SearchQuery {
+            providers: Some(vec!["b".into()]),
+            ..SearchQuery::text("x")
+        };
         let resp = engine.search(&q).await;
         assert_eq!(resp.results.len(), 1);
         assert_eq!(resp.results[0].provider, "b");

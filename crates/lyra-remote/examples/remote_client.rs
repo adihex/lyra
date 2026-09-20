@@ -26,26 +26,41 @@ async fn main() {
             for (i, b) in pk.iter_mut().enumerate() {
                 *b = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap();
             }
-            client.connect_verify(addr, &pk).await.expect("verify failed")
+            client
+                .connect_verify(addr, &pk)
+                .await
+                .expect("verify failed")
         }
         _ => panic!("bad mode"),
     };
 
-    println!("host: {}", session.host_static().map(|k| k.iter().map(|b| format!("{b:02x}")).collect::<String>()).unwrap_or_default());
+    println!(
+        "host: {}",
+        session
+            .host_static()
+            .map(|k| k.iter().map(|b| format!("{b:02x}")).collect::<String>())
+            .unwrap_or_default()
+    );
     println!("hello: {}", session.hello().await.unwrap());
 
-    for arg in std::env::args().skip(if mode == "pair" { 5 } else if mode == "verify" { 4 } else { 3 }) {
+    for arg in std::env::args().skip(if mode == "pair" {
+        5
+    } else if mode == "verify" {
+        4
+    } else {
+        3
+    }) {
         let cmd = match arg.as_str() {
             "toggle" => PlayerCommand::Toggle,
             "next" => PlayerCommand::Next,
             "prev" => PlayerCommand::Prev,
             "stop" => PlayerCommand::StopAfterCurrent,
-            a if a.starts_with("seek:") => {
-                PlayerCommand::Seek { position_secs: a[5..].parse().unwrap() }
-            }
-            a if a.starts_with("vol:") => {
-                PlayerCommand::Volume { value: a[4..].parse().unwrap() }
-            }
+            a if a.starts_with("seek:") => PlayerCommand::Seek {
+                position_secs: a[5..].parse().unwrap(),
+            },
+            a if a.starts_with("vol:") => PlayerCommand::Volume {
+                value: a[4..].parse().unwrap(),
+            },
             _ => continue,
         };
         let resp = session.send(&cmd).await.unwrap();

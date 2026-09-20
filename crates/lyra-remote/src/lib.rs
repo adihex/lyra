@@ -14,6 +14,9 @@
 
 use lyra_core::{LyraError, PlayerCommand};
 
+pub mod metrics;
+pub mod trace;
+
 use sha2::{Digest, Sha256};
 use snow::params::NoiseParams;
 use snow::{Builder, HandshakeState, TransportState};
@@ -27,7 +30,7 @@ use std::time::{Duration, Instant};
 use subtle::ConstantTimeEq;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tracing::{info, warn};
+use tracing::{info, warn, Instrument};
 
 const MAX_CONN: usize = 4;
 const THROTTLE_AFTER: u32 = 5;
@@ -145,8 +148,7 @@ impl DeviceStore {
     /// tmp + rename so a crash mid-write can't truncate the ACL. 0600.
     fn save(&self) {
         let Some(path) = &self.path else { return };
-        let m: HashMap<String, &String> =
-            self.devices.iter().map(|(k, v)| (hex32(k), v)).collect();
+        let m: HashMap<String, &String> = self.devices.iter().map(|(k, v)| (hex32(k), v)).collect();
         let Ok(json) = serde_json::to_string_pretty(&m) else {
             return;
         };
@@ -160,8 +162,7 @@ impl DeviceStore {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ =
-                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
         }
     }
 
@@ -254,6 +255,7 @@ pub struct Host {
     pairing: Mutex<Option<PairingSession>>,
     sink: Arc<dyn CommandSink>,
     conns: Arc<Mutex<usize>>,
+    metrics: Arc<metrics::HostMetrics>,
 }
 
 impl Host {
@@ -267,12 +269,44 @@ impl Host {
             pairing: Mutex::new(None),
             sink,
             conns: Arc::new(Mutex::new(0)),
+            metrics: Arc::new(metrics::HostMetrics::default()),
         })
     }
 
     /// Show this fingerprint next to the pairing code in the UI.
     pub fn fingerprint(&self) -> String {
         self.key.fingerprint()
+    }
+
+    /// Current in-process metrics snapshot (counters for connections,
+    /// pairings, commands, rejects). The desktop app has no scrape
+    /// endpoint; read this from debug tooling or [`Host::log_metrics`].
+    #[must_use]
+    pub fn metrics(&self) -> metrics::HostSnapshot {
+        self.metrics.snapshot()
+    }
+
+    /// [`Host::metrics`] rendered as Prometheus exposition-style text.
+    #[must_use]
+    pub fn metrics_text(&self) -> String {
+        self.metrics.render_text()
+    }
+
+    /// Emit the current snapshot as one structured log event — the
+    /// low-tech "debug endpoint" for a desktop app: `RUST_LOG=lyra=info`
+    /// plus log shipping gets these wherever they need to go.
+    pub fn log_metrics(&self) {
+        let s = self.metrics.snapshot();
+        info!(
+            connections_total = s.connections_total,
+            pair_attempts = s.pair_attempts,
+            pairings_ok = s.pairings_ok,
+            connects_ok = s.connects_ok,
+            rejects = s.rejects,
+            commands_total = s.commands_total,
+            command_errors = s.command_errors,
+            "remote metrics"
+        );
     }
 
     /// Open a pairing window — returns the 6-digit code to display.
@@ -315,22 +349,34 @@ impl Host {
     // -- connection entry points -------------------------------------------
 
     async fn handle_conn(self: &Arc<Self>, mut sock: TcpStream, addr: SocketAddr) {
-        {
-            let mut n = self.conns.lock().unwrap();
-            if *n >= MAX_CONN {
-                warn!(%addr, "conn limit");
-                return;
+        // Every connection gets an operation ID at accept time; it rides
+        // the `remote_conn` span so accept → handshake → command loop is
+        // one trace even though the transport is raw TCP, not HTTP.
+        let conn_id = trace::new_request_id();
+        let span = tracing::info_span!("remote_conn", %addr, conn_id = %conn_id);
+        let this = Arc::clone(self);
+        async move {
+            this.metrics.inc_connections();
+            {
+                let mut n = this.conns.lock().unwrap();
+                if *n >= MAX_CONN {
+                    this.metrics.inc_rejects();
+                    warn!("conn limit");
+                    return;
+                }
+                *n += 1;
             }
-            *n += 1;
+            let _ = this.dispatch(&mut sock, addr).await;
+            *this.conns.lock().unwrap() -= 1;
         }
-        let _ = self.dispatch(&mut sock, addr).await;
-        *self.conns.lock().unwrap() -= 1;
+        .instrument(span)
+        .await;
     }
 
     async fn dispatch(&self, sock: &mut TcpStream, addr: SocketAddr) -> Result<(), LyraError> {
         let hello = read_frame(sock).await?;
-        let op: serde_json::Value = serde_json::from_slice(&hello)
-            .map_err(|_| LyraError::Remote("bad hello".into()))?;
+        let op: serde_json::Value =
+            serde_json::from_slice(&hello).map_err(|_| LyraError::Remote("bad hello".into()))?;
         match op["op"].as_str() {
             Some("pair") => self.do_pair(sock, addr, &op).await,
             Some("connect") => self.do_connect(sock, addr).await,
@@ -339,16 +385,19 @@ impl Host {
     }
 
     /// SPAKE2 → XXpsk3 → pin client static → encrypted command loop.
+    #[tracing::instrument(skip(self, sock, hello), fields(peer = %addr))]
     async fn do_pair(
         &self,
         sock: &mut TcpStream,
         addr: SocketAddr,
         hello: &serde_json::Value,
     ) -> Result<(), LyraError> {
+        self.metrics.inc_pair_attempts();
         {
             let mut t = self.throttle.lock().unwrap();
             if t.check(addr).is_err() {
-                warn!(%addr, "pair throttled");
+                self.metrics.inc_rejects();
+                warn!("pair throttled");
                 return Ok(());
             }
         }
@@ -359,6 +408,7 @@ impl Host {
             .as_ref()
             .map(|p| p.code.clone());
         let Some(code) = code else {
+            self.metrics.inc_rejects();
             write_frame(sock, br#"{"error":"pairing_closed"}"#).await?;
             return Ok(());
         };
@@ -379,6 +429,7 @@ impl Host {
             }
             Err(_) => {
                 self.throttle.lock().unwrap().fail(addr);
+                self.metrics.inc_rejects();
                 write_frame(sock, br#"{"error":"bad_code"}"#).await?;
                 return Ok(());
             }
@@ -396,6 +447,7 @@ impl Host {
             Ok(t) => t,
             Err(e) => {
                 self.throttle.lock().unwrap().fail(addr);
+                self.metrics.inc_rejects();
                 return Err(e);
             }
         };
@@ -408,10 +460,12 @@ impl Host {
             .unwrap()
             .register(&client_static, name.clone());
         info!(%addr, %name, "device paired");
+        self.metrics.inc_pairings_ok();
         self.command_loop(sock, ts, "paired").await
     }
 
     /// Plain XX — client static must already be pinned.
+    #[tracing::instrument(skip(self, sock), fields(peer = %addr))]
     async fn do_connect(&self, sock: &mut TcpStream, addr: SocketAddr) -> Result<(), LyraError> {
         let hs = Builder::new(params(CONN_PATTERN))
             .local_private_key(&self.key.private)
@@ -424,21 +478,32 @@ impl Host {
             .ok_or_else(|| LyraError::Remote("no client static".into()))?
             .to_vec();
         if !self.devices.lock().unwrap().contains(&client_static) {
-            warn!(%addr, "unknown device key — closing");
+            self.metrics.inc_rejects();
+            warn!("unknown device key — closing");
             return Ok(());
         }
-        info!(%addr, "paired device connected");
+        info!("paired device connected");
+        self.metrics.inc_connects_ok();
         self.command_loop(sock, ts, "connected").await
     }
 
-    /// Encrypted JSON command loop until EOF.
+    /// Encrypted JSON command loop until EOF. Each command carries the
+    /// client's request ID (see [`trace`]) and runs inside a
+    /// `remote_command` span, so one phone tap is one trace.
+    #[tracing::instrument(skip(self, sock, ts))]
     async fn command_loop(
         &self,
         sock: &mut TcpStream,
         mut ts: TransportState,
         hello: &str,
     ) -> Result<(), LyraError> {
-        send_enc(sock, &mut ts, &serde_json::json!({"event": hello, "fp": self.fingerprint()})).await?;
+        send_enc(
+            sock,
+            &mut ts,
+            &serde_json::json!({"event": hello, "fp": self.fingerprint()}),
+        )
+        .await?;
+        let mut op_index: u64 = 0;
         loop {
             let ct = match read_frame(sock).await {
                 Ok(f) => f,
@@ -448,14 +513,30 @@ impl Host {
             let n = ts
                 .read_message(&ct, &mut pt)
                 .map_err(|_| LyraError::Remote("decrypt".into()))?;
-            let cmd: PlayerCommand = match serde_json::from_slice(&pt[..n]) {
-                Ok(c) => c,
+            op_index += 1;
+            let (request_id, cmd) = match trace::decode_command(&pt[..n]) {
+                Ok(v) => v,
                 Err(_) => {
+                    self.metrics.inc_command_errors();
+                    warn!(op = op_index, "bad command frame");
                     send_enc(sock, &mut ts, &serde_json::json!({"error":"bad_command"})).await?;
                     continue;
                 }
             };
-            let resp = self.sink.handle(&cmd);
+            let span = tracing::info_span!(
+                "remote_command",
+                request_id = %request_id,
+                op = op_index
+            );
+            let resp = span.in_scope(|| self.sink.handle(&cmd));
+            self.metrics.inc_commands();
+            // Echo the request ID back (additive field — existing clients
+            // reading `ok`/`event` are unaffected) so the phone can
+            // correlate responses with the taps that caused them.
+            let mut resp = resp;
+            if let Some(obj) = resp.as_object_mut() {
+                obj.insert("rid".to_string(), serde_json::Value::String(request_id));
+            }
             send_enc(sock, &mut ts, &resp).await?;
         }
     }
@@ -524,8 +605,13 @@ impl Client {
         code: &str,
     ) -> Result<Session, LyraError> {
         let mut sock = TcpStream::connect(addr).await?;
-        write_frame(&mut sock, &serde_json::json!({"op":"pair","name":name}).to_string().into_bytes())
-            .await?;
+        write_frame(
+            &mut sock,
+            &serde_json::json!({"op":"pair","name":name})
+                .to_string()
+                .into_bytes(),
+        )
+        .await?;
 
         let (a_side, a_msg) = Spake2::<Ed25519Group>::start_a(
             &Password::new(code.as_bytes()),
@@ -635,9 +721,26 @@ impl Session {
     }
 
     pub async fn send(&mut self, cmd: &PlayerCommand) -> Result<serde_json::Value, LyraError> {
-        send_enc(&mut self.sock, &mut self.ts, &serde_json::to_value(cmd).map_err(|e| LyraError::Remote(e.to_string()))?)
-            .await?;
-        self.recv().await
+        self.send_with_id(cmd, &trace::new_request_id()).await
+    }
+
+    /// Send with an explicit request ID — the `X-Request-ID` handling:
+    /// callers propagating an ID from elsewhere pass it here and the
+    /// server echoes it back in the response's `rid` field.
+    pub async fn send_with_id(
+        &mut self,
+        cmd: &PlayerCommand,
+        request_id: &str,
+    ) -> Result<serde_json::Value, LyraError> {
+        let request_id = trace::normalize_request_id(Some(request_id));
+        let span = tracing::info_span!("remote_request", request_id = %request_id);
+        async move {
+            let payload = serde_json::json!({ "rid": request_id, "cmd": cmd });
+            send_enc(&mut self.sock, &mut self.ts, &payload).await?;
+            self.recv().await
+        }
+        .instrument(span)
+        .await
     }
 
     pub async fn recv(&mut self) -> Result<serde_json::Value, LyraError> {

@@ -1,0 +1,1204 @@
+# Lyra API surface — OpenAPI projection of the real in-repo protocols.
+#
+# TRANSPORT NOTE (read first): Lyra currently exposes NO HTTP server.
+# - Local control is `lyra-ipc`: NDJSON protocol v2 over a Unix domain
+#   socket (see crates/lyra-ipc/src/protocol.rs, server.rs, paths.rs).
+#   Envelope: {"version":2,"id":<client>,"method":<verb>,"params":{…}}.
+#   Socket discovery: $LYRA_SOCKET, else the default socket path;
+#   liveness sidecar at control.sock.json. First line per connection is
+#   a `hello` object {version, hello:{app:"lyra",protocol:2,…}}.
+# - LAN remote is `lyra-remote`: raw TCP + SPAKE2(6-digit code) pairing →
+#   Noise_XXpsk3 → pinned X25519 device keys → Noise_XX reconnects with
+#   length-prefixed AEAD frames carrying JSON PlayerCommands
+#   (see crates/lyra-remote/src/lib.rs, tests/pairing.rs).
+#   There is no axum/router/REST layer; do not treat the paths below as
+#   live HTTP routes.
+#
+# This file projects every real method/op onto POST paths so schema tooling
+# (linters, codegen, agent clients) has one machine-readable contract.
+# Names, params, and error codes mirror OPERATIONS in
+# crates/lyra-ipc/src/protocol.rs and PlayerCommand in
+# crates/lyra-core/src/lib.rs exactly. `operation.submit` is the generic
+# entry point; bare op names are accepted as convenience aliases (server.rs).
+
+openapi: 3.0.3
+info:
+  title: Lyra control API (IPC + remote projection)
+  version: 2.0.0
+  description: >
+    Machine-readable projection of the lyra-ipc NDJSON method table
+    (protocol v2) and the lyra-remote Noise command surface. Wire
+    transports are a Unix socket and encrypted TCP respectively — see
+    TRANSPORT NOTE above. Responses echo `id` + `version`; mutating ops
+    echo a post-commit `snapshot`; long-running ops (library.scan,
+    torrent.add) return retained jobs. Error taxonomy: match `code`,
+    never parse `message`; `retryable` is true only for conflict/busy.
+  contact:
+    name: Lyra
+servers:
+  - url: ipc://lyra-control-socket
+    description: lyra-ipc Unix domain socket (NDJSON, one object per line)
+  - url: noise-tcp://lyra-remote
+    description: lyra-remote encrypted TCP session (post-pairing)
+paths:
+  /v2/capabilities:
+    post:
+      operationId: capabilities
+      summary: List protocol version and the full operation table
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Envelope'
+      responses:
+        '200':
+          description: Protocol + version + operations array
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CapabilitiesResult'
+  /v2/state.get:
+    post:
+      operationId: stateGet
+      summary: Current playback snapshot (poll; position ticks are never events)
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Envelope'
+      responses:
+        '200':
+          description: Snapshot payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SnapshotResponse'
+  /v2/spectrum.get:
+    post:
+      operationId: spectrumGet
+      summary: Draw-ready spectrum/viz data
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Envelope'
+      responses:
+        '200':
+          description: Spectrum payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OkResult'
+  /v2/operation.submit:
+    post:
+      operationId: operationSubmit
+      summary: Submit any op-table operation with optimistic-revision guards
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version, id, method, params]
+              properties:
+                version:
+                  type: integer
+                  example: 2
+                id:
+                  $ref: '#/components/schemas/Id'
+                method:
+                  type: string
+                  example: operation.submit
+                params:
+                  type: object
+                  required: [operation]
+                  properties:
+                    operation:
+                      type: string
+                      example: queue.enqueue
+                    params:
+                      type: object
+                    if_revision:
+                      type: integer
+                    if_playlist_revision:
+                      type: integer
+      responses:
+        '200':
+          description: Inline job envelope (ok_job) or error incl. conflict on stale revision
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobResponse'
+        '409':
+          description: Stale if_revision / if_playlist_revision
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v2/job.get:
+    post:
+      operationId: jobGet
+      summary: Poll a retained async job (library.scan, torrent.add)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version, id, method, params]
+              properties:
+                version:
+                  type: integer
+                  example: 2
+                id:
+                  $ref: '#/components/schemas/Id'
+                method:
+                  type: string
+                  example: job.get
+                params:
+                  type: object
+                  required: [id]
+                  properties:
+                    id:
+                      type: string
+      responses:
+        '200':
+          description: Job record
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobResponse'
+        '404':
+          description: Unknown job id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v2/job.cancel:
+    post:
+      operationId: jobCancel
+      summary: Cancel a non-terminal job
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version, id, method, params]
+              properties:
+                version:
+                  type: integer
+                  example: 2
+                id:
+                  $ref: '#/components/schemas/Id'
+                method:
+                  type: string
+                  example: job.cancel
+                params:
+                  type: object
+                  required: [id]
+                  properties:
+                    id:
+                      type: string
+      responses:
+        '200':
+          description: Cancelled job record
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobResponse'
+        '404':
+          description: Unknown or already-terminal job
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v2/subscribe:
+    post:
+      operationId: subscribe
+      summary: Subscribe a connection to broadcast topics; retained topics replay
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version, id, method, params]
+              properties:
+                version:
+                  type: integer
+                  example: 2
+                id:
+                  $ref: '#/components/schemas/Id'
+                method:
+                  type: string
+                  example: subscribe
+                params:
+                  type: object
+                  required: [topics]
+                  properties:
+                    topics:
+                      type: array
+                      items:
+                        type: string
+                      example: [runtime.state, runtime.playback, runtime.job]
+      responses:
+        '200':
+          description: Subscribed topic list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscribedResponse'
+  /v2/plugin.call:
+    post:
+      operationId: pluginCall
+      summary: Invoke a plugin command
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version, id, method, params]
+              properties:
+                version:
+                  type: integer
+                  example: 2
+                id:
+                  $ref: '#/components/schemas/Id'
+                method:
+                  type: string
+                  example: plugin.call
+                params:
+                  type: object
+                  required: [plugin, command]
+                  properties:
+                    plugin:
+                      type: string
+                    command:
+                      type: string
+                    args:
+                      type: object
+      responses:
+        '200':
+          description: Plugin result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OkResult'
+  # Transport ops (also accepted bare, without the operation.submit wrapper)
+  /v2/ops/play:
+    post:
+      operationId: opPlay
+      summary: Start playback
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Envelope'
+      responses:
+        '200':
+          description: Snapshot echo
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobResponse'
+  /v2/ops/pause:
+    post:
+      operationId: opPause
+      summary: Pause playback
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Envelope'
+      responses:
+        '200':
+          description: Snapshot echo
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobResponse'
+  /v2/ops/toggle:
+    post:
+      operationId: opToggle
+      summary: Toggle play/pause
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Envelope'
+      responses:
+        '200':
+          description: Snapshot echo
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobResponse'
+  /v2/ops/stop:
+    post:
+      operationId: opStop
+      summary: Stop playback
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Envelope'
+      responses:
+        '200':
+          description: Snapshot echo
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobResponse'
+  /v2/ops/next:
+    post:
+      operationId: opNext
+      summary: Advance to next track
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Envelope'
+      responses:
+        '200':
+          description: Snapshot echo
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobResponse'
+  /v2/ops/prev:
+    post:
+      operationId: opPrev
+      summary: Back to previous track
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Envelope'
+      responses:
+        '200':
+          description: Snapshot echo
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobResponse'
+  /v2/ops/seek.absolute:
+    post:
+      operationId: opSeekAbsolute
+      summary: Seek to an absolute position
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                position_s:
+                  type: number
+              required: [position_s]
+      responses:
+        '200':
+          description: Snapshot echo
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobResponse'
+  /v2/ops/seek.relative:
+    post:
+      operationId: opSeekRelative
+      summary: Seek by a relative delta
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                delta_s:
+                  type: number
+              required: [delta_s]
+      responses:
+        '200':
+          description: Snapshot echo
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobResponse'
+  /v2/ops/volume:
+    post:
+      operationId: opVolume
+      summary: Set volume (0.0–1.0)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                volume:
+                  type: number
+                  minimum: 0
+                  maximum: 1
+              required: [volume]
+      responses:
+        '200':
+          description: Snapshot echo
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobResponse'
+  /v2/ops/volume.set:
+    post:
+      operationId: opVolumeSet
+      summary: Set volume (alias of volume)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                volume:
+                  type: number
+                  minimum: 0
+                  maximum: 1
+              required: [volume]
+      responses:
+        '200':
+          description: Snapshot echo
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobResponse'
+  /v2/ops/speed:
+    post:
+      operationId: opSpeed
+      summary: Set playback speed
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                speed:
+                  type: number
+              required: [speed]
+      responses:
+        '200':
+          description: Snapshot echo
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobResponse'
+  /v2/ops/shuffle:
+    post:
+      operationId: opShuffle
+      summary: Enable/disable shuffle
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled:
+                  type: boolean
+              required: [enabled]
+      responses:
+        '200':
+          description: Snapshot echo
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobResponse'
+  /v2/ops/repeat:
+    post:
+      operationId: opRepeat
+      summary: Set repeat mode
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mode:
+                  type: string
+              required: [mode]
+      responses:
+        '200':
+          description: Snapshot echo
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobResponse'
+  /v2/ops/eq.get:
+    post:
+      operationId: opEqGet
+      summary: Read current EQ bands + preamp (read-only, no snapshot echo)
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Envelope'
+      responses:
+        '200':
+          description: EQ state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OkResult'
+  /v2/ops/eq.set:
+    post:
+      operationId: opEqSet
+      summary: Replace EQ bands / preamp
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                bands:
+                  type: array
+                  items:
+                    type: object
+                preamp:
+                  type: number
+              required: [bands]
+      responses:
+        '200':
+          description: Snapshot echo
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobResponse'
+  /v2/ops/eq.band.set:
+    post:
+      operationId: opEqBandSet
+      summary: Set one EQ band gain
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                band:
+                  type: integer
+                gain_db:
+                  type: number
+              required: [band, gain_db]
+      responses:
+        '200':
+          description: Snapshot echo
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobResponse'
+  /v2/ops/queue.list:
+    post:
+      operationId: opQueueList
+      summary: List the play queue (read-only)
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Envelope'
+      responses:
+        '200':
+          description: Queue contents
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OkResult'
+  /v2/ops/queue.play:
+    post:
+      operationId: opQueuePlay
+      summary: Jump to a queue index
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                index:
+                  type: integer
+              required: [index]
+      responses:
+        '200':
+          description: Snapshot echo
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobResponse'
+  /v2/ops/queue.enqueue:
+    post:
+      operationId: opQueueEnqueue
+      summary: Enqueue by track id, search query, or position (idempotency_key dedupes)
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                track_id:
+                  type: string
+                query:
+                  type: string
+                position:
+                  type: integer
+                idempotency_key:
+                  type: string
+      responses:
+        '200':
+          description: Snapshot echo
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobResponse'
+  /v2/ops/queue.remove:
+    post:
+      operationId: opQueueRemove
+      summary: Remove a queue index
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                index:
+                  type: integer
+              required: [index]
+      responses:
+        '200':
+          description: Snapshot echo
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobResponse'
+  /v2/ops/queue.move:
+    post:
+      operationId: opQueueMove
+      summary: Move a queue entry
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                from:
+                  type: integer
+                to:
+                  type: integer
+              required: [from, to]
+      responses:
+        '200':
+          description: Snapshot echo
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobResponse'
+  /v2/ops/queue.clear:
+    post:
+      operationId: opQueueClear
+      summary: Clear the queue
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Envelope'
+      responses:
+        '200':
+          description: Snapshot echo
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobResponse'
+  /v2/ops/library.search:
+    post:
+      operationId: opLibrarySearch
+      summary: FTS library search (read-only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                q:
+                  type: string
+                type:
+                  type: string
+                limit:
+                  type: integer
+              required: [q]
+      responses:
+        '200':
+          description: Search hits
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OkResult'
+  /v2/ops/library.stats:
+    post:
+      operationId: opLibraryStats
+      summary: Library counts (read-only)
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Envelope'
+      responses:
+        '200':
+          description: Stats payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OkResult'
+  /v2/ops/library.scan:
+    post:
+      operationId: opLibraryScan
+      summary: Scan a path into the library (async — returns a retained job)
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                path:
+                  type: string
+      responses:
+        '200':
+          description: Retained job + snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobResponse'
+  /v2/ops/track.play:
+    post:
+      operationId: opTrackPlay
+      summary: Play a track by id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                track_id:
+                  type: string
+              required: [track_id]
+      responses:
+        '200':
+          description: Snapshot echo
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobResponse'
+  /v2/ops/track.queue:
+    post:
+      operationId: opTrackQueue
+      summary: Queue a track by id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                track_id:
+                  type: string
+              required: [track_id]
+      responses:
+        '200':
+          description: Snapshot echo
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobResponse'
+  /v2/ops/url.load:
+    post:
+      operationId: opUrlLoad
+      summary: Load a URL source
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                url:
+                  type: string
+              required: [url]
+      responses:
+        '200':
+          description: Snapshot echo
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobResponse'
+  /v2/ops/torrent.add:
+    post:
+      operationId: opTorrentAdd
+      summary: Add a torrent (async — returns a retained job)
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                magnet:
+                  type: string
+                path:
+                  type: string
+      responses:
+        '200':
+          description: Retained job + snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobResponse'
+  /v2/ops/lyrics.get:
+    post:
+      operationId: opLyricsGet
+      summary: Fetch cached lyrics for a track (read-only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                track_id:
+                  type: string
+              required: [track_id]
+      responses:
+        '200':
+          description: Lyrics payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OkResult'
+  /v2/ops/device.list:
+    post:
+      operationId: opDeviceList
+      summary: List output devices (read-only)
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Envelope'
+      responses:
+        '200':
+          description: Device list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OkResult'
+  /v2/ops/device.set:
+    post:
+      operationId: opDeviceSet
+      summary: Switch output device
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                device:
+                  type: string
+              required: [device]
+      responses:
+        '200':
+          description: Snapshot echo
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobResponse'
+  # lyra-remote pairing/handshake (Noise TCP, NOT HTTP — documented here for completeness)
+  /remote/pair:
+    post:
+      operationId: remotePair
+      summary: Open pairing (host shows 6-digit code) then SPAKE2 → Noise_XXpsk3 handshake
+      description: >
+        Plain-TCP hello frame {"op":"pair","name":…} → SPAKE2 message
+        exchange keyed by the shown code → Noise_XXpsk3 handshake (psk =
+        sha256(SPAKE2 output)) → host pins the client's X25519 static as a
+        device record (paired-devices.json, 0600, survives restarts).
+        Wrong code → {"error":"bad_code"}; closed window →
+        {"error":"pairing_closed"}; >5 failures/min per IP throttles.
+        Max 4 concurrent connections.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, code]
+              properties:
+                name:
+                  type: string
+                  description: Display claim (identity is the pinned key, not the name)
+                code:
+                  type: string
+                  description: 6-digit code from host.open_pairing()
+      responses:
+        '200':
+          description: First encrypted frame {event:"paired", fp:<host fingerprint>}
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  event:
+                    type: string
+                    example: paired
+                  fp:
+                    type: string
+  /remote/connect:
+    post:
+      operationId: remoteConnect
+      summary: Reconnect a pinned device via Noise_XX (no code)
+      description: >
+        Plain-TCP hello {"op":"connect"} → Noise_XX handshake → host checks
+        the client static against the pinned device store; unknown keys are
+        closed without entering the command loop. Clients should TOFU-pin
+        the host static learned at pairing (Session::host_static).
+      responses:
+        '200':
+          description: First encrypted frame {event:"connected", fp}
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  event:
+                    type: string
+                    example: connected
+                  fp:
+                    type: string
+  /remote/command:
+    post:
+      operationId: remoteCommand
+      summary: Send a PlayerCommand inside an established encrypted session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PlayerCommand'
+      responses:
+        '200':
+          description: Sink response, e.g. {"ok":true,…}
+          content:
+            application/json:
+              schema:
+                type: object
+components:
+  schemas:
+    Id:
+      description: Client-chosen correlation id, echoed verbatim (string or number)
+      example: abc-123
+    Envelope:
+      type: object
+      required: [version, id, method]
+      properties:
+        version:
+          type: integer
+          example: 2
+        id:
+          $ref: '#/components/schemas/Id'
+        method:
+          type: string
+          example: state.get
+        params:
+          type: object
+    ErrorCode:
+      type: string
+      enum: [not_found, conflict, invalid_param, not_running, job_failed, permission_denied, busy, unknown_method, parse_error, internal]
+    ErrorBody:
+      type: object
+      required: [code, message, retryable]
+      properties:
+        code:
+          $ref: '#/components/schemas/ErrorCode'
+        message:
+          type: string
+        retryable:
+          type: boolean
+          description: True only for conflict/busy
+    ErrorResponse:
+      type: object
+      required: [version, id, ok, error]
+      properties:
+        version:
+          type: integer
+          example: 2
+        id:
+          $ref: '#/components/schemas/Id'
+        ok:
+          type: boolean
+          example: false
+        error:
+          $ref: '#/components/schemas/ErrorBody'
+    OkResult:
+      type: object
+      required: [version, id, ok, result]
+      properties:
+        version:
+          type: integer
+          example: 2
+        id:
+          $ref: '#/components/schemas/Id'
+        ok:
+          type: boolean
+          example: true
+        result:
+          type: object
+    SnapshotResponse:
+      type: object
+      required: [version, id, ok, snapshot]
+      properties:
+        version:
+          type: integer
+          example: 2
+        id:
+          $ref: '#/components/schemas/Id'
+        ok:
+          type: boolean
+          example: true
+        snapshot:
+          type: object
+    SubscribedResponse:
+      type: object
+      required: [version, id, ok, subscribed]
+      properties:
+        version:
+          type: integer
+          example: 2
+        id:
+          $ref: '#/components/schemas/Id'
+        ok:
+          type: boolean
+          example: true
+        subscribed:
+          type: array
+          items:
+            type: string
+    CapabilitiesResult:
+      type: object
+      required: [version, id, ok, result, operations]
+      properties:
+        version:
+          type: integer
+          example: 2
+        id:
+          $ref: '#/components/schemas/Id'
+        ok:
+          type: boolean
+          example: true
+        result:
+          type: object
+          properties:
+            protocol:
+              type: integer
+              example: 2
+            version:
+              type: string
+        operations:
+          type: array
+          items:
+            type: object
+            required: [name, params]
+            properties:
+              name:
+                type: string
+              params:
+                type: object
+    JobResponse:
+      type: object
+      required: [version, id, ok, job]
+      properties:
+        version:
+          type: integer
+          example: 2
+        id:
+          $ref: '#/components/schemas/Id'
+        ok:
+          type: boolean
+          example: true
+        job:
+          type: object
+          properties:
+            id:
+              type: string
+            operation:
+              type: string
+            state:
+              type: string
+              enum: [pending, running, succeeded, failed, cancelled]
+            result:
+              type: object
+        snapshot:
+          type: object
+          description: Post-commit snapshot on mutating/async-submit ops
+    PlayerCommand:
+      description: lyra-core PlayerCommand (serde tag `command`, camelCase) sent inside the encrypted remote session
+      type: object
+      required: [command]
+      properties:
+        command:
+          type: string
+          enum: [play, toggle, next, prev, seek, volume, mute, stopAfterCurrent, queueAdd]
+      example:
+        command: toggle
+    PlayerEvent:
+      description: Engine push events (serde tag `event`, camelCase)
+      type: object
+      required: [event]
+      properties:
+        event:
+          type: string
+          enum: [state, trackChanged, queueChanged, error]
+    PushEvent:
+      description: IPC broadcast event on subscribed connections (monotonic seq)
+      type: object
+      required: [version, type, seq, topic, data]
+      properties:
+        version:
+          type: integer
+          example: 2
+        type:
+          type: string
+          example: event
+        seq:
+          type: integer
+        topic:
+          type: string
+          example: runtime.state
+        data:
+          type: object

@@ -19,7 +19,8 @@ fn main() {
     println!("decoding [{}] {} ({} bytes)", f.index, f.path, f.len);
     let src = eng.open_file(id, idx).expect("open_file failed");
     let media = SourceMediaSource::new(lyra_fs::CachingSource::wrap(src));
-    let mut dec = lyra_formats::TrackDecoder::open(media, Some("flac")).expect("decoder open failed");
+    let mut dec =
+        lyra_formats::TrackDecoder::open(media, Some("flac")).expect("decoder open failed");
     println!("decoder open: {}Hz {}ch", dec.sample_rate, dec.channels);
     if seek_secs > 0.0 {
         dec.seek(seek_secs).expect("seek failed");
@@ -45,6 +46,9 @@ fn main() {
             }
         }
     }
-    println!("decoded {total} samples ({:.2}s), peak={peak:.4}", total as f32 / dec.channels as f32 / dec.sample_rate as f32);
+    println!(
+        "decoded {total} samples ({:.2}s), peak={peak:.4}",
+        total as f32 / dec.channels as f32 / dec.sample_rate as f32
+    );
     assert!(total > 0, "no samples decoded");
 }

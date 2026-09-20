@@ -25,9 +25,9 @@ impl Oscilloscope {
     }
 
     pub fn push(&mut self, interleaved: &[f32]) {
-        for frame in interleaved.chunks_exact(2) {
+        for frame in interleaved.as_chunks::<2>().0 {
             self.counter = self.counter.wrapping_add(1);
-            if self.counter % self.stride != 0 {
+            if !self.counter.is_multiple_of(self.stride) {
                 continue;
             }
             if self.left.len() == self.capacity {

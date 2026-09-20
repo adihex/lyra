@@ -35,7 +35,7 @@ pub(crate) struct Item {
 
 /// "48.6 MiB" / "1.2 GiB" → bytes. Unknown units return None.
 pub(crate) fn human_size(s: &str) -> Option<u64> {
-    let mut it = s.trim().split_whitespace();
+    let mut it = s.split_whitespace();
     let n: f64 = it.next()?.parse().ok()?;
     let mult = match it.next()?.to_ascii_uppercase().as_str() {
         "B" => 1.0,
@@ -66,11 +66,16 @@ impl NyaaProvider {
     }
 
     pub fn with_base(base: impl Into<String>) -> Self {
-        Self { base: base.into(), ..Self::new() }
+        Self {
+            base: base.into(),
+            ..Self::new()
+        }
     }
 
     pub(crate) fn parse_feed(xml: &str) -> Vec<Item> {
-        let Ok(doc) = roxmltree::Document::parse(xml) else { return vec![] };
+        let Ok(doc) = roxmltree::Document::parse(xml) else {
+            return vec![];
+        };
         doc.descendants()
             .filter(|n| n.has_tag_name("item"))
             .map(|item| {
@@ -95,9 +100,7 @@ impl NyaaProvider {
                         (Some(ns), "downloads") if ns.contains("nyaa") => {
                             it.downloads = text.parse().ok()
                         }
-                        (Some(ns), "size") if ns.contains("nyaa") => {
-                            it.size = human_size(text)
-                        }
+                        (Some(ns), "size") if ns.contains("nyaa") => it.size = human_size(text),
                         (Some(ns), "categoryId") if ns.contains("nyaa") => {
                             it.category_id = Some(text.to_string())
                         }
@@ -143,10 +146,14 @@ impl NyaaProvider {
         };
         let ih = it.infohash;
         let magnet = ih.as_ref().map(|ih| {
-            format!("magnet:?xt=urn:btih:{ih}&dn={}", urlencoding::encode(&it.title))
+            format!(
+                "magnet:?xt=urn:btih:{ih}&dn={}",
+                urlencoding::encode(&it.title)
+            )
         });
         Some(SearchResult {
-            id: ih.clone()
+            id: ih
+                .clone()
                 .or_else(|| it.torrent_url.clone())
                 .unwrap_or_else(|| it.title.clone()),
             provider: "nyaa".into(),
@@ -183,7 +190,11 @@ impl TorrentProvider for NyaaProvider {
         LegalTier::Gray
     }
     fn capabilities(&self) -> ProviderCaps {
-        ProviderCaps { seeds_known: true, needs_refresh: false, local_index: false }
+        ProviderCaps {
+            seeds_known: true,
+            needs_refresh: false,
+            local_index: false,
+        }
     }
 
     async fn search(&self, q: &SearchQuery) -> Result<Vec<SearchResult>, ProviderError> {
@@ -219,11 +230,14 @@ impl TorrentProvider for NyaaProvider {
         }
         let magnet = r.magnet.clone().or_else(|| {
             r.infohash.as_ref().map(|ih| {
-                format!("magnet:?xt=urn:btih:{ih}&dn={}", urlencoding::encode(&r.name))
+                format!(
+                    "magnet:?xt=urn:btih:{ih}&dn={}",
+                    urlencoding::encode(&r.name)
+                )
             })
         });
-        let magnet = magnet
-            .ok_or_else(|| ProviderError::Unavailable(format!("{}: no magnet", r.id)))?;
+        let magnet =
+            magnet.ok_or_else(|| ProviderError::Unavailable(format!("{}: no magnet", r.id)))?;
         Ok(ResolvedTorrent {
             result: r.clone(),
             files: vec![],
@@ -281,18 +295,29 @@ mod tests {
         assert_eq!(a.seeds, Some(31));
         assert_eq!(a.downloads, Some(602));
         assert_eq!(a.size, Some(50_960_793));
-        assert_eq!(a.infohash.as_deref(), Some("8cf6896060e45ffde91fd48a9e8c3413879a0ded"));
-        assert_eq!(a.torrent_url.as_deref(), Some("https://nyaa.si/download/2161757.torrent"));
+        assert_eq!(
+            a.infohash.as_deref(),
+            Some("8cf6896060e45ffde91fd48a9e8c3413879a0ded")
+        );
+        assert_eq!(
+            a.torrent_url.as_deref(),
+            Some("https://nyaa.si/download/2161757.torrent")
+        );
         assert_eq!(a.category_id.as_deref(), Some("2_1"));
     }
 
     #[test]
     fn category_id_is_authoritative_lossless() {
         let p = NyaaProvider::new();
-        let q = SearchQuery { strict: false, ..SearchQuery::text("x") };
+        let q = SearchQuery {
+            strict: false,
+            ..SearchQuery::text("x")
+        };
         let items = NyaaProvider::parse_feed(FEED);
-        let rows: Vec<_> =
-            items.into_iter().filter_map(|it| p.result_from(it, &q)).collect();
+        let rows: Vec<_> = items
+            .into_iter()
+            .filter_map(|it| p.result_from(it, &q))
+            .collect();
         assert_eq!(rows[0].lossless, Some(true));
         assert_eq!(rows[1].lossless, Some(false));
         // Strict drops the 2_2 (Audio-Lossy) row outright.

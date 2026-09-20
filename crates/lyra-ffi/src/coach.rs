@@ -7,8 +7,7 @@ use std::ffi::{c_char, c_int, CStr, CString};
 use std::sync::{Mutex, OnceLock};
 
 use lyra_coach::{
-    BeatGrid, CoachEvent, ExpectedEvent, FeedbackMode, Grade, NotePolicy, Session,
-    SessionConfig,
+    BeatGrid, CoachEvent, ExpectedEvent, FeedbackMode, Grade, NotePolicy, Session, SessionConfig,
 };
 use serde_json::{json, Value};
 
@@ -62,6 +61,10 @@ fn ev_json(e: &CoachEvent) -> Value {
 /// policy "graded"|"advisory"|"ghost" (default graded).
 /// `config_json` optional: `{sample_rate, latency_offset_s, wait_for_me}`.
 /// Replaces any live session. 0 ok.
+///
+/// # Safety
+/// `chart_json` must be non-null and point to valid NUL-terminated JSON.
+/// `config_json` may be null; otherwise it must point to valid NUL-terminated JSON.
 #[no_mangle]
 pub unsafe extern "C" fn lyra_coach_new(
     chart_json: *const c_char,
@@ -80,7 +83,10 @@ pub unsafe extern "C" fn lyra_coach_new(
     };
     let mut chart = Vec::with_capacity(chart_v.len());
     for e in &chart_v {
-        let Some(t) = e.get("t_secs").or_else(|| e.get("t")).and_then(Value::as_f64)
+        let Some(t) = e
+            .get("t_secs")
+            .or_else(|| e.get("t"))
+            .and_then(Value::as_f64)
         else {
             return 2;
         };
@@ -90,7 +96,11 @@ pub unsafe extern "C" fn lyra_coach_new(
             Some("ghost") => NotePolicy::Ghost,
             _ => NotePolicy::Graded,
         };
-        chart.push(ExpectedEvent { t_secs: t, midi, policy });
+        chart.push(ExpectedEvent {
+            t_secs: t,
+            midi,
+            policy,
+        });
     }
     let mut config = SessionConfig::default();
     if !config_json.is_null() {
@@ -118,12 +128,11 @@ pub unsafe extern "C" fn lyra_coach_new(
 /// Feed one mono f32 block; `t_first` = stream-clock seconds of sample 0.
 /// Called from the audio tap thread — the lock is held for one hop's
 /// worth of DSP, no allocation after init.
+///
+/// # Safety
+/// `samples` must be null or point to `len` readable `f32` samples (null returns 2).
 #[no_mangle]
-pub unsafe extern "C" fn lyra_coach_push(
-    samples: *const f32,
-    len: usize,
-    t_first: f64,
-) -> c_int {
+pub unsafe extern "C" fn lyra_coach_push(samples: *const f32, len: usize, t_first: f64) -> c_int {
     if samples.is_null() || len == 0 {
         return 2;
     }
@@ -140,7 +149,9 @@ pub unsafe extern "C" fn lyra_coach_push(
 #[no_mangle]
 pub extern "C" fn lyra_coach_events() -> *mut c_char {
     let mut g = live().lock().unwrap();
-    let Some(l) = g.as_mut() else { return std::ptr::null_mut() };
+    let Some(l) = g.as_mut() else {
+        return std::ptr::null_mut();
+    };
     if l.events.is_empty() {
         return std::ptr::null_mut();
     }
@@ -152,7 +163,9 @@ pub extern "C" fn lyra_coach_events() -> *mut c_char {
 #[no_mangle]
 pub extern "C" fn lyra_coach_score() -> *mut c_char {
     let g = live().lock().unwrap();
-    let Some(l) = g.as_ref() else { return std::ptr::null_mut() };
+    let Some(l) = g.as_ref() else {
+        return std::ptr::null_mut();
+    };
     let s = &l.session;
     let v = json!({
         "accuracy": s.accuracy(),
@@ -181,13 +194,15 @@ pub extern "C" fn lyra_coach_start_calibration(t0: f64, bpm: f64) -> c_int {
 #[no_mangle]
 pub extern "C" fn lyra_coach_complete_calibration() -> *mut c_char {
     let mut g = live().lock().unwrap();
-    let Some(l) = g.as_mut() else { return std::ptr::null_mut() };
+    let Some(l) = g.as_mut() else {
+        return std::ptr::null_mut();
+    };
     match l.session.complete_calibration() {
-        Some((offset, mad)) => CString::new(
-            json!({"offset_ms": offset * 1000.0, "mad_ms": mad * 1000.0}).to_string(),
-        )
-        .unwrap_or_default()
-        .into_raw(),
+        Some((offset, mad)) => {
+            CString::new(json!({"offset_ms": offset * 1000.0, "mad_ms": mad * 1000.0}).to_string())
+                .unwrap_or_default()
+                .into_raw()
+        }
         None => std::ptr::null_mut(),
     }
 }
@@ -202,6 +217,9 @@ pub extern "C" fn lyra_coach_count_in(first_index: usize) -> c_int {
 }
 
 /// Set feedback verbosity: "full" | "coarse" | "end_of_phrase" | "silent".
+///
+/// # Safety
+/// `mode` may be null (returns 2); otherwise it must point to a valid NUL-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn lyra_coach_feedback(mode: *const c_char) -> c_int {
     if mode.is_null() {
@@ -242,7 +260,10 @@ mod tests {
             unsafe { super::lyra_coach_new(std::ptr::null(), std::ptr::null()) },
             2
         );
-        assert_eq!(unsafe { super::lyra_coach_push(std::ptr::null(), 8, 0.0) }, 2);
+        assert_eq!(
+            unsafe { super::lyra_coach_push(std::ptr::null(), 8, 0.0) },
+            2
+        );
         assert_eq!(unsafe { super::lyra_coach_feedback(std::ptr::null()) }, 2);
         assert!(super::lyra_coach_events().is_null());
         assert!(super::lyra_coach_score().is_null());
@@ -253,7 +274,10 @@ mod tests {
         // window — the gate opens at −30 dB and the judge grades the hit.
         let chart = CString::new(r#"[{"t_secs":0.5}]"#).unwrap();
         let cfg = CString::new(r#"{"sample_rate":48000}"#).unwrap();
-        assert_eq!(unsafe { super::lyra_coach_new(chart.as_ptr(), cfg.as_ptr()) }, 0);
+        assert_eq!(
+            unsafe { super::lyra_coach_new(chart.as_ptr(), cfg.as_ptr()) },
+            0
+        );
         assert_eq!(unsafe { super::lyra_coach_feedback(c"full".as_ptr()) }, 0);
 
         const SR: usize = 48_000;
@@ -263,8 +287,7 @@ mod tests {
             let amp = if (24..40).contains(&i) { 0.5f32 } else { 0.0 };
             let buf: Vec<f32> = (0..N)
                 .map(|k| {
-                    ((t + k as f64 / SR as f64) * 440.0 * 2.0 * std::f64::consts::PI).sin()
-                        as f32
+                    ((t + k as f64 / SR as f64) * 440.0 * 2.0 * std::f64::consts::PI).sin() as f32
                         * amp
                 })
                 .collect();
@@ -282,7 +305,13 @@ mod tests {
         assert!(!raw.is_null());
         let s = unsafe { CStr::from_ptr(raw) }.to_str().unwrap().to_string();
         unsafe { super::super::lyra_string_free(raw) };
-        for k in ["accuracy", "streak", "best_streak", "position", "latency_ms"] {
+        for k in [
+            "accuracy",
+            "streak",
+            "best_streak",
+            "position",
+            "latency_ms",
+        ] {
             assert!(s.contains(k), "score missing {k}: {s}");
         }
 

@@ -64,10 +64,7 @@ impl TorrentEngine {
         Self::new_with_config(download_dir, EngineConfig::default())
     }
 
-    pub fn new_with_config(
-        download_dir: PathBuf,
-        cfg: EngineConfig,
-    ) -> Result<Self, LyraError> {
+    pub fn new_with_config(download_dir: PathBuf, cfg: EngineConfig) -> Result<Self, LyraError> {
         std::fs::create_dir_all(&download_dir)?;
         let rt = Runtime::new().map_err(|e| LyraError::Remote(e.to_string()))?;
         // Tracker boost: ngosang/trackerslist best-of, cached under the
@@ -94,7 +91,12 @@ impl TorrentEngine {
         let session = rt
             .block_on(librqbit::Session::new_with_opts(download_dir.clone(), opts))
             .map_err(|e| LyraError::Remote(format!("rqbit session: {e}")))?;
-        Ok(Self { rt, session, download_dir, session_trackers })
+        Ok(Self {
+            rt,
+            session,
+            download_dir,
+            session_trackers,
+        })
     }
 
     /// The session-wide tracker list (read-only; fixed at add-time).
@@ -115,7 +117,10 @@ impl TorrentEngine {
         // way, so partial downloads keep their progress.
         self.add_opts(
             spec,
-            AddOpts { overwrite: true, ..Default::default() },
+            AddOpts {
+                overwrite: true,
+                ..Default::default()
+            },
         )
     }
 
@@ -123,12 +128,10 @@ impl TorrentEngine {
         // rqbit ignores `x.pe` peer hints — extract them ourselves so
         // trackerless magnets ("magnet:?xt=…&x.pe=1.2.3.4:6881") work.
         if spec.starts_with("magnet:") {
-            for peer in spec
-                .split('&')
-                .filter_map(|kv| kv.strip_prefix("x.pe=").or_else(|| {
-                    kv.strip_prefix("?x.pe=")
-                }))
-            {
+            for peer in spec.split('&').filter_map(|kv| {
+                kv.strip_prefix("x.pe=")
+                    .or_else(|| kv.strip_prefix("?x.pe="))
+            }) {
                 if let Ok(addr) = peer.parse::<std::net::SocketAddr>() {
                     add.initial_peers.get_or_insert_with(Vec::new).push(addr);
                 }
@@ -147,9 +150,7 @@ impl TorrentEngine {
             disable_trackers: add.disable_trackers,
             trackers: add.trackers,
             overwrite: add.overwrite,
-            output_folder: add
-                .output_folder
-                .map(|p| p.to_string_lossy().into_owned()),
+            output_folder: add.output_folder.map(|p| p.to_string_lossy().into_owned()),
             ..Default::default()
         };
         let resp = self
@@ -202,7 +203,10 @@ impl TorrentEngine {
             .enumerate()
             .map(|(i, d)| TorrentFileInfo {
                 index: i,
-                path: d.filename.to_string().unwrap_or_else(|_| "<invalid>".into()),
+                path: d
+                    .filename
+                    .to_string()
+                    .unwrap_or_else(|_| "<invalid>".into()),
                 len: d.len,
             })
             .collect())
@@ -248,10 +252,10 @@ impl TorrentEngine {
     /// downloaded data from disk — the disk-space reclaim path.
     pub fn remove(&self, id: usize, delete_files: bool) -> Result<(), LyraError> {
         self.rt
-            .block_on(self.session.delete(
-                librqbit::api::TorrentIdOrHash::Id(id),
-                delete_files,
-            ))
+            .block_on(
+                self.session
+                    .delete(librqbit::api::TorrentIdOrHash::Id(id), delete_files),
+            )
             .map_err(|e| LyraError::Remote(format!("remove torrent: {e}")))?;
         info!(id, delete_files, "torrent removed");
         Ok(())
@@ -287,13 +291,8 @@ impl TorrentEngine {
     /// relaunches (JSON persistence restores them with stable ids).
     pub fn list(&self) -> Vec<(usize, String)> {
         self.session.with_torrents(|it| {
-            it.map(|(id, h)| {
-                (
-                    id,
-                    h.name().unwrap_or_else(|| format!("torrent #{id}")),
-                )
-            })
-            .collect()
+            it.map(|(id, h)| (id, h.name().unwrap_or_else(|| format!("torrent #{id}"))))
+                .collect()
         })
     }
 
@@ -316,9 +315,7 @@ impl TorrentEngine {
                             .map(|details| {
                                 details
                                     .filter_map(|d| d.filename.to_string().ok())
-                                    .filter_map(|p| {
-                                        p.split('/').next().map(str::to_string)
-                                    })
+                                    .filter_map(|p| p.split('/').next().map(str::to_string))
                                     .collect::<Vec<_>>()
                             })
                             .unwrap_or_default()
@@ -401,7 +398,11 @@ impl ByteSource for TorrentFileSource {
         self.len
     }
     fn describe(&self) -> String {
-        format!("torrent://{}/{}", self.engine.download_dir.display(), self.file_idx)
+        format!(
+            "torrent://{}/{}",
+            self.engine.download_dir.display(),
+            self.file_idx
+        )
     }
 }
 
@@ -534,17 +535,16 @@ mod tracker_tests {
         let list = TrackerListManager::parse_list(&body);
         assert_eq!(list.len(), TRACKER_CAP);
         // The trailing dup of tracker0 must not appear twice.
-        assert_eq!(
-            list.iter().filter(|t| t.contains("tracker0")).count(),
-            1
-        );
+        assert_eq!(list.iter().filter(|t| t.contains("tracker0")).count(), 1);
     }
 
     #[test]
     fn bundled_fallback_is_usable() {
         let list = TrackerListManager::parse_list(&BUNDLED_TRACKERS.join("\n"));
         assert_eq!(list.len(), BUNDLED_TRACKERS.len());
-        assert!(list.iter().all(|t| t.starts_with("udp://") || t.starts_with("https://")));
+        assert!(list
+            .iter()
+            .all(|t| t.starts_with("udp://") || t.starts_with("https://")));
     }
 
     #[test]
@@ -555,10 +555,16 @@ mod tracker_tests {
         std::fs::write(&path, "udp://cached.example:1/announce\n\n").unwrap();
         let mgr = TrackerListManager::new(path);
         // Fresh file → served without a fetch.
-        assert_eq!(mgr.cached(false), Some(vec!["udp://cached.example:1/announce".into()]));
+        assert_eq!(
+            mgr.cached(false),
+            Some(vec!["udp://cached.example:1/announce".into()])
+        );
         // Backdate beyond the 7d window → no longer "fresh".
         let old = std::time::SystemTime::now() - TRACKER_STALE - std::time::Duration::from_secs(60);
-        let f = std::fs::File::options().write(true).open(&mgr.cache_path).unwrap();
+        let f = std::fs::File::options()
+            .write(true)
+            .open(&mgr.cache_path)
+            .unwrap();
         f.set_modified(old).unwrap();
         assert_eq!(mgr.cached(false), None);
         assert!(mgr.cached(true).is_some());

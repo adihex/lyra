@@ -86,7 +86,7 @@ impl AcademicTorrentsProvider {
         }
         // On disk and <24h old → parse without a fetch.
         if self.index.lock().unwrap().is_none() {
-            if let Some(e) = self.from_fresh_cache() {
+            if let Some(e) = self.load_fresh_cache() {
                 *self.index.lock().unwrap() = Some((Instant::now(), Arc::clone(&e)));
                 return Ok(e);
             }
@@ -101,7 +101,7 @@ impl AcademicTorrentsProvider {
                 if let Some((_, e)) = &*self.index.lock().unwrap() {
                     return Ok(Arc::clone(e));
                 }
-                if let Some(e) = self.from_stale_cache() {
+                if let Some(e) = self.load_stale_cache() {
                     *self.index.lock().unwrap() = Some((Instant::now(), Arc::clone(&e)));
                     return Ok(e);
                 }
@@ -110,15 +110,15 @@ impl AcademicTorrentsProvider {
         }
     }
 
-    fn from_fresh_cache(&self) -> Option<Arc<Vec<AtEntry>>> {
+    fn load_fresh_cache(&self) -> Option<Arc<Vec<AtEntry>>> {
         let m = std::fs::metadata(&self.cache_path).ok()?;
         if m.modified().ok()?.elapsed().ok()? > STALE_AFTER {
             return None;
         }
-        self.from_stale_cache()
+        self.load_stale_cache()
     }
 
-    fn from_stale_cache(&self) -> Option<Arc<Vec<AtEntry>>> {
+    fn load_stale_cache(&self) -> Option<Arc<Vec<AtEntry>>> {
         let xml = std::fs::read_to_string(&self.cache_path).ok()?;
         parse_database(&xml).ok().map(Arc::new)
     }
@@ -153,12 +153,20 @@ impl TorrentProvider for AcademicTorrentsProvider {
         LegalTier::Clear
     }
     fn capabilities(&self) -> ProviderCaps {
-        ProviderCaps { seeds_known: false, needs_refresh: true, local_index: true }
+        ProviderCaps {
+            seeds_known: false,
+            needs_refresh: true,
+            local_index: true,
+        }
     }
 
     async fn search(&self, q: &SearchQuery) -> Result<Vec<SearchResult>, ProviderError> {
         let entries = self.entries().await?;
-        let toks: Vec<String> = q.text.split_whitespace().map(|t| t.to_lowercase()).collect();
+        let toks: Vec<String> = q
+            .text
+            .split_whitespace()
+            .map(|t| t.to_lowercase())
+            .collect();
         if toks.is_empty() {
             return Ok(vec![]);
         }
@@ -182,7 +190,11 @@ impl TorrentProvider for AcademicTorrentsProvider {
                 downloads: None,
                 uploaded_at: None,
                 license: None,
-                source_page: if e.page_url.is_empty() { None } else { Some(e.page_url.clone()) },
+                source_page: if e.page_url.is_empty() {
+                    None
+                } else {
+                    Some(e.page_url.clone())
+                },
                 files_preview: vec![],
                 health: Default::default(),
                 formats: vec![],
@@ -248,9 +260,15 @@ mod tests {
     fn parses_database_items() {
         let entries = parse_database(DATABASE_XML).unwrap();
         assert_eq!(entries.len(), 3);
-        assert_eq!(entries[0].infohash, "abcd1234abcd1234abcd1234abcd1234abcd1234");
+        assert_eq!(
+            entries[0].infohash,
+            "abcd1234abcd1234abcd1234abcd1234abcd1234"
+        );
         assert_eq!(entries[0].size_bytes, Some(1073741824));
-        assert_eq!(entries[0].page_url, "https://academictorrents.com/details/abcd1234");
+        assert_eq!(
+            entries[0].page_url,
+            "https://academictorrents.com/details/abcd1234"
+        );
         // Third item has no guid — falls through fine.
         assert_eq!(entries[2].title, "Course: Signal Processing");
     }

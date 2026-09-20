@@ -9,15 +9,16 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 fn main() {
-    let host = std::env::args().nth(1).expect("usage: play_remote <host> <path>");
-    let path = std::env::args().nth(2).expect("usage: play_remote <host> <path>");
+    let host = std::env::args()
+        .nth(1)
+        .expect("usage: play_remote <host> <path>");
+    let path = std::env::args()
+        .nth(2)
+        .expect("usage: play_remote <host> <path>");
     let ext = path.rsplit('.').next().map(str::to_owned);
 
     let remote = SshExecFile::open(&host, &path).expect("ssh open failed");
-    eprintln!(
-        "opened ssh://{host}{path} — {} bytes",
-        remote.len()
-    );
+    eprintln!("opened ssh://{host}{path} — {} bytes", remote.len());
     let src = CachingSource::wrap(remote);
     let src: Arc<dyn lyra_fs::ByteSource> = src;
 

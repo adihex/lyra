@@ -1,0 +1,61 @@
+name: Feature request
+description: Propose a Lyra feature or improvement
+labels: [enhancement]
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - area:audio (engine, DSP, output)
+        - area:ui (SwiftUI shell)
+        - area:remote (LAN pairing/control)
+        - area:ipc (socket, CLI, MCP)
+        - area:library (scan, store, search)
+        - area:build (build, packaging)
+    validations:
+      required: true
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Suggested priority
+      description: P1 major gap · P2 normal · P3 polish (maintainers triage)
+      options:
+        - P1
+        - P2
+        - P3
+      default: 1
+    validations:
+      required: false
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What job can't you do today? Who does it affect?
+      placeholder: I can't control playback from my phone without pairing a new device each time…
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What should change? Note the layer (Rust core vs Swift shell) and any BLUEPRINT section it touches
+      placeholder: Persist paired-device keys across restarts (lyra-remote DeviceStore)…
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds or other designs, and why they fall short
+    validations:
+      required: false
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope checklist
+      options:
+        - label: Rust core only (no Swift/sandbox impact)
+        - label: Touches the FFI boundary (lyra-ffi + modules/CLyraFFI/lyra.h)
+        - label: Touches sandbox entitlements (entitlements.plist)
+        - label: Needs docs (docs/api/openapi.yaml, runbooks, or BLUEPRINT)

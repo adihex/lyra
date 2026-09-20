@@ -52,7 +52,10 @@ impl TorrentsCsvProvider {
     }
 
     pub fn with_base(base: impl Into<String>) -> Self {
-        Self { base: base.into(), ..Self::new() }
+        Self {
+            base: base.into(),
+            ..Self::new()
+        }
     }
 
     fn result_from(&self, row: Row, q: &SearchQuery) -> Option<SearchResult> {
@@ -121,7 +124,11 @@ impl TorrentProvider for TorrentsCsvProvider {
         LegalTier::Gray
     }
     fn capabilities(&self) -> ProviderCaps {
-        ProviderCaps { seeds_known: true, needs_refresh: false, local_index: false }
+        ProviderCaps {
+            seeds_known: true,
+            needs_refresh: false,
+            local_index: false,
+        }
     }
 
     async fn search(&self, q: &SearchQuery) -> Result<Vec<SearchResult>, ProviderError> {
@@ -139,13 +146,18 @@ impl TorrentProvider for TorrentsCsvProvider {
             .error_for_status()?
             .json()
             .await?;
-        Ok(resp.torrents.into_iter().filter_map(|r| self.result_from(r, q)).collect())
+        Ok(resp
+            .torrents
+            .into_iter()
+            .filter_map(|r| self.result_from(r, q))
+            .collect())
     }
 
     async fn resolve(&self, r: &SearchResult) -> Result<ResolvedTorrent, ProviderError> {
-        let magnet = r.magnet.clone().ok_or_else(|| {
-            ProviderError::Unavailable(format!("{}: no magnet", r.id))
-        })?;
+        let magnet = r
+            .magnet
+            .clone()
+            .ok_or_else(|| ProviderError::Unavailable(format!("{}: no magnet", r.id)))?;
         Ok(ResolvedTorrent {
             result: r.clone(),
             files: vec![],
@@ -168,10 +180,16 @@ mod tests {
     #[test]
     fn rows_parse_and_classify() {
         let p = TorrentsCsvProvider::new();
-        let q = SearchQuery { strict: false, ..SearchQuery::text("aerosmith") };
+        let q = SearchQuery {
+            strict: false,
+            ..SearchQuery::text("aerosmith")
+        };
         let resp: Resp = serde_json::from_str(RESP).unwrap();
-        let out: Vec<_> =
-            resp.torrents.into_iter().filter_map(|r| p.result_from(r, &q)).collect();
+        let out: Vec<_> = resp
+            .torrents
+            .into_iter()
+            .filter_map(|r| p.result_from(r, &q))
+            .collect();
         assert_eq!(out.len(), 2); // zero-hash empty-name row dropped
         assert_eq!(out[0].provider, "torrents-csv");
         assert_eq!(out[0].seeds, Some(38));

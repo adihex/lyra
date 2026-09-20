@@ -1,0 +1,12 @@
+# Owner verified via `gh api repos/adihex/lyra --jq .owner.login` => adihex.
+
+* @adihex
+
+# Sensible path routing (all resolve to the repo owner for now):
+/crates/ @adihex
+/app/ @adihex
+/modules/ @adihex
+/.github/ @adihex
+/scripts/ @adihex
+/docs/ @adihex
+BLUEPRINT.md @adihex

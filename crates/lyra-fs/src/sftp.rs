@@ -23,6 +23,10 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// One open remote file: length via fstat, reads via seek+read.
 pub trait SftpHandle: Send {
     fn len(&mut self) -> io::Result<u64>;
+    /// Whether the remote file is zero-length (default: `len() == Ok(0)`).
+    fn is_empty(&mut self) -> io::Result<bool> {
+        Ok(self.len()? == 0)
+    }
     fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> io::Result<usize>;
 }
 
@@ -224,9 +228,7 @@ impl SftpHandle for Ssh2Handle {
         if buf.is_empty() {
             return Ok(0);
         }
-        self.file
-            .seek(SeekFrom::Start(offset))
-            .map_err(io::Error::from)?;
+        self.file.seek(SeekFrom::Start(offset))?;
         let mut got = 0;
         while got < buf.len() {
             match self.file.read(&mut buf[got..]) {
@@ -407,6 +409,20 @@ pub(crate) mod doubles {
 
         pub(crate) fn opens(&self) -> usize {
             self.opens.load(Ordering::SeqCst)
+        }
+
+        /// Remote paths opened so far, in order — lets tests assert the
+        /// scanner/probe opened exactly the files it should have.
+        pub(crate) fn opened_paths(&self) -> Vec<String> {
+            self.ops
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|op| match op {
+                    Op::Open(p) => Some(p.clone()),
+                    _ => None,
+                })
+                .collect()
         }
 
         pub(crate) fn max_read_offset(&self) -> u64 {

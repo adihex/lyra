@@ -7,7 +7,11 @@
 /// RBJ-cookbook biquad. Stereo-interleaved processing, denormal-flushed.
 #[derive(Debug, Clone)]
 pub struct Biquad {
-    b0: f32, b1: f32, b2: f32, a1: f32, a2: f32,
+    b0: f32,
+    b1: f32,
+    b2: f32,
+    a1: f32,
+    a2: f32,
     z: [[f32; 2]; 2], // [channel][z1,z2]
 }
 
@@ -68,7 +72,9 @@ impl Biquad {
             self.z[ch][0] = self.b1 * *x - self.a1 * y + self.z[ch][1];
             self.z[ch][1] = self.b2 * *x - self.a2 * y;
             // flush denormals — they cost 10-100x on the render thread
-            if !y.is_normal() { y = 0.0; }
+            if !y.is_normal() {
+                y = 0.0;
+            }
             *x = y;
         }
     }
@@ -89,8 +95,7 @@ pub struct ParametricEq {
 
 impl ParametricEq {
     pub fn process(&mut self, interleaved: &mut [f32]) {
-        for frame in interleaved.chunks_exact_mut(2) {
-            let frame: &mut [f32; 2] = frame.try_into().unwrap();
+        for frame in interleaved.as_chunks_mut::<2>().0 {
             for band in &mut self.bands {
                 if band.enabled {
                     band.filter.process_frame(frame);
@@ -126,7 +131,11 @@ impl SafetyLimiter {
     pub fn process(&mut self, interleaved: &mut [f32]) {
         for s in interleaved.iter_mut() {
             let peak = s.abs();
-            self.env = if peak > self.env { peak } else { self.env * self.release };
+            self.env = if peak > self.env {
+                peak
+            } else {
+                self.env * self.release
+            };
             if self.env > self.threshold {
                 *s *= self.threshold / self.env.max(1e-9);
             }

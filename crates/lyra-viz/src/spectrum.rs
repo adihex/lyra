@@ -5,6 +5,42 @@ use rustfft::num_complex::Complex;
 use rustfft::Fft;
 use std::sync::Arc;
 
+/// Analyzer tuning — named fields instead of an eight-argument
+/// constructor, so call sites read as configuration, not magic numbers.
+#[derive(Debug, Clone, Copy)]
+pub struct SpectrumConfig {
+    /// Input sample rate in Hz — sets the FFT bin → frequency mapping.
+    pub sample_rate: f32,
+    /// FFT window in samples: 2048/4096 typical.
+    pub fft_size: usize,
+    /// Output band count, e.g. 64.
+    pub bands: usize,
+    /// Band range in Hz.
+    pub f_lo: f32,
+    pub f_hi: f32,
+    /// dB floor for clamping and normalization.
+    pub db_floor: f32,
+    /// Per-frame lerp factors (attack when rising, decay when falling).
+    pub attack: f32,
+    pub decay: f32,
+}
+
+impl Default for SpectrumConfig {
+    /// Studio defaults: 48 kHz, 4k FFT, 64 bands over 20 Hz–20 kHz.
+    fn default() -> Self {
+        Self {
+            sample_rate: 48_000.0,
+            fft_size: 4096,
+            bands: 64,
+            f_lo: 20.0,
+            f_hi: 20_000.0,
+            db_floor: -80.0,
+            attack: 0.6,
+            decay: 0.12,
+        }
+    }
+}
+
 /// One frame of analyzer output: `bands` dB values, 0..≈0 after normalization.
 pub struct SpectrumFrame {
     /// Per-band magnitude in dB, floor-clamped to `db_floor`.
@@ -21,31 +57,30 @@ pub struct SpectrumAnalyzer {
     band_bins: Vec<(usize, usize)>,
     /// Smoothed output held between frames (attack fast, decay slow).
     smoothed: Vec<f32>,
-    /// Mono downmix accumulator — bounded by the drain in `next`.
+    /// Mono downmix accumulator — bounded by the drain in `drain_window`.
     accum: Vec<f32>,
     db_floor: f32,
-    attack: f32,  // 0..1, applied when new value is higher
-    decay: f32,   // 0..1, applied when new value is lower
+    attack: f32, // 0..1, applied when new value is higher
+    decay: f32,  // 0..1, applied when new value is lower
 }
 
 impl SpectrumAnalyzer {
-    /// `fft_size`: 2048/4096 typical. `bands`: e.g. 64. `sample_rate` sets
-    /// the frequency mapping. `attack`/`decay` are per-frame lerp factors.
-    pub fn new(
-        sample_rate: f32,
-        fft_size: usize,
-        bands: usize,
-        f_lo: f32,
-        f_hi: f32,
-        db_floor: f32,
-        attack: f32,
-        decay: f32,
-    ) -> Self {
+    /// Build from an explicit [`SpectrumConfig`].
+    pub fn new(cfg: SpectrumConfig) -> Self {
+        let SpectrumConfig {
+            sample_rate,
+            fft_size,
+            bands,
+            f_lo,
+            f_hi,
+            db_floor,
+            attack,
+            decay,
+        } = cfg;
         let fft = rustfft::FftPlanner::new().plan_fft_forward(fft_size);
         let window: Vec<f32> = (0..fft_size)
             .map(|i| {
-                0.5 - 0.5
-                    * (2.0 * std::f32::consts::PI * i as f32 / (fft_size - 1) as f32).cos()
+                0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / (fft_size - 1) as f32).cos()
             })
             .collect();
 
@@ -76,16 +111,16 @@ impl SpectrumAnalyzer {
     }
 
     /// Downmix interleaved stereo into the accumulator without computing —
-    /// pair with `next()` to drain window by window.
+    /// pair with `drain_window()` to drain window by window.
     pub fn accumulate(&mut self, interleaved: &[f32]) {
-        for frame in interleaved.chunks_exact(2) {
+        for frame in interleaved.as_chunks::<2>().0 {
             self.accum.push((frame[0] + frame[1]) * 0.5);
         }
     }
 
     /// Compute one pending window into `smoothed`. False while accum holds
     /// less than fft_size. Alloc-free.
-    pub fn next(&mut self) -> bool {
+    pub fn drain_window(&mut self) -> bool {
         if self.accum.len() < self.fft_size {
             return false;
         }
@@ -102,7 +137,7 @@ impl SpectrumAnalyzer {
     pub fn feed(&mut self, interleaved: &[f32]) -> usize {
         self.accumulate(interleaved);
         let mut n = 0;
-        while self.next() {
+        while self.drain_window() {
             n += 1;
         }
         n
@@ -179,7 +214,14 @@ mod tests {
         let sr = 48000.0;
         let n = 4096;
         let freq = 1000.0;
-        let mut a = SpectrumAnalyzer::new(sr, n, 48, 20.0, 20000.0, -80.0, 1.0, 1.0);
+        let mut a = SpectrumAnalyzer::new(SpectrumConfig {
+            sample_rate: sr,
+            fft_size: n,
+            bands: 48,
+            attack: 1.0,
+            decay: 1.0,
+            ..SpectrumConfig::default()
+        });
         let mono: Vec<f32> = (0..n)
             .map(|i| (2.0 * std::f32::consts::PI * freq * i as f32 / sr).sin() * 0.5)
             .collect();
@@ -198,7 +240,13 @@ mod tests {
 
     #[test]
     fn feed_drains_all_complete_windows() {
-        let mut a = SpectrumAnalyzer::new(48_000.0, 1024, 16, 20.0, 20_000.0, -80.0, 1.0, 1.0);
+        let mut a = SpectrumAnalyzer::new(SpectrumConfig {
+            fft_size: 1024,
+            bands: 16,
+            attack: 1.0,
+            decay: 1.0,
+            ..SpectrumConfig::default()
+        });
         let stereo = vec![0.5f32; 1024 * 3 * 2];
         assert_eq!(a.feed(&stereo), 3);
         assert!(a.accum.len() < 1024);

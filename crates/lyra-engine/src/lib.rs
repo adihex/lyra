@@ -27,9 +27,12 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
-use tracing::warn;
+use tracing::{info, warn};
 
 pub use lyra_viz::VizFrame;
+
+pub mod metrics;
+pub use metrics::{EngineMetrics, EngineSnapshot};
 
 /// Ring depth: ~1s of stereo f32 at 192k worst case — covers decode jitter
 /// and remote-read latency without pre-buffer stalls.
@@ -82,9 +85,10 @@ impl VizTap {
     pub fn new(rate: f32) -> Self {
         Self {
             levels: Levels::new(0.85),
-            spectrum: SpectrumAnalyzer::new(
-                rate, 4096, 64, 20.0, 20_000.0, -80.0, 0.6, 0.12,
-            ),
+            spectrum: SpectrumAnalyzer::new(lyra_viz::SpectrumConfig {
+                sample_rate: rate,
+                ..lyra_viz::SpectrumConfig::default()
+            }),
             // ~20 ms scope window, strided to 256 points
             osc: Oscilloscope::new(256, (rate * 0.02 / 256.0).round().max(1.0) as u32),
             beat: BeatDetect::new(rate),
@@ -121,8 +125,8 @@ impl VizTap {
                 (self.clip_hold[ch] - dt).max(0.0)
             };
         }
-        self.frame.clip = (self.clip_hold[0] > 0.0) as u32
-            | ((self.clip_hold[1] > 0.0) as u32) << 1;
+        self.frame.clip =
+            (self.clip_hold[0] > 0.0) as u32 | ((self.clip_hold[1] > 0.0) as u32) << 1;
         self.frame.seq += 1;
     }
 
@@ -167,6 +171,7 @@ struct OutputTap {
     flush: Arc<AtomicBool>,
     out_rate: f32,
     out_ch: usize,
+    metrics: Arc<EngineMetrics>,
 }
 
 impl OutputTap {
@@ -177,6 +182,12 @@ impl OutputTap {
         let mut got = 0usize;
         if self.playing.load(Ordering::Relaxed) {
             got = self.cons.pop_slice(out);
+            if got == 0 {
+                // Playing but the ring is dry — silence went out. Counts
+                // here (lock-free) rather than in the worker so short
+                // decode stalls are visible in metrics.
+                self.metrics.inc_underruns();
+            }
             // Natural EOF: decoder finished AND ring drained —
             // now go idle (loaded=false so can_resume is false).
             if got == 0 && self.ended.load(Ordering::Relaxed) {
@@ -210,8 +221,8 @@ pub struct Engine {
     cmd: Sender<Command>,
     volume: Arc<AtomicF32>,
     playing: Arc<AtomicBool>,
-    loaded: Arc<AtomicBool>, // decoder open (even while paused)
-    _ended: Arc<AtomicBool>, // decoder EOF'd — ring may still hold audio
+    loaded: Arc<AtomicBool>,       // decoder open (even while paused)
+    _ended: Arc<AtomicBool>,       // decoder EOF'd — ring may still hold audio
     position_secs: Arc<AtomicF32>, // frames consumed / rate
     viz: Arc<Mutex<VizTap>>,
     /// EQ band specs — shared for response-curve queries; the worker owns
@@ -225,6 +236,9 @@ pub struct Engine {
     /// the engine, releasing hog on drop/output-mode swap.
     #[allow(dead_code)]
     keeper_alive: Arc<AtomicBool>,
+    /// Playback-event counters (see [`metrics`]) — bumped here, in the
+    /// worker, and in the RT callback; read via [`Engine::metrics`].
+    metrics: Arc<EngineMetrics>,
 }
 
 impl Engine {
@@ -247,19 +261,19 @@ impl Engine {
         // Keeper-liveness handle: only the Engine holds a strong ref, so
         // the hog-keeper's Weak fails on engine drop/swap → hog released.
         let keeper_alive = Arc::new(AtomicBool::new(true));
+        let metrics = Arc::new(EngineMetrics::default());
 
-        let mk_tap = |cons: ringbuf::HeapCons<f32>, out_rate: f32, out_ch: usize| {
-            OutputTap {
-                cons,
-                volume: Arc::clone(&volume),
-                playing: Arc::clone(&playing),
-                loaded: Arc::clone(&loaded),
-                ended: Arc::clone(&ended),
-                position_secs: Arc::clone(&position_secs),
-                flush: Arc::clone(&flush),
-                out_rate,
-                out_ch,
-            }
+        let mk_tap = |cons: ringbuf::HeapCons<f32>, out_rate: f32, out_ch: usize| OutputTap {
+            cons,
+            volume: Arc::clone(&volume),
+            playing: Arc::clone(&playing),
+            loaded: Arc::clone(&loaded),
+            ended: Arc::clone(&ended),
+            position_secs: Arc::clone(&position_secs),
+            flush: Arc::clone(&flush),
+            out_rate,
+            out_ch,
+            metrics: Arc::clone(&metrics),
         };
 
         let (output, out_rate, out_ch) = match mode {
@@ -271,7 +285,7 @@ impl Engine {
                 let supported = device
                     .default_output_config()
                     .map_err(|e| LyraError::Audio(e.to_string()))?;
-                let config: cpal::StreamConfig = supported.clone().into();
+                let config: cpal::StreamConfig = supported.into();
                 let out_ch = config.channels as usize;
                 let out_rate = config.sample_rate as f32;
 
@@ -301,8 +315,7 @@ impl Engine {
                         )));
                     }
                     let mut tap = mk_tap(cons, rate as f32, ch);
-                    let proc_ =
-                        dev.start_ioproc(Box::new(move |buf| tap.fill(buf)))?;
+                    let proc_ = dev.start_ioproc(Box::new(move |buf| tap.fill(buf)))?;
                     // Hog follows `playing`, not the engine lifetime:
                     // acquired on first audio (~150 ms edge latency),
                     // released on stop/pause/EOF. Held at idle it denies
@@ -318,10 +331,13 @@ impl Engine {
                             while alive.upgrade().is_some() {
                                 match (playing.load(Ordering::Relaxed), hog.is_some()) {
                                     (true, false) => {
-                                        hog = dev.hog().map_err(|e| {
-                                            warn!("hog denied: {e}");
-                                            e
-                                        }).ok();
+                                        hog = dev
+                                            .hog()
+                                            .map_err(|e| {
+                                                warn!("hog denied: {e}");
+                                                e
+                                            })
+                                            .ok();
                                     }
                                     (false, true) => hog = None,
                                     _ => {}
@@ -330,18 +346,12 @@ impl Engine {
                             }
                         })
                     };
-                    (
-                        Output::Hal { proc_, keeper },
-                        rate as f32,
-                        ch,
-                    )
+                    (Output::Hal { proc_, keeper }, rate as f32, ch)
                 }
                 #[cfg(not(target_os = "macos"))]
                 {
                     let _ = (cons, &mk_tap);
-                    return Err(LyraError::Audio(
-                        "HAL output is macOS-only".into(),
-                    ));
+                    return Err(LyraError::Audio("HAL output is macOS-only".into()));
                 }
             }
         };
@@ -362,11 +372,23 @@ impl Engine {
             let flush = Arc::clone(&flush);
             let eq_specs = Arc::clone(&eq_specs);
             let eq_rate = Arc::clone(&eq_rate);
+            let metrics = Arc::clone(&metrics);
             thread::spawn(move || {
-                worker_loop(
-                    cmd_rx, prod, playing, loaded, ended, position, flush, viz,
-                    eq_specs, eq_rate, out_rate, out_ch,
-                )
+                worker_loop(WorkerState {
+                    cmd: cmd_rx,
+                    prod,
+                    playing,
+                    loaded,
+                    ended,
+                    position,
+                    flush,
+                    viz,
+                    eq_specs,
+                    eq_rate,
+                    device_rate: out_rate,
+                    device_ch: out_ch,
+                    metrics: Arc::clone(&metrics),
+                })
             })
         };
 
@@ -383,22 +405,57 @@ impl Engine {
             _output: output,
             _worker: worker,
             keeper_alive,
+            metrics,
         })
+    }
+
+    /// Current in-process metrics snapshot (playback requests, decode
+    /// outcomes, underruns). No scrape endpoint on a desktop app — read
+    /// this from debug tooling or [`Engine::log_metrics`].
+    #[must_use]
+    pub fn metrics(&self) -> EngineSnapshot {
+        self.metrics.snapshot()
+    }
+
+    /// [`Engine::metrics`] rendered as Prometheus exposition-style text.
+    #[must_use]
+    pub fn metrics_text(&self) -> String {
+        self.metrics.snapshot().render_text()
+    }
+
+    /// Emit the current snapshot as structured JSON in one log event.
+    pub fn log_metrics(&self) {
+        let s = self.metrics.snapshot();
+        info!(metrics = s.to_json(), "engine metrics");
     }
 
     /// Play any byte source — local, SSH-cached, torrent, future backends.
     pub fn play(&self, source: Arc<dyn ByteSource>, extension: Option<&str>) {
+        self.metrics.inc_play();
         let _ = self.cmd.send(Command::Play {
             source,
             extension: extension.map(String::from),
         });
     }
 
-    pub fn pause(&self) { let _ = self.cmd.send(Command::Pause); }
-    pub fn resume(&self) { let _ = self.cmd.send(Command::Resume); }
-    pub fn stop(&self) { let _ = self.cmd.send(Command::Stop); }
-    pub fn seek(&self, secs: f64) { let _ = self.cmd.send(Command::Seek(secs)); }
+    pub fn pause(&self) {
+        self.metrics.inc_pause();
+        let _ = self.cmd.send(Command::Pause);
+    }
+    pub fn resume(&self) {
+        self.metrics.inc_resume();
+        let _ = self.cmd.send(Command::Resume);
+    }
+    pub fn stop(&self) {
+        self.metrics.inc_stop();
+        let _ = self.cmd.send(Command::Stop);
+    }
+    pub fn seek(&self, secs: f64) {
+        self.metrics.inc_seek();
+        let _ = self.cmd.send(Command::Seek(secs));
+    }
     pub fn set_band(&self, band: usize, spec: BandSpec) {
+        self.metrics.inc_set_band();
         let _ = self.cmd.send(Command::SetBand(band, spec));
     }
 
@@ -436,19 +493,25 @@ impl Engine {
         self.volume.store(v.clamp(0.0, 2.0), Ordering::Relaxed);
     }
 
-    pub fn volume(&self) -> f32 { self.volume.load(Ordering::Relaxed) }
+    pub fn volume(&self) -> f32 {
+        self.volume.load(Ordering::Relaxed)
+    }
 
     /// Live per-band EQ specs — None means flat/unset for that slot.
     /// IPC + FFI read this; `set_band` is the write path.
     pub fn eq_specs(&self) -> Vec<Option<BandSpec>> {
         self.eq_specs.lock().unwrap().clone()
     }
-    pub fn is_playing(&self) -> bool { self.playing.load(Ordering::Relaxed) }
+    pub fn is_playing(&self) -> bool {
+        self.playing.load(Ordering::Relaxed)
+    }
     /// A track is loaded and paused — resume continues, play would restart.
     pub fn can_resume(&self) -> bool {
         self.loaded.load(Ordering::Relaxed) && !self.playing.load(Ordering::Relaxed)
     }
-    pub fn position_secs(&self) -> f32 { self.position_secs.load(Ordering::Relaxed) }
+    pub fn position_secs(&self) -> f32 {
+        self.position_secs.load(Ordering::Relaxed)
+    }
 
     /// Draw-ready viz snapshot — UI polls this at display rate.
     pub fn viz_snapshot(&self) -> (Vec<f32>, [f32; 2], bool) {
@@ -469,12 +532,16 @@ impl Engine {
         out.seq
     }
 
-    pub fn shutdown(&self) { let _ = self.cmd.send(Command::Shutdown); }
+    pub fn shutdown(&self) {
+        let _ = self.cmd.send(Command::Shutdown);
+    }
 }
 
-fn worker_loop(
+/// Everything the decode/DSP worker thread owns — one struct instead of
+/// a twelve-argument function, so the spawn site reads as configuration.
+struct WorkerState {
     cmd: Receiver<Command>,
-    mut prod: HeapProd<f32>,
+    prod: HeapProd<f32>,
     playing: Arc<AtomicBool>,
     loaded: Arc<AtomicBool>,
     ended: Arc<AtomicBool>,
@@ -485,7 +552,25 @@ fn worker_loop(
     eq_rate: Arc<AtomicF32>,
     device_rate: f32,
     device_ch: usize,
-) {
+    metrics: Arc<EngineMetrics>,
+}
+
+fn worker_loop(st: WorkerState) {
+    let WorkerState {
+        cmd,
+        mut prod,
+        playing,
+        loaded,
+        ended,
+        position,
+        flush,
+        viz,
+        eq_specs,
+        eq_rate,
+        device_rate,
+        device_ch,
+        metrics,
+    } = st;
     let mut decoder: Option<TrackDecoder> = None;
     let mut eq = ParametricEq::default();
     let mut limiter = SafetyLimiter::new(44_100.0, 200.0);
@@ -497,8 +582,11 @@ fn worker_loop(
 
     loop {
         // Drain pending commands (non-blocking while decoding).
-        match if decoder.is_none() { cmd.recv().map(Some).unwrap_or(None) }
-        else { cmd.try_recv().ok() } {
+        match if decoder.is_none() {
+            cmd.recv().map(Some).unwrap_or(None)
+        } else {
+            cmd.try_recv().ok()
+        } {
             Some(Command::Shutdown) => break,
             Some(Command::Play { source, extension }) => {
                 let src = lyra_fs::SourceMediaSource::new(source);
@@ -577,11 +665,18 @@ fn worker_loop(
                     } else {
                         Biquad::low_shelf(src_rate as f32, spec.freq_hz, spec.q, spec.gain_db)
                     };
-                    *b = EqBand { filter: f, enabled: spec.gain_db != 0.0 };
+                    *b = EqBand {
+                        filter: f,
+                        enabled: spec.gain_db != 0.0,
+                    };
                 }
                 if let Ok(mut specs) = eq_specs.try_lock() {
                     if i < specs.len() {
-                        specs[i] = if spec.gain_db != 0.0 { Some(spec) } else { None };
+                        specs[i] = if spec.gain_db != 0.0 {
+                            Some(spec)
+                        } else {
+                            None
+                        };
                     }
                 }
             }
@@ -601,6 +696,7 @@ fn worker_loop(
 
         match d.next_block() {
             Ok(Some(pcm_in)) => {
+                metrics.inc_decode_blocks();
                 // Channel adapt → stereo. Mono duplicates, >2ch keeps L/R.
                 let mut pcm = adapt_channels(pcm_in, src_channels, device_ch);
                 // SRC to device rate — always stereo after adapt.
@@ -625,10 +721,12 @@ fn worker_loop(
             Ok(None) => {
                 // EOF — decoder done but the ring may still hold seconds of
                 // audio. `ended` lets the callback drain it before idling.
+                metrics.inc_eof();
                 decoder = None;
                 ended.store(true, Ordering::Relaxed);
             }
             Err(e) => {
+                metrics.inc_decode_errors();
                 warn!("decode error: {e}");
                 decoder = None;
                 ended.store(true, Ordering::Relaxed); // drain what we have
@@ -676,5 +774,3 @@ fn resample(rs: &mut rubato::Fft<f32>, interleaved: &[f32], pending: &mut Vec<f3
     }
     out
 }
-
-

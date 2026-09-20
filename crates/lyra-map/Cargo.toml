@@ -31,3 +31,6 @@ ort = { version = "=2.0.0-rc.13", optional = true }
 [[bin]]
 name = "lyra-mapgen"
 path = "src/bin/lyra-mapgen.rs"
+
+[lints]
+workspace = true

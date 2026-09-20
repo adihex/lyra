@@ -1,0 +1,29 @@
+// Lyra dev container (Linux/Rust side only).
+// NOTE: The SwiftUI macOS app in ./app CANNOT build in this Linux container
+// (Xcode/SwiftUI/macOS SDK required). Use this container for the Rust
+// workspace (cargo fmt/clippy/test); build ./app natively on macOS.
+// Build verification: NOT verified — `devcontainer` CLI is absent in this
+// environment, so this file was validated as JSON only, never built.
+{
+  "name": "Lyra (Rust)",
+  "image": "mcr.microsoft.com/devcontainers/rust:1-1-bookworm",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml",
+        "vadimcn.vscode-lldb",
+        "github.vscode-github-actions"
+      ],
+      "settings": {
+        "rust-analyzer.check.command": "clippy"
+      }
+    }
+  },
+  // Toolchain mirrors mise.toml (cmake, ninja, rust stable) + CI
+  // (.github/workflows/ci.yml uses jdx/mise-action). mise is installed
+  // via its official script, then `mise install` reads mise.toml so the
+  // container tracks the same pinned tools as macOS/CI.
+  "postCreateCommand": "sudo apt-get update && sudo apt-get install -y cmake ninja-build pkg-config libssl-dev && curl -fsSL https://mise.run | sh && $HOME/.local/bin/mise install && $HOME/.local/bin/mise exec -- cargo --version && rustc --version",
+  "remoteUser": "vscode"
+}

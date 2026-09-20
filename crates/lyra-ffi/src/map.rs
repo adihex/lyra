@@ -34,6 +34,12 @@ fn err_json(msg: impl std::fmt::Display) -> *mut c_char {
 /// comma list per `StageSet::parse`.
 /// Returns `{map_path, status, overall_conf, audio_hash, beats, sections,
 /// chords, strums, notes, tab}` or `{error}`.
+///
+/// # Safety
+/// `lib` may be null (registry write skipped) or a live library handle.
+/// `path`, `maps_dir` and `stages` may be null (null path/maps_dir yields error JSON; null stages means all stages).
+/// Non-null string args must be valid NUL-terminated C strings.
+/// Free the non-null return with `lyra_string_free`.
 #[no_mangle]
 pub unsafe extern "C" fn lyra_map_analyze(
     lib: *mut lyra_store::Library,
@@ -105,6 +111,10 @@ pub unsafe extern "C" fn lyra_map_analyze(
 }
 
 /// Decode a `.lyramap` file → full SongMap JSON.
+///
+/// # Safety
+/// `map_path` may be null (error JSON); otherwise it must be a valid NUL-terminated C string.
+/// Free the non-null return with `lyra_string_free`.
 #[no_mangle]
 pub unsafe extern "C" fn lyra_map_load(map_path: *const c_char) -> *mut c_char {
     let Some(p) = opt_str(map_path) else {
@@ -122,6 +132,11 @@ pub unsafe extern "C" fn lyra_map_load(map_path: *const c_char) -> *mut c_char {
 
 /// Resolve a track path → its SongMap JSON via `tracks.audio_hash` →
 /// `track_maps`. `{status:"none"}` when never analysed.
+///
+/// # Safety
+/// `lib` may be null (error JSON) or a live library handle.
+/// `path` may be null (error JSON); otherwise a valid NUL-terminated C string.
+/// Free the non-null return with `lyra_string_free`.
 #[no_mangle]
 pub unsafe extern "C" fn lyra_map_for_track(
     lib: *mut lyra_store::Library,
@@ -217,12 +232,10 @@ mod tests {
         assert!(map["grid"].is_object() && map["quality"].is_object());
 
         // Null-path guards.
-        assert!(unsafe {
-            CStr::from_ptr(lyra_map_load(std::ptr::null()))
-        }
-        .to_str()
-        .unwrap()
-        .contains("error"));
+        assert!(unsafe { CStr::from_ptr(lyra_map_load(std::ptr::null())) }
+            .to_str()
+            .unwrap()
+            .contains("error"));
         assert!(unsafe {
             CStr::from_ptr(lyra_map_analyze(
                 std::ptr::null_mut(),

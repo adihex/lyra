@@ -12,8 +12,8 @@
 //!   now-playing/queue/mode JSON so `state.get` reflects the real UI state.
 
 use lyra_ipc::paths;
-use lyra_ipc::{ApiError, DispatchCtx, Dispatcher, Server, ServerHandle};
 use lyra_ipc::protocol::ErrorCode;
+use lyra_ipc::{ApiError, DispatchCtx, Dispatcher, Server, ServerHandle};
 use serde_json::{json, Value};
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
@@ -25,7 +25,11 @@ use crate::torrent;
 
 fn engine() -> Option<&'static lyra_engine::Engine> {
     let p = crate::lyra_engine_current();
-    if p.is_null() { None } else { Some(unsafe { &*p }) }
+    if p.is_null() {
+        None
+    } else {
+        Some(unsafe { &*p })
+    }
 }
 
 fn bump(rev: &AtomicI64) -> i64 {
@@ -65,7 +69,10 @@ impl LiveDispatcher {
         }
     }
 
-    fn with_store<T>(&self, f: impl FnOnce(&lyra_store::Library) -> Result<T, ApiError>) -> Result<T, ApiError> {
+    fn with_store<T>(
+        &self,
+        f: impl FnOnce(&lyra_store::Library) -> Result<T, ApiError>,
+    ) -> Result<T, ApiError> {
         let g = self.store.lock().unwrap();
         let lib = g
             .as_ref()
@@ -74,7 +81,8 @@ impl LiveDispatcher {
     }
 
     fn ui_command(&self, op: &str, params: Value) -> Value {
-        self.shared.commands
+        self.shared
+            .commands
             .lock()
             .unwrap()
             .push(json!({"op": op, "params": params}));
@@ -105,7 +113,12 @@ impl Dispatcher for LiveDispatcher {
             Some(e) => {
                 let mut bands = [0f32; 32];
                 e.viz_bands(&mut bands);
-                (e.is_playing(), e.position_secs() as f64, e.volume() as f64, bands.to_vec())
+                (
+                    e.is_playing(),
+                    e.position_secs() as f64,
+                    e.volume() as f64,
+                    bands.to_vec(),
+                )
             }
             None => (false, 0.0, 1.0, vec![0.0; 32]),
         };
@@ -151,15 +164,31 @@ impl Dispatcher for LiveDispatcher {
     fn call(&self, ctx: &DispatchCtx, method: &str, params: &Value) -> Result<Value, ApiError> {
         let rev = &self.shared.revision;
         match method {
-            "play" => { need_engine()?.resume(); bump(rev); Ok(json!({"state": "playing"})) }
-            "pause" => { need_engine()?.pause(); bump(rev); Ok(json!({"state": "paused"})) }
+            "play" => {
+                need_engine()?.resume();
+                bump(rev);
+                Ok(json!({"state": "playing"}))
+            }
+            "pause" => {
+                need_engine()?.pause();
+                bump(rev);
+                Ok(json!({"state": "paused"}))
+            }
             "toggle" => {
                 let e = need_engine()?;
-                if e.is_playing() { e.pause() } else { e.resume() }
+                if e.is_playing() {
+                    e.pause()
+                } else {
+                    e.resume()
+                }
                 bump(rev);
                 Ok(json!({"state": if e.is_playing() { "playing" } else { "paused" }}))
             }
-            "stop" => { need_engine()?.stop(); bump(rev); Ok(json!({"state": "stopped"})) }
+            "stop" => {
+                need_engine()?.stop();
+                bump(rev);
+                Ok(json!({"state": "stopped"}))
+            }
             // Ops the VM executes via the command drain — the library table
             // IS the queue, so these need the app's track list.
             "next" | "prev" | "track.play" | "queue.play" => {
@@ -167,20 +196,23 @@ impl Dispatcher for LiveDispatcher {
             }
             // Not bridged yet — no separate queue model / URL source /
             // device switch / speed control in the app today.
-            "queue.enqueue" | "queue.remove" | "queue.move" | "queue.clear"
-            | "track.queue" | "url.load" | "device.set" | "speed"
-            | "shuffle" | "repeat" => {
-                Err(ApiError::invalid_param(format!("{method} not bridged in this build")))
-            }
+            "queue.enqueue" | "queue.remove" | "queue.move" | "queue.clear" | "track.queue"
+            | "url.load" | "device.set" | "speed" | "shuffle" | "repeat" => Err(
+                ApiError::invalid_param(format!("{method} not bridged in this build")),
+            ),
             "seek.absolute" => {
-                let pos = params.get("position_s").and_then(Value::as_f64)
+                let pos = params
+                    .get("position_s")
+                    .and_then(Value::as_f64)
                     .ok_or_else(|| ApiError::invalid_param("seek.absolute needs position_s"))?;
                 need_engine()?.seek(pos);
                 bump(rev);
                 Ok(json!({"position": pos}))
             }
             "seek.relative" => {
-                let d = params.get("delta_s").and_then(Value::as_f64)
+                let d = params
+                    .get("delta_s")
+                    .and_then(Value::as_f64)
                     .ok_or_else(|| ApiError::invalid_param("seek.relative needs delta_s"))?;
                 let e = need_engine()?;
                 e.seek((e.position_secs() as f64 + d).max(0.0));
@@ -188,7 +220,9 @@ impl Dispatcher for LiveDispatcher {
                 Ok(json!({"position": e.position_secs()}))
             }
             "volume" | "volume.set" => {
-                let v = params.get("volume").and_then(Value::as_f64)
+                let v = params
+                    .get("volume")
+                    .and_then(Value::as_f64)
                     .ok_or_else(|| ApiError::invalid_param("volume.set needs volume"))?;
                 need_engine()?.set_volume(v as f32);
                 bump(rev);
@@ -203,13 +237,18 @@ impl Dispatcher for LiveDispatcher {
             }
             "eq.set" => {
                 let e = need_engine()?;
-                let bands = params.get("bands").and_then(Value::as_array)
+                let bands = params
+                    .get("bands")
+                    .and_then(Value::as_array)
                     .ok_or_else(|| ApiError::invalid_param("eq.set needs bands[]"))?;
                 let mut specs = e.eq_specs();
                 for (i, g) in bands.iter().enumerate().take(specs.len()) {
                     let gain = g.as_f64().unwrap_or(0.0) as f32;
                     let mut spec = specs[i].unwrap_or(lyra_engine::BandSpec {
-                        freq_hz: 0.0, q: 1.0, gain_db: 0.0, peaking: true,
+                        freq_hz: 0.0,
+                        q: 1.0,
+                        gain_db: 0.0,
+                        peaking: true,
                     });
                     spec.gain_db = gain;
                     e.set_band(i, spec);
@@ -219,17 +258,26 @@ impl Dispatcher for LiveDispatcher {
                 Ok(json!({"bands": bands.len()}))
             }
             "eq.band.set" => {
-                let i = params.get("band").and_then(Value::as_i64)
-                    .ok_or_else(|| ApiError::invalid_param("eq.band.set needs band"))? as usize;
-                let gain = params.get("gain_db").and_then(Value::as_f64)
-                    .ok_or_else(|| ApiError::invalid_param("eq.band.set needs gain_db"))? as f32;
+                let i = params
+                    .get("band")
+                    .and_then(Value::as_i64)
+                    .ok_or_else(|| ApiError::invalid_param("eq.band.set needs band"))?
+                    as usize;
+                let gain = params
+                    .get("gain_db")
+                    .and_then(Value::as_f64)
+                    .ok_or_else(|| ApiError::invalid_param("eq.band.set needs gain_db"))?
+                    as f32;
                 let e = need_engine()?;
                 let specs = e.eq_specs();
                 if i >= specs.len() {
                     return Err(ApiError::invalid_param(format!("band {i} out of range")));
                 }
                 let mut spec = specs[i].unwrap_or(lyra_engine::BandSpec {
-                    freq_hz: 0.0, q: 1.0, gain_db: 0.0, peaking: true,
+                    freq_hz: 0.0,
+                    q: 1.0,
+                    gain_db: 0.0,
+                    peaking: true,
                 });
                 spec.gain_db = gain;
                 e.set_band(i, spec);
@@ -252,21 +300,30 @@ impl Dispatcher for LiveDispatcher {
                 let limit = params.get("limit").and_then(Value::as_i64).unwrap_or(50) as usize;
                 let hits = self.with_store(|lib| {
                     lib.search(q)
-                        .map(|v| v.into_iter().take(limit).map(|t| track_json(&t)).collect::<Vec<_>>())
+                        .map(|v| {
+                            v.into_iter()
+                                .take(limit)
+                                .map(|t| track_json(&t))
+                                .collect::<Vec<_>>()
+                        })
                         .map_err(|e| ApiError::new(ErrorCode::Internal, e.to_string()))
                 })?;
                 Ok(json!({"results": hits}))
             }
-            "library.stats" => {
-                self.with_store(|lib| {
-                    let tracks = lib.all_tracks().map_err(|e| ApiError::new(ErrorCode::Internal, e.to_string()))?;
-                    let sources = lib.sources().map_err(|e| ApiError::new(ErrorCode::Internal, e.to_string()))?;
-                    Ok(json!({"tracks": tracks.len(), "sources": sources.len()}))
-                })
-            }
+            "library.stats" => self.with_store(|lib| {
+                let tracks = lib
+                    .all_tracks()
+                    .map_err(|e| ApiError::new(ErrorCode::Internal, e.to_string()))?;
+                let sources = lib
+                    .sources()
+                    .map_err(|e| ApiError::new(ErrorCode::Internal, e.to_string()))?;
+                Ok(json!({"tracks": tracks.len(), "sources": sources.len()}))
+            }),
             "library.scan" => {
                 // Async op — the job worker calls this off the conn loop.
-                let path = params.get("path").and_then(Value::as_str)
+                let path = params
+                    .get("path")
+                    .and_then(Value::as_str)
                     .ok_or_else(|| ApiError::invalid_param("library.scan needs path"))?;
                 let stats = self.with_store(|lib| {
                     lib.sync_dir(std::path::Path::new(path))
@@ -278,7 +335,9 @@ impl Dispatcher for LiveDispatcher {
                 Ok(json!({"walked": stats.walked, "probed": stats.probed, "pruned": stats.pruned}))
             }
             "torrent.add" => {
-                let spec = params.get("magnet").or_else(|| params.get("path"))
+                let spec = params
+                    .get("magnet")
+                    .or_else(|| params.get("path"))
                     .and_then(Value::as_str)
                     .ok_or_else(|| ApiError::invalid_param("torrent.add needs magnet or path"))?;
                 match torrent() {
@@ -298,7 +357,10 @@ impl Dispatcher for LiveDispatcher {
             })),
             "lyrics.get" => Err(ApiError::not_found("no lyrics store yet")),
             "plugin.call" => Err(ApiError::not_found("no plugins installed")),
-            _ => Err(ApiError::new(ErrorCode::UnknownMethod, format!("unhandled op {method}"))),
+            _ => Err(ApiError::new(
+                ErrorCode::UnknownMethod,
+                format!("unhandled op {method}"),
+            )),
         }
     }
 }
@@ -312,6 +374,9 @@ static SERVER: Mutex<Option<ServerHandle>> = Mutex::new(None);
 /// directory to bind control.sock in (app container's Application Support
 /// dir — sandboxed apps can't write the group-container path, but the CLI's
 /// candidate list already looks inside the container). 0 ok.
+///
+/// # Safety
+/// `db_path` and `sock_dir` must be non-null and point to valid NUL-terminated C strings.
 #[no_mangle]
 pub unsafe extern "C" fn lyra_ipc_start(
     db_path: *const c_char,
@@ -336,7 +401,8 @@ pub unsafe extern "C" fn lyra_ipc_start(
         commands: Mutex::new(Vec::new()),
     });
     let _ = SHARED.set(std::sync::Arc::clone(&shared));
-    match Server::new(LiveDispatcher::new(db, shared)).serve_on_path(&dir.join(paths::SOCKET_NAME)) {
+    match Server::new(LiveDispatcher::new(db, shared)).serve_on_path(&dir.join(paths::SOCKET_NAME))
+    {
         Ok(h) => {
             *SERVER.lock().unwrap() = Some(h);
             tracing::info!("ipc: listening at {}/{}", dir.display(), paths::SOCKET_NAME);
@@ -349,6 +415,10 @@ pub unsafe extern "C" fn lyra_ipc_start(
     }
 }
 
+/// Stop the IPC server and unbind the socket.
+///
+/// # Safety
+/// Always safe to call; a no-op when the server was never started.
 #[no_mangle]
 pub unsafe extern "C" fn lyra_ipc_stop() {
     if let Some(h) = SERVER.lock().unwrap().take() {
@@ -358,6 +428,9 @@ pub unsafe extern "C" fn lyra_ipc_stop() {
 
 /// VM → dispatcher: publish {track, queue, shuffle, repeat, speed, duration,
 /// playlist_revision, device, stream_error}. Merged into every snapshot.
+///
+/// # Safety
+/// `json_str` must be non-null and point to a valid NUL-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn lyra_ipc_publish_state(json_str: *const c_char) -> std::os::raw::c_int {
     let Some(d) = SHARED.get() else { return 1 };
@@ -376,12 +449,20 @@ pub unsafe extern "C" fn lyra_ipc_publish_state(json_str: *const c_char) -> std:
 
 /// VM ← dispatcher: drain pending UI commands as a JSON array. The app
 /// polls this and executes queue/track ops with full UI coherence.
+///
+/// # Safety
+/// Always safe to call; returns null when the server never started or no commands are pending.
+/// Free a non-null return with `lyra_string_free`.
 #[no_mangle]
 pub unsafe extern "C" fn lyra_ipc_drain_commands() -> *mut c_char {
-    let Some(d) = SHARED.get() else { return std::ptr::null_mut() };
+    let Some(d) = SHARED.get() else {
+        return std::ptr::null_mut();
+    };
     let cmds: Vec<Value> = std::mem::take(&mut *d.commands.lock().unwrap());
     if cmds.is_empty() {
         return std::ptr::null_mut();
     }
-    CString::new(Value::Array(cmds).to_string()).unwrap().into_raw()
+    CString::new(Value::Array(cmds).to_string())
+        .unwrap()
+        .into_raw()
 }

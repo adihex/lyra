@@ -21,6 +21,10 @@ use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
+/// Pull callback for IOProc output: fills `dst` with interleaved stereo
+/// f32, returns frames written (0 = silence/underrun).
+type PullCallback = Box<dyn FnMut(&mut [f32]) -> usize + Send>;
+
 fn os_err(op: &str, status: OSStatus) -> LyraError {
     LyraError::Audio(format!(
         "{op}: OSStatus {status} ({:p})",
@@ -28,8 +32,16 @@ fn os_err(op: &str, status: OSStatus) -> LyraError {
     ))
 }
 
-fn addr(selector: AudioObjectPropertySelector, scope: u32, element: u32) -> AudioObjectPropertyAddress {
-    AudioObjectPropertyAddress { mSelector: selector, mScope: scope, mElement: element }
+fn addr(
+    selector: AudioObjectPropertySelector,
+    scope: u32,
+    element: u32,
+) -> AudioObjectPropertyAddress {
+    AudioObjectPropertyAddress {
+        mSelector: selector,
+        mScope: scope,
+        mElement: element,
+    }
 }
 
 /// Get a property whose value fits in one POD.
@@ -37,21 +49,35 @@ fn get_prop<T>(obj: AudioObjectID, a: &AudioObjectPropertyAddress) -> Result<T, 
     let mut v: T = unsafe { std::mem::zeroed() };
     let mut size = std::mem::size_of::<T>() as u32;
     let st = unsafe {
-        AudioObjectGetPropertyData(obj, a, 0, std::ptr::null(), &mut size, &mut v as *mut T as *mut c_void)
+        AudioObjectGetPropertyData(
+            obj,
+            a,
+            0,
+            std::ptr::null(),
+            &mut size,
+            &mut v as *mut T as *mut c_void,
+        )
     };
-    if st != 0 { return Err(os_err("get prop", st)); }
+    if st != 0 {
+        return Err(os_err("get prop", st));
+    }
     Ok(v)
 }
 
 fn set_prop<T>(obj: AudioObjectID, a: &AudioObjectPropertyAddress, v: &T) -> Result<(), LyraError> {
     let st = unsafe {
         AudioObjectSetPropertyData(
-            obj, a, 0, std::ptr::null(),
+            obj,
+            a,
+            0,
+            std::ptr::null(),
             std::mem::size_of::<T>() as u32,
             v as *const T as *const c_void,
         )
     };
-    if st != 0 { return Err(os_err("set prop", st)); }
+    if st != 0 {
+        return Err(os_err("set prop", st));
+    }
     Ok(())
 }
 
@@ -64,7 +90,11 @@ impl HalDevice {
     pub fn default_output() -> Result<Self, LyraError> {
         let id: AudioDeviceID = get_prop(
             kAudioObjectSystemObject as AudioObjectID,
-            &addr(kAudioHardwarePropertyDefaultOutputDevice, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain),
+            &addr(
+                kAudioHardwarePropertyDefaultOutputDevice,
+                kAudioObjectPropertyScopeGlobal,
+                kAudioObjectPropertyElementMain,
+            ),
         )?;
         if id == kAudioObjectUnknown as AudioDeviceID {
             return Err(LyraError::Audio("no default output device".into()));
@@ -84,7 +114,11 @@ impl HalDevice {
     fn cfstring_prop(&self, sel: AudioObjectPropertySelector) -> Result<String, LyraError> {
         let cf: CFStringRef = get_prop(
             self.id,
-            &addr(sel, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain),
+            &addr(
+                sel,
+                kAudioObjectPropertyScopeGlobal,
+                kAudioObjectPropertyElementMain,
+            ),
         )?;
         if cf.is_null() {
             return Err(LyraError::Audio("null CFString".into()));
@@ -92,7 +126,14 @@ impl HalDevice {
         let len = unsafe { CFStringGetLength(cf) };
         let mut buf = vec![0u16; len as usize + 1];
         unsafe {
-            CFStringGetCharacters(cf, CFRange { location: 0, length: len }, buf.as_mut_ptr());
+            CFStringGetCharacters(
+                cf,
+                CFRange {
+                    location: 0,
+                    length: len,
+                },
+                buf.as_mut_ptr(),
+            );
             CFRelease(cf as *const c_void);
         }
         Ok(String::from_utf16_lossy(&buf[..len as usize]))
@@ -101,7 +142,11 @@ impl HalDevice {
     pub fn nominal_rate(&self) -> Result<f64, LyraError> {
         get_prop(
             self.id,
-            &addr(kAudioDevicePropertyNominalSampleRate, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain),
+            &addr(
+                kAudioDevicePropertyNominalSampleRate,
+                kAudioObjectPropertyScopeGlobal,
+                kAudioObjectPropertyElementMain,
+            ),
         )
     }
 
@@ -113,19 +158,32 @@ impl HalDevice {
             kAudioObjectPropertyElementMain,
         );
         let mut size = 0u32;
-        let st = unsafe {
-            AudioObjectGetPropertyDataSize(self.id, &a, 0, std::ptr::null(), &mut size)
-        };
-        if st != 0 { return Err(os_err("rate list size", st)); }
+        let st =
+            unsafe { AudioObjectGetPropertyDataSize(self.id, &a, 0, std::ptr::null(), &mut size) };
+        if st != 0 {
+            return Err(os_err("rate list size", st));
+        }
         let n = size as usize / std::mem::size_of::<AudioValueRange>();
-        let mut ranges = vec![AudioValueRange { mMinimum: 0.0, mMaximum: 0.0 }; n];
+        let mut ranges = vec![
+            AudioValueRange {
+                mMinimum: 0.0,
+                mMaximum: 0.0
+            };
+            n
+        ];
         let st = unsafe {
             AudioObjectGetPropertyData(
-                self.id, &a, 0, std::ptr::null(), &mut size,
+                self.id,
+                &a,
+                0,
+                std::ptr::null(),
+                &mut size,
                 ranges.as_mut_ptr() as *mut c_void,
             )
         };
-        if st != 0 { return Err(os_err("rate list", st)); }
+        if st != 0 {
+            return Err(os_err("rate list", st));
+        }
         Ok(ranges.iter().map(|r| (r.mMinimum, r.mMaximum)).collect())
     }
 
@@ -138,7 +196,11 @@ impl HalDevice {
         }
         set_prop(
             self.id,
-            &addr(kAudioDevicePropertyNominalSampleRate, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain),
+            &addr(
+                kAudioDevicePropertyNominalSampleRate,
+                kAudioObjectPropertyScopeGlobal,
+                kAudioObjectPropertyElementMain,
+            ),
             &rate,
         )?;
         for _ in 0..100 {
@@ -168,23 +230,42 @@ impl HalDevice {
         }
         let saved_vol: Option<f32> = get_prop(
             self.id,
-            &addr(kAudioDevicePropertyVolumeScalar, kAudioObjectPropertyScopeOutput, kAudioObjectPropertyElementMain),
-        ).ok();
+            &addr(
+                kAudioDevicePropertyVolumeScalar,
+                kAudioObjectPropertyScopeOutput,
+                kAudioObjectPropertyElementMain,
+            ),
+        )
+        .ok();
         let saved_mute: Option<u32> = get_prop(
             self.id,
-            &addr(kAudioDevicePropertyMute, kAudioObjectPropertyScopeOutput, kAudioObjectPropertyElementMain),
-        ).ok();
+            &addr(
+                kAudioDevicePropertyMute,
+                kAudioObjectPropertyScopeOutput,
+                kAudioObjectPropertyElementMain,
+            ),
+        )
+        .ok();
         if holder != me {
             set_prop(self.id, &a, &me)?;
         }
-        Ok(Hog { dev: self.id, released: AtomicBool::new(false), saved_vol, saved_mute })
+        Ok(Hog {
+            dev: self.id,
+            released: AtomicBool::new(false),
+            saved_vol,
+            saved_mute,
+        })
     }
 
     /// Virtual output format: (channels, sample_rate, interleaved).
     pub fn virtual_format(&self) -> Result<(usize, f64, bool), LyraError> {
         let f: AudioStreamBasicDescription = get_prop(
             self.id,
-            &addr(kAudioDevicePropertyStreamFormat, kAudioDevicePropertyScopeOutput, kAudioObjectPropertyElementMain),
+            &addr(
+                kAudioDevicePropertyStreamFormat,
+                kAudioDevicePropertyScopeOutput,
+                kAudioObjectPropertyElementMain,
+            ),
         )?;
         Ok((
             f.mChannelsPerFrame as usize,
@@ -196,16 +277,17 @@ impl HalDevice {
     /// IOProc output. `pull` fills `dst` with interleaved stereo f32 and
     /// returns frames written (0 = silence/underrun). Runs on the HAL's
     /// real-time thread — `pull` must be lock-free (ring buffer).
-    pub fn start_ioproc(
-        &self,
-        pull: Box<dyn FnMut(&mut [f32]) -> usize + Send>,
-    ) -> Result<IoProc, LyraError> {
+    pub fn start_ioproc(&self, pull: PullCallback) -> Result<IoProc, LyraError> {
         // Query the virtual format once — channel count and interleaved
         // layout drive the copy path (non-interleaved is the common macOS
         // default: one buffer per channel).
         let fmt: AudioStreamBasicDescription = get_prop(
             self.id,
-            &addr(kAudioDevicePropertyStreamFormat, kAudioDevicePropertyScopeOutput, kAudioObjectPropertyElementMain),
+            &addr(
+                kAudioDevicePropertyStreamFormat,
+                kAudioDevicePropertyScopeOutput,
+                kAudioObjectPropertyElementMain,
+            ),
         )?;
         let interleaved = fmt.mFormatFlags & kAudioFormatFlagIsNonInterleaved == 0;
         let channels = fmt.mChannelsPerFrame as usize;
@@ -214,7 +296,11 @@ impl HalDevice {
         // tails the excess) rather than allocate.
         let max_frames: u32 = get_prop(
             self.id,
-            &addr(kAudioDevicePropertyBufferFrameSize, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain),
+            &addr(
+                kAudioDevicePropertyBufferFrameSize,
+                kAudioObjectPropertyScopeGlobal,
+                kAudioObjectPropertyElementMain,
+            ),
         )
         .unwrap_or(4096)
         .max(4096);
@@ -237,9 +323,8 @@ impl HalDevice {
             let ctx = unsafe { &*(client as *const IoProcCtx) };
             let list = unsafe { &mut *out_data };
             let n_bufs = list.mNumberBuffers as usize;
-            let bufs = unsafe {
-                std::slice::from_raw_parts_mut(list.mBuffers.as_mut_ptr(), n_bufs)
-            };
+            let bufs =
+                unsafe { std::slice::from_raw_parts_mut(list.mBuffers.as_mut_ptr(), n_bufs) };
             if bufs.is_empty() {
                 return 0;
             }
@@ -261,9 +346,7 @@ impl HalDevice {
             if written == usize::MAX {
                 if in_data.is_null() {
                     for b in bufs.iter_mut() {
-                        unsafe {
-                            std::ptr::write_bytes(b.mData, 0, b.mDataByteSize as usize)
-                        };
+                        unsafe { std::ptr::write_bytes(b.mData, 0, b.mDataByteSize as usize) };
                     }
                     return 0;
                 }
@@ -304,11 +387,14 @@ impl HalDevice {
                 dst.copy_from_slice(&tmp[..dst.len()]);
             } else {
                 for (ch, b) in bufs.iter_mut().enumerate().take(channels) {
-                    let dst = unsafe {
-                        std::slice::from_raw_parts_mut(b.mData as *mut f32, frames)
-                    };
+                    let dst =
+                        unsafe { std::slice::from_raw_parts_mut(b.mData as *mut f32, frames) };
                     for (f, d) in dst.iter_mut().enumerate() {
-                        *d = if f < filled { tmp[f * channels + ch] } else { 0.0 };
+                        *d = if f < filled {
+                            tmp[f * channels + ch]
+                        } else {
+                            0.0
+                        };
                     }
                 }
             }
@@ -316,7 +402,12 @@ impl HalDevice {
         }
         let mut proc_id: AudioDeviceIOProcID = None;
         let st = unsafe {
-            AudioDeviceCreateIOProcID(self.id, Some(trampoline), ctx_ptr as *mut c_void, &mut proc_id)
+            AudioDeviceCreateIOProcID(
+                self.id,
+                Some(trampoline),
+                ctx_ptr as *mut c_void,
+                &mut proc_id,
+            )
         };
         if st != 0 {
             unsafe { drop(Box::from_raw(ctx_ptr)) };
@@ -338,7 +429,11 @@ impl HalDevice {
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        Ok(IoProc { dev: self.id, proc_id, ctx: ctx_ptr })
+        Ok(IoProc {
+            dev: self.id,
+            proc_id,
+            ctx: ctx_ptr,
+        })
     }
 }
 
@@ -357,20 +452,32 @@ impl Hog {
             let free: i32 = -1;
             let _ = set_prop(
                 self.dev,
-                &addr(kAudioDevicePropertyHogMode, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain),
+                &addr(
+                    kAudioDevicePropertyHogMode,
+                    kAudioObjectPropertyScopeGlobal,
+                    kAudioObjectPropertyElementMain,
+                ),
                 &free,
             );
             if let Some(v) = self.saved_vol {
                 let _ = set_prop(
                     self.dev,
-                    &addr(kAudioDevicePropertyVolumeScalar, kAudioObjectPropertyScopeOutput, kAudioObjectPropertyElementMain),
+                    &addr(
+                        kAudioDevicePropertyVolumeScalar,
+                        kAudioObjectPropertyScopeOutput,
+                        kAudioObjectPropertyElementMain,
+                    ),
                     &v,
                 );
             }
             if let Some(m) = self.saved_mute {
                 let _ = set_prop(
                     self.dev,
-                    &addr(kAudioDevicePropertyMute, kAudioObjectPropertyScopeOutput, kAudioObjectPropertyElementMain),
+                    &addr(
+                        kAudioDevicePropertyMute,
+                        kAudioObjectPropertyScopeOutput,
+                        kAudioObjectPropertyElementMain,
+                    ),
                     &m,
                 );
             }
@@ -385,7 +492,7 @@ impl Drop for Hog {
 }
 
 struct IoProcCtx {
-    pull: Mutex<(Box<dyn FnMut(&mut [f32]) -> usize + Send>, Vec<f32>)>,
+    pull: Mutex<(PullCallback, Vec<f32>)>,
     underruns: std::sync::atomic::AtomicU64,
     channels: usize,
     interleaved: bool,

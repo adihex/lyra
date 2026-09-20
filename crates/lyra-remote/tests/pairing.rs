@@ -66,10 +66,12 @@ async fn wrong_code_fails() {
     // A wrong code completes SPAKE2 shape but yields a different psk —
     // the XXpsk3 handshake must fail, and no device gets pinned.
     let res = client.pair(addr, "evil", "000000").await;
-    assert!(res.is_err() || {
-        let mut s = res.unwrap();
-        s.hello().await.is_err()
-    });
+    assert!(
+        res.is_err() || {
+            let mut s = res.unwrap();
+            s.hello().await.is_err()
+        }
+    );
     assert_eq!(host.paired_count(), 0);
 }
 

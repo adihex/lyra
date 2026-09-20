@@ -12,8 +12,8 @@
 
 use crate::lossless;
 use crate::{
-    AddableTorrent, LegalTier, ProviderCaps, ProviderError, ResolvedTorrent,
-    SearchQuery, SearchResult, TorrentProvider,
+    AddableTorrent, LegalTier, ProviderCaps, ProviderError, ResolvedTorrent, SearchQuery,
+    SearchResult, TorrentProvider,
 };
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -68,7 +68,11 @@ impl TorznabProvider {
                 .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .unwrap_or_default(),
-            id: if n == 0 { "torznab".into() } else { format!("torznab-{n}") },
+            id: if n == 0 {
+                "torznab".into()
+            } else {
+                format!("torznab-{n}")
+            },
             name: name.unwrap_or("Torznab").to_string(),
             base,
             apikey: apikey.into(),
@@ -78,7 +82,9 @@ impl TorznabProvider {
     /// Parse the torznab RSS — channel/item level. Public-in-crate for
     /// fixtures and tests.
     pub(crate) fn parse_feed(xml: &str) -> Vec<ParsedItem> {
-        let Ok(doc) = roxmltree::Document::parse(xml) else { return vec![] };
+        let Ok(doc) = roxmltree::Document::parse(xml) else {
+            return vec![];
+        };
         doc.descendants()
             .filter(|n| n.has_tag_name("item"))
             .map(|item| {
@@ -97,9 +103,7 @@ impl TorznabProvider {
                         "title" => p.title = c.text().unwrap_or("").trim().to_string(),
                         "link" => p.link = c.text().map(|s| s.trim().to_string()),
                         "guid" => p.page = c.text().map(|s| s.trim().to_string()),
-                        "size" => {
-                            p.size = c.text().and_then(|s| s.trim().parse().ok())
-                        }
+                        "size" => p.size = c.text().and_then(|s| s.trim().parse().ok()),
                         "enclosure" => {
                             if p.link.is_none() {
                                 p.link = c.attribute("url").map(String::from);
@@ -111,17 +115,13 @@ impl TorznabProvider {
                             }
                             Some("size") => {
                                 if p.size.is_none() {
-                                    p.size =
-                                        c.attribute("value").and_then(|v| v.parse().ok())
+                                    p.size = c.attribute("value").and_then(|v| v.parse().ok())
                                 }
                             }
                             Some("infohash") => {
-                                p.infohash =
-                                    c.attribute("value").map(|v| v.to_lowercase())
+                                p.infohash = c.attribute("value").map(|v| v.to_lowercase())
                             }
-                            Some("magneturl") => {
-                                p.magnet = c.attribute("value").map(String::from)
-                            }
+                            Some("magneturl") => p.magnet = c.attribute("value").map(String::from),
                             Some("files") => {
                                 p.files = c.attribute("value").and_then(|v| v.parse().ok())
                             }
@@ -171,9 +171,7 @@ impl TorznabProvider {
             name: it.title,
             infohash: it.infohash,
             magnet,
-            torrent_url: it
-                .link
-                .filter(|l| l.starts_with("http")),
+            torrent_url: it.link.filter(|l| l.starts_with("http")),
             size_bytes: it.size,
             file_count: it.files,
             seeds: it.seeds,
@@ -206,7 +204,11 @@ impl TorrentProvider for TorznabProvider {
         LegalTier::External
     }
     fn capabilities(&self) -> ProviderCaps {
-        ProviderCaps { seeds_known: true, needs_refresh: false, local_index: false }
+        ProviderCaps {
+            seeds_known: true,
+            needs_refresh: false,
+            local_index: false,
+        }
     }
 
     async fn search(&self, q: &SearchQuery) -> Result<Vec<SearchResult>, ProviderError> {
@@ -236,7 +238,10 @@ impl TorrentProvider for TorznabProvider {
         // zero extra fetches.
         if let Some(m) = r.magnet.clone().or_else(|| {
             r.infohash.as_ref().map(|ih| {
-                format!("magnet:?xt=urn:btih:{ih}&dn={}", urlencoding::encode(&r.name))
+                format!(
+                    "magnet:?xt=urn:btih:{ih}&dn={}",
+                    urlencoding::encode(&r.name)
+                )
             })
         }) {
             return Ok(ResolvedTorrent {
@@ -265,18 +270,18 @@ impl TorrentProvider for TorznabProvider {
                 AddableTorrent::TorrentUrl(loc.to_string())
             }
         } else {
-            let bytes = resp
-                .error_for_status()?
-                .bytes()
-                .await?
-                .to_vec();
+            let bytes = resp.error_for_status()?.bytes().await?.to_vec();
             // Sanity: torrent files are bencoded dicts.
             if !bytes.starts_with(b"d") {
                 return Err(ProviderError::Parse("dl endpoint: not a torrent".into()));
             }
             AddableTorrent::TorrentBytes(bytes)
         };
-        Ok(ResolvedTorrent { result: r.clone(), files: vec![], addable })
+        Ok(ResolvedTorrent {
+            result: r.clone(),
+            files: vec![],
+            addable,
+        })
     }
 }
 
@@ -327,15 +332,26 @@ mod tests {
             a.infohash.as_deref(),
             Some("abc123def4567890abc123def4567890abc12345")
         );
-        assert!(a.magnet.as_deref().unwrap().starts_with("magnet:?xt=urn:btih:ABC123"));
-        assert!(a.link.as_deref().unwrap().starts_with("http://jackett.local"));
+        assert!(a
+            .magnet
+            .as_deref()
+            .unwrap()
+            .starts_with("magnet:?xt=urn:btih:ABC123"));
+        assert!(a
+            .link
+            .as_deref()
+            .unwrap()
+            .starts_with("http://jackett.local"));
     }
 
     #[test]
     fn rows_classify_and_strict_filters() {
         let p = TorznabProvider::new("http://jackett.local:9117/api/v2.0/indexers/x", "k", None);
         let items = TorznabProvider::parse_feed(FEED);
-        let loose = SearchQuery { strict: false, ..SearchQuery::text("aerosmith") };
+        let loose = SearchQuery {
+            strict: false,
+            ..SearchQuery::text("aerosmith")
+        };
         let rows: Vec<_> = items
             .clone()
             .into_iter()

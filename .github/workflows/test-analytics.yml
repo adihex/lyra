@@ -1,0 +1,128 @@
+name: test-analytics
+
+# Test health signals that complement ci.yml (which stays pass/fail):
+# coverage floor, suite-timing visibility, and scheduled flake sweeps.
+# Scoped to lyra-store + lyra-torrent — the crates whose tests carry
+# the isolation, N+1, and e2e signals. Same runner + toolchain setup
+# as ci.yml (mise + rust-cache).
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  schedule:
+    # Weekly flake sweep: Monday 06:00 UTC, 5 consecutive full runs.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  coverage:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v3
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+
+      # Floor, not aspiration. Measured on macOS (cargo llvm-cov
+      # -p lyra-store -p lyra-torrent --summary-only):
+      #   with ffmpeg installed:    64% lines
+      #   without ffmpeg (e2e skips): 55% lines
+      # 50 holds on both kinds of runner with margin for platform
+      # noise, while still failing if a meaningful chunk of the
+      # suite is deleted or starts skipping. Raise it when coverage
+      # grows — never lower it to make a PR green.
+      - name: Coverage (fail below floor)
+        run: cargo llvm-cov -p lyra-store -p lyra-torrent --lcov --output-path lcov.info --fail-under-lines 50
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov
+          path: lcov.info
+          retention-days: 30
+
+  timing:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v3
+      - uses: Swatinem/rust-cache@v2
+
+      # libtest's --report-time is nightly-only (-Z unstable-options);
+      # this repo pins stable, so timing is per-crate wall-clock plus
+      # the full log. Trends come from the retained artifacts, not
+      # from a single run's numbers.
+      - name: Timed test run (per-crate durations)
+        run: |
+          set -o pipefail
+          : > test-log.txt
+          : > timing-summary.txt
+          overall_start=$(date +%s)
+          for crate in lyra-store lyra-torrent; do
+            start=$(date +%s)
+            echo "=== crate: $crate ===" | tee -a test-log.txt
+            cargo test -p "$crate" 2>&1 | tee -a test-log.txt
+            end=$(date +%s)
+            echo "$crate: $((end - start))s" | tee -a timing-summary.txt
+          done
+          overall_end=$(date +%s)
+          echo "total: $((overall_end - overall_start))s" | tee -a timing-summary.txt
+          {
+            echo "## Suite timing (lyra-store + lyra-torrent)"
+            echo '```'
+            cat timing-summary.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload test log + timing summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-timing
+          path: |
+            test-log.txt
+            timing-summary.txt
+          retention-days: 30
+
+  flake-sweep:
+    # Scheduled + manual only: 5 back-to-back runs are too slow for
+    # every PR. Any failure fails the job — there are no retries here
+    # (see docs/FLAKY_TESTS.md: retries mask flakes; quarantine them).
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v3
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Repeat suite 5x (no retries, failures stay visible)
+        run: |
+          : > flake-sweep-log.txt
+          failures=0
+          for i in 1 2 3 4 5; do
+            echo "=== sweep run $i/5 ===" | tee -a flake-sweep-log.txt
+            if cargo test -p lyra-store -p lyra-torrent >> flake-sweep-log.txt 2>&1; then
+              echo "run $i: PASS" | tee -a flake-sweep-log.txt
+            else
+              echo "run $i: FAIL" | tee -a flake-sweep-log.txt
+              failures=$((failures + 1))
+            fi
+          done
+          echo "sweep failures: $failures/5" | tee -a flake-sweep-log.txt
+          {
+            echo "## Flake sweep (5x lyra-store + lyra-torrent)"
+            echo "Failures: $failures/5 (see flake-sweep artifact)"
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit $failures
+
+      - name: Upload sweep log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flake-sweep-log
+          path: flake-sweep-log.txt
+          retention-days: 30

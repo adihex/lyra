@@ -28,3 +28,6 @@ tracing-subscriber.workspace = true
 # Global allocator for the Rust core: mimalloc cuts footprint/fragmentation
 # vs macOS's allocator for this alloc pattern (small blocks, stream buffers).
 mimalloc = "0.1"
+
+[lints]
+workspace = true

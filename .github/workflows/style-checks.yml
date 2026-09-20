@@ -1,0 +1,95 @@
+name: style-checks
+
+# Style & validation signals that deserve their own lane next to ci.yml:
+# complexity budget, oversized-file guard, issue-linked debt markers, and
+# the dependency cooling-off gate. Fast, self-hosted, no external services.
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  # Cyclomatic/cognitive complexity budget. Threshold lives in clippy.toml
+  # (`cognitive-complexity-threshold = 25`); this job enforces it as an error
+  # across the whole workspace.
+  complexity:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v3
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy cognitive complexity
+        run: >-
+          cargo clippy --workspace --all-targets -- -D clippy::cognitive_complexity
+
+  # Oversized tracked files fail the build. Legit binaries (icons, images,
+  # audio, models, fonts) and the lockfile are exempt by path/extension;
+  # everything else over 500 KB — or a text file over 5000 lines — is a
+  # smell that belongs in LFS or split up. Mirrors the pre-commit hook
+  # (`check-added-large-files --maxkb=500`).
+  large-files:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fail on oversized tracked files
+        run: |
+          MAX_BYTES=512000
+          MAX_LINES=5000
+          FAIL=0
+          while IFS= read -r f; do
+            case "$f" in
+              app/Resources/*|*.icns|*.ico|*.png|*.jpg|*.jpeg|*.gif|*.webp|*.mp3|*.wav|*.flac|*.ogg|*.onnx|*.bin|*.ttf|*.otf|*.lock|Cargo.lock)
+                continue ;;
+            esac
+            size=$(wc -c <"$f")
+            if [ "$size" -gt "$MAX_BYTES" ]; then
+              echo "OVERSIZE: $f is ${size} bytes (> ${MAX_BYTES})."
+              FAIL=1
+            fi
+            if [ "$size" -lt "$MAX_BYTES" ] && [ -n "$(file -b "$f" | grep -i text || true)" ]; then
+              lines=$(wc -l <"$f")
+              if [ "$lines" -gt "$MAX_LINES" ]; then
+                echo "OVERSIZE: $f is ${lines} lines (> ${MAX_LINES})."
+                FAIL=1
+              fi
+            fi
+          done < <(git ls-files)
+          if [ "$FAIL" -ne 0 ]; then
+            echo "large-files: FAILED — see OVERSIZE lines above."
+            exit 1
+          fi
+          echo "large-files: passed."
+
+  # Debt markers must cite an issue, e.g. DEBT-marker TODO(#123): drive-by
+  # markers with no owner rot forever, so bare markers fail the build.
+  # Scoped to this lane's crates plus scripts/.github: other owners still
+  # have bare markers elsewhere (lyra-net, lyra-torrent, app/, docs/),
+  # which their lanes will bring into compliance; widen the scope as they do.
+  tech-debt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require issue links on debt markers
+        run: |
+          # Split literals so this file's own pattern does not match the scan.
+          MARK="TO""DO|FIX""ME"
+          LINK="(""TO""DO|FIX""ME"")\(#[0-9]+\)"
+          SCOPE="crates/lyra-map crates/lyra-viz crates/lyra-coach crates/lyra-dsp crates/lyra-formats scripts .github"
+          # shellcheck disable=SC2086
+          found=$(grep -rIn -E "$MARK" $SCOPE || true)
+          bad=$(echo "$found" | grep -v -E "$LINK" | grep -E "$MARK" || true)
+          if [ -n "$bad" ]; then
+            echo "$bad"
+            echo "tech-debt: FAILED — debt markers must link an issue, e.g. TODO(#123)."
+            exit 1
+          fi
+          echo "tech-debt: passed — all debt markers link an issue."
+
+  # Dependency cooling-off gate: pinned versions must be at least N days
+  # old (default 7, via MIN_DEP_AGE_DAYS), per scripts/check-dep-age.sh.
+  dep-age:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify dependency release age
+        run: bash scripts/check-dep-age.sh

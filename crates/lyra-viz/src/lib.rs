@@ -10,14 +10,14 @@ mod beat;
 mod frame;
 mod level;
 mod osc;
-mod spectrum;
 mod spectrogram;
+mod spectrum;
 mod waveform;
 
 pub use beat::BeatDetect;
 pub use frame::VizFrame;
 pub use level::Levels;
 pub use osc::Oscilloscope;
-pub use spectrum::SpectrumAnalyzer;
 pub use spectrogram::Spectrogram;
+pub use spectrum::{SpectrumAnalyzer, SpectrumConfig};
 pub use waveform::WaveformPeaks;

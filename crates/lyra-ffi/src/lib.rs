@@ -43,8 +43,15 @@ pub extern "C" fn lyra_version() -> *const c_char {
 
 /// Probe an audio file: format + stream info + tags as one JSON object.
 /// Caller frees with lyra_string_free. Returns null on null path.
+///
+/// # Safety
+/// `path` may be null (returns null); otherwise it must point to a valid NUL-terminated C string.
+/// Free a non-null return with `lyra_string_free`.
 #[no_mangle]
-pub extern "C" fn lyra_probe(path: *const c_char) -> *mut c_char {
+pub unsafe extern "C" fn lyra_probe(path: *const c_char) -> *mut c_char {
+    if path.is_null() {
+        return std::ptr::null_mut();
+    }
     init_logging();
     let path = match unsafe { CStr::from_ptr(path) }.to_str() {
         Ok(p) if !p.is_empty() => PathBuf::from(p),
@@ -56,13 +63,22 @@ pub extern "C" fn lyra_probe(path: *const c_char) -> *mut c_char {
         "stream": lyra_formats::stream_info(&path).ok(),
         "tags": lyra_formats::read_tags(&path).ok(),
     });
-    CString::new(result.to_string()).unwrap_or_default().into_raw()
+    CString::new(result.to_string())
+        .unwrap_or_default()
+        .into_raw()
 }
 
 /// Scan a folder recursively → JSON array of LibraryTrack. Caller frees.
 /// Synchronous — call from a background thread for big trees.
+///
+/// # Safety
+/// `path` may be null (returns null); otherwise it must point to a valid NUL-terminated C string.
+/// Free a non-null return with `lyra_string_free`.
 #[no_mangle]
-pub extern "C" fn lyra_scan_dir(path: *const c_char) -> *mut c_char {
+pub unsafe extern "C" fn lyra_scan_dir(path: *const c_char) -> *mut c_char {
+    if path.is_null() {
+        return std::ptr::null_mut();
+    }
     init_logging();
     let path = match unsafe { CStr::from_ptr(path) }.to_str() {
         Ok(p) if !p.is_empty() => PathBuf::from(p),
@@ -83,7 +99,7 @@ pub extern "C" fn lyra_scan_dir(path: *const c_char) -> *mut c_char {
 #[no_mangle]
 pub unsafe extern "C" fn lyra_string_free(s: *mut c_char) {
     if !s.is_null() {
-        drop(CString::from_raw(s));
+        drop(unsafe { CString::from_raw(s) });
     }
 }
 
@@ -102,8 +118,7 @@ static ENGINE_LOCK: Mutex<()> = Mutex::new(());
 
 fn install_engine(e: *mut lyra_engine::Engine) -> *mut lyra_engine::Engine {
     let _g = ENGINE_LOCK.lock().unwrap();
-    let old = CURRENT_ENGINE.swap(e as usize, Ordering::SeqCst)
-        as *mut lyra_engine::Engine;
+    let old = CURRENT_ENGINE.swap(e as usize, Ordering::SeqCst) as *mut lyra_engine::Engine;
     if !old.is_null() {
         unsafe {
             (&*old).shutdown();
@@ -168,8 +183,15 @@ pub extern "C" fn lyra_engine_output_mode() -> c_int {
 
 /// Play a local file (block-cached through lyra-fs). Returns 0 if the
 /// command was accepted.
+///
+/// # Safety
+/// `e` must be a live engine handle from `lyra_engine_new[_mode]` (null is tolerated, returns 2).
+/// `path` must be non-null and point to a valid NUL-terminated C string.
 #[no_mangle]
-pub unsafe extern "C" fn lyra_engine_play_file(e: *mut lyra_engine::Engine, path: *const c_char) -> c_int {
+pub unsafe extern "C" fn lyra_engine_play_file(
+    e: *mut lyra_engine::Engine,
+    path: *const c_char,
+) -> c_int {
     if e.is_null() {
         return 2;
     }
@@ -188,40 +210,97 @@ pub unsafe extern "C" fn lyra_engine_play_file(e: *mut lyra_engine::Engine, path
     }
 }
 
+/// Pause playback. Null-safe no-op.
+///
+/// # Safety
+/// `e` must be a live engine handle or null (null is a no-op).
 #[no_mangle]
 pub unsafe extern "C" fn lyra_engine_pause(e: *mut lyra_engine::Engine) {
-    if !e.is_null() { unsafe { &*e }.pause() }
+    if !e.is_null() {
+        unsafe { &*e }.pause()
+    }
 }
+/// Resume playback. Null-safe no-op.
+///
+/// # Safety
+/// `e` must be a live engine handle or null (null is a no-op).
 #[no_mangle]
 pub unsafe extern "C" fn lyra_engine_resume(e: *mut lyra_engine::Engine) {
-    if !e.is_null() { unsafe { &*e }.resume() }
+    if !e.is_null() {
+        unsafe { &*e }.resume()
+    }
 }
+/// Stop playback and release the source. Null-safe no-op.
+///
+/// # Safety
+/// `e` must be a live engine handle or null (null is a no-op).
 #[no_mangle]
 pub unsafe extern "C" fn lyra_engine_stop(e: *mut lyra_engine::Engine) {
-    if !e.is_null() { unsafe { &*e }.stop() }
+    if !e.is_null() {
+        unsafe { &*e }.stop()
+    }
 }
+/// Seek to `secs` seconds. Null-safe no-op.
+///
+/// # Safety
+/// `e` must be a live engine handle or null (null is a no-op).
 #[no_mangle]
 pub unsafe extern "C" fn lyra_engine_seek(e: *mut lyra_engine::Engine, secs: f64) {
-    if !e.is_null() { unsafe { &*e }.seek(secs) }
+    if !e.is_null() {
+        unsafe { &*e }.seek(secs)
+    }
 }
+/// Set output volume (0.0–1.0, square-law taper). Null-safe no-op.
+///
+/// # Safety
+/// `e` must be a live engine handle or null (null is a no-op).
 #[no_mangle]
 pub unsafe extern "C" fn lyra_engine_set_volume(e: *mut lyra_engine::Engine, v: f32) {
-    if !e.is_null() { unsafe { &*e }.set_volume(v) }
+    if !e.is_null() {
+        unsafe { &*e }.set_volume(v)
+    }
 }
+/// Current playback position in seconds; 0.0 when null.
+///
+/// # Safety
+/// `e` must be a live engine handle or null (null yields 0.0).
 #[no_mangle]
 pub unsafe extern "C" fn lyra_engine_position(e: *const lyra_engine::Engine) -> f64 {
-    if e.is_null() { 0.0 } else { unsafe { &*e }.position_secs() as f64 }
+    if e.is_null() {
+        0.0
+    } else {
+        unsafe { &*e }.position_secs() as f64
+    }
 }
+/// Nonzero while audio is flowing; 0 when null.
+///
+/// # Safety
+/// `e` must be a live engine handle or null (null yields 0).
 #[no_mangle]
 pub unsafe extern "C" fn lyra_engine_is_playing(e: *const lyra_engine::Engine) -> c_int {
-    if e.is_null() { 0 } else { unsafe { &*e }.is_playing() as c_int }
+    if e.is_null() {
+        0
+    } else {
+        unsafe { &*e }.is_playing() as c_int
+    }
 }
+/// Nonzero when paused mid-track with position held; 0 when null.
+///
+/// # Safety
+/// `e` must be a live engine handle or null (null yields 0).
 #[no_mangle]
 pub unsafe extern "C" fn lyra_engine_can_resume(e: *const lyra_engine::Engine) -> c_int {
-    if e.is_null() { 0 } else { unsafe { &*e }.can_resume() as c_int }
+    if e.is_null() {
+        0
+    } else {
+        unsafe { &*e }.can_resume() as c_int
+    }
 }
 
 /// Set EQ band params. `peaking` 1 = peaking filter, 0 = low shelf.
+///
+/// # Safety
+/// `e` must be a live engine handle or null (null is a no-op).
 #[no_mangle]
 pub unsafe extern "C" fn lyra_engine_set_band(
     e: *mut lyra_engine::Engine,
@@ -247,6 +326,10 @@ pub unsafe extern "C" fn lyra_engine_set_band(
 
 /// Viz snapshot as JSON: {"bands":[…48], "peak":[l,r] dB, "clip":bool}.
 /// Caller frees with lyra_string_free.
+///
+/// # Safety
+/// `e` must be a live engine handle or null (null returns null).
+/// Free a non-null return with `lyra_string_free`.
 #[no_mangle]
 pub unsafe extern "C" fn lyra_engine_viz(e: *const lyra_engine::Engine) -> *mut c_char {
     if e.is_null() {
@@ -254,11 +337,17 @@ pub unsafe extern "C" fn lyra_engine_viz(e: *const lyra_engine::Engine) -> *mut 
     }
     let (bands, peak, clip) = unsafe { &*e }.viz_snapshot();
     let json = serde_json::json!({"bands": bands, "peak": peak, "clip": clip});
-    CString::new(json.to_string()).unwrap_or_default().into_raw()
+    CString::new(json.to_string())
+        .unwrap_or_default()
+        .into_raw()
 }
 
 /// Fill `out` with normalized spectrum bands (0..1). Returns bands written.
 /// This is the 60Hz path — no JSON, no alloc.
+///
+/// # Safety
+/// `e` must be a live engine handle or null (null returns 0 without touching `out`).
+/// `out` must be null or point to `n` writable `f32` slots.
 #[no_mangle]
 pub unsafe extern "C" fn lyra_engine_viz_bands(
     e: *const lyra_engine::Engine,
@@ -268,12 +357,18 @@ pub unsafe extern "C" fn lyra_engine_viz_bands(
     if e.is_null() || out.is_null() || n == 0 {
         return 0;
     }
-    unsafe { &*e }.viz_bands(std::slice::from_raw_parts_mut(out, n))
+    let e = unsafe { &*e };
+    let out = unsafe { std::slice::from_raw_parts_mut(out, n) };
+    e.viz_bands(out)
 }
 
 /// Copy the latest viz frame into `out` — the 60 Hz path: short lock,
 /// memcpy only, no math. Returns seq; Swift skips redraw when seq is
 /// unchanged. Null-safe: returns 0 without touching `out`.
+///
+/// # Safety
+/// `e` must be a live engine handle or null (null returns 0 without touching `out`).
+/// `out` must be null or point to a writable `VizFrame`.
 #[no_mangle]
 pub unsafe extern "C" fn lyra_engine_viz_frame(
     e: *const lyra_engine::Engine,
@@ -282,11 +377,17 @@ pub unsafe extern "C" fn lyra_engine_viz_frame(
     if e.is_null() || out.is_null() {
         return 0;
     }
-    unsafe { &*e }.viz_frame(&mut *out)
+    let e = unsafe { &*e };
+    let out = unsafe { &mut *out };
+    e.viz_frame(out)
 }
 
 /// EQ response curve as JSON: {"freqs":[…], "db":[…]} — the drawn curve
 /// uses the same biquad coefficients as the audio path. Caller frees.
+///
+/// # Safety
+/// `e` must be a live engine handle or null (null returns null).
+/// Free a non-null return with `lyra_string_free`.
 #[no_mangle]
 pub unsafe extern "C" fn lyra_engine_eq_response(e: *const lyra_engine::Engine) -> *mut c_char {
     if e.is_null() {
@@ -299,16 +400,24 @@ pub unsafe extern "C" fn lyra_engine_eq_response(e: *const lyra_engine::Engine) 
         .collect();
     let db = unsafe { &*e }.eq_response(&freqs);
     let json = serde_json::json!({"freqs": freqs, "db": db});
-    CString::new(json.to_string()).unwrap_or_default().into_raw()
+    CString::new(json.to_string())
+        .unwrap_or_default()
+        .into_raw()
 }
 
 /// ── Library DB (lyra-store) ─────────────────────────────────────────────
 /// Opaque handle. Open once at app start; the library persists across
 /// launches — rescan only re-probes mtime-changed files.
-
 /// Open/create the library DB at `path`. Null on failure.
+///
+/// # Safety
+/// `path` may be null (returns null); otherwise it must point to a valid NUL-terminated C string.
+/// A living handle must be freed exactly once with `lyra_lib_free` and never used afterwards.
 #[no_mangle]
-pub extern "C" fn lyra_lib_open(path: *const c_char) -> *mut lyra_store::Library {
+pub unsafe extern "C" fn lyra_lib_open(path: *const c_char) -> *mut lyra_store::Library {
+    if path.is_null() {
+        return std::ptr::null_mut();
+    }
     init_logging();
     let path = match unsafe { CStr::from_ptr(path) }.to_str() {
         Ok(p) if !p.is_empty() => PathBuf::from(p),
@@ -327,6 +436,11 @@ pub extern "C" fn lyra_lib_open(path: *const c_char) -> *mut lyra_store::Library
 }
 
 /// Incremental sync of a folder into the DB → SyncStats JSON. Caller frees.
+///
+/// # Safety
+/// `l` must be a live library handle from `lyra_lib_open` or null (null returns null).
+/// `dir` must be non-null and point to a valid NUL-terminated C string.
+/// Free a non-null return with `lyra_string_free`.
 #[no_mangle]
 pub unsafe extern "C" fn lyra_lib_sync_dir(
     l: *mut lyra_store::Library,
@@ -352,6 +466,11 @@ pub unsafe extern "C" fn lyra_lib_sync_dir(
 
 /// Sync an explicit list of files (JSON array of paths) → SyncStats JSON.
 /// Used by the picker's file selection — unlike sync_dir this never prunes.
+///
+/// # Safety
+/// `l` must be a live library handle from `lyra_lib_open` or null (null returns null).
+/// `json` must be non-null and point to a valid NUL-terminated C string.
+/// Free a non-null return with `lyra_string_free`.
 #[no_mangle]
 pub unsafe extern "C" fn lyra_lib_sync_files(
     l: *mut lyra_store::Library,
@@ -376,6 +495,10 @@ pub unsafe extern "C" fn lyra_lib_sync_files(
 }
 
 /// All library rows as JSON. Caller frees.
+///
+/// # Safety
+/// `l` must be a live library handle from `lyra_lib_open` or null (null returns null).
+/// Free a non-null return with `lyra_string_free`.
 #[no_mangle]
 pub unsafe extern "C" fn lyra_lib_tracks(l: *mut lyra_store::Library) -> *mut c_char {
     if l.is_null() {
@@ -390,6 +513,11 @@ pub unsafe extern "C" fn lyra_lib_tracks(l: *mut lyra_store::Library) -> *mut c_
 }
 
 /// FTS search → JSON rows. Caller frees.
+///
+/// # Safety
+/// `l` must be a live library handle from `lyra_lib_open` or null (null returns null).
+/// `q` must be non-null and point to a valid NUL-terminated C string.
+/// Free a non-null return with `lyra_string_free`.
 #[no_mangle]
 pub unsafe extern "C" fn lyra_lib_search(
     l: *mut lyra_store::Library,
@@ -407,15 +535,22 @@ pub unsafe extern "C" fn lyra_lib_search(
     }
 }
 
+/// Close the library connection and free the handle.
+///
+/// # Safety
+/// `l` must be a pointer returned by `lyra_lib_open` (or null), freed at most once and never used afterwards.
 #[no_mangle]
 pub unsafe extern "C" fn lyra_lib_free(l: *mut lyra_store::Library) {
     if !l.is_null() {
-        drop(Box::from_raw(l));
+        drop(unsafe { Box::from_raw(l) });
     }
 }
 
 /// Shutdown + free the live engine. Safe on null; `e` kept for ABI
 /// symmetry with the other lyra_engine_* calls.
+///
+/// # Safety
+/// `e` should be an engine handle (null tolerated); the live engine must not be freed twice — double free is undefined behavior.
 #[no_mangle]
 pub unsafe extern "C" fn lyra_engine_free(e: *mut lyra_engine::Engine) {
     let _g = ENGINE_LOCK.lock().unwrap();
@@ -423,16 +558,15 @@ pub unsafe extern "C" fn lyra_engine_free(e: *mut lyra_engine::Engine) {
     let p = if cur.is_null() { e } else { cur };
     if !p.is_null() {
         unsafe { &*p }.shutdown();
-        drop(Box::from_raw(p));
+        drop(unsafe { Box::from_raw(p) });
     }
 }
 
 // ── Remote control ───────────────────────────────────────────────────────
 // One global Host; commands route into the engine via EngineSink.
 
-static REMOTE: std::sync::OnceLock<
-    Result<std::sync::Arc<lyra_remote::Host>, String>,
-> = std::sync::OnceLock::new();
+static REMOTE: std::sync::OnceLock<Result<std::sync::Arc<lyra_remote::Host>, String>> =
+    std::sync::OnceLock::new();
 
 /// Resolves through CURRENT_ENGINE under ENGINE_LOCK so remote commands
 /// always hit the live engine — output-mode swaps can't strand it.
@@ -449,7 +583,11 @@ impl lyra_remote::CommandSink for EngineSink {
         let e = unsafe { &*ptr };
         match cmd {
             C::Toggle => {
-                if e.is_playing() { e.pause() } else { e.resume() }
+                if e.is_playing() {
+                    e.pause()
+                } else {
+                    e.resume()
+                }
             }
             C::StopAfterCurrent => e.stop(),
             C::Seek { position_secs } => e.seek(*position_secs),
@@ -474,6 +612,10 @@ fn remote() -> Result<&'static std::sync::Arc<lyra_remote::Host>, c_int> {
 
 /// Create the remote host bound to `e`. `key_path` persists the pinned
 /// X25519 identity. Call once at app start. 0 ok, 1 init failed.
+///
+/// # Safety
+/// `e` must be a live engine handle or null (null returns 2).
+/// `key_path` must be non-null and point to a valid NUL-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn lyra_remote_init(
     e: *mut lyra_engine::Engine,
@@ -558,6 +700,9 @@ pub extern "C" fn lyra_remote_devices() -> *mut c_char {
 
 /// Remove a paired device by id (hash hex from lyra_remote_devices).
 /// 0 revoked, 1 unknown id, 2 remote not initialized.
+///
+/// # Safety
+/// `id` must be non-null and point to a valid NUL-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn lyra_remote_revoke(id: *const c_char) -> c_int {
     let id = match unsafe { CStr::from_ptr(id) }.to_str() {
@@ -580,9 +725,8 @@ pub unsafe extern "C" fn lyra_remote_revoke(id: *const c_char) -> c_int {
 // One global rqbit session per app process — download_dir must live inside
 // the app container (Swift passes its Application Support path).
 
-static TORRENT: std::sync::OnceLock<
-    Result<std::sync::Arc<lyra_torrent::TorrentEngine>, String>,
-> = std::sync::OnceLock::new();
+static TORRENT: std::sync::OnceLock<Result<std::sync::Arc<lyra_torrent::TorrentEngine>, String>> =
+    std::sync::OnceLock::new();
 
 pub(crate) fn torrent() -> Result<&'static std::sync::Arc<lyra_torrent::TorrentEngine>, c_int> {
     match TORRENT.get() {
@@ -593,8 +737,14 @@ pub(crate) fn torrent() -> Result<&'static std::sync::Arc<lyra_torrent::TorrentE
 }
 
 /// Initialize the torrent session. Idempotent — first call wins. 0 ok.
+///
+/// # Safety
+/// `download_dir` may be null (returns 2); otherwise it must point to a valid NUL-terminated C string.
 #[no_mangle]
-pub extern "C" fn lyra_torrent_init(download_dir: *const c_char) -> c_int {
+pub unsafe extern "C" fn lyra_torrent_init(download_dir: *const c_char) -> c_int {
+    if download_dir.is_null() {
+        return 2;
+    }
     init_logging();
     let dir = match unsafe { CStr::from_ptr(download_dir) }.to_str() {
         Ok(p) => PathBuf::from(p),
@@ -616,8 +766,14 @@ pub extern "C" fn lyra_torrent_init(download_dir: *const c_char) -> c_int {
 /// Add a magnet URI or local .torrent path → torrent id (≥0), −1 bad spec,
 /// −2 add failure, −3 engine not initialized. Blocks on metadata resolve
 /// for magnets — call off the main thread.
+///
+/// # Safety
+/// `spec` may be null (returns -1); otherwise it must point to a valid NUL-terminated C string.
 #[no_mangle]
-pub extern "C" fn lyra_torrent_add(spec: *const c_char) -> c_int {
+pub unsafe extern "C" fn lyra_torrent_add(spec: *const c_char) -> c_int {
+    if spec.is_null() {
+        return -1;
+    }
     let spec = match unsafe { CStr::from_ptr(spec) }.to_str() {
         Ok(s) if !s.is_empty() => s,
         _ => return -1,
@@ -742,6 +898,9 @@ pub extern "C" fn lyra_torrent_stats(id: c_int) -> *mut c_char {
 /// Stream-play file `file_idx` of torrent `id`: pieces fetch on demand in
 /// read order, CachingSource absorbs seek latency for the decoder.
 /// Returns 0 if the engine accepted the source.
+///
+/// # Safety
+/// `e` must be a live engine handle or null (null returns 2).
 #[no_mangle]
 pub unsafe extern "C" fn lyra_engine_play_torrent(
     e: *mut lyra_engine::Engine,
@@ -842,10 +1001,11 @@ mod tests {
     #[test]
     fn viz_frame_null_safe() {
         let mut f = lyra_engine::VizFrame::default();
-        assert_eq!(unsafe { lyra_engine_viz_frame(std::ptr::null(), &mut f) }, 0);
-        let seq = unsafe {
-            lyra_engine_viz_frame(std::ptr::null_mut(), std::ptr::null_mut())
-        };
+        assert_eq!(
+            unsafe { lyra_engine_viz_frame(std::ptr::null(), &mut f) },
+            0
+        );
+        let seq = unsafe { lyra_engine_viz_frame(std::ptr::null_mut(), std::ptr::null_mut()) };
         assert_eq!(seq, 0);
     }
 
@@ -856,7 +1016,7 @@ mod tests {
     fn search_live_archive_org() {
         let dir = std::env::temp_dir().join(format!("lyra-search-{}", std::process::id()));
         let dc = CString::new(dir.to_str().unwrap()).unwrap();
-        let s = lyra_search_new(dc.as_ptr());
+        let s = unsafe { lyra_search_new(dc.as_ptr()) };
         assert!(!s.is_null());
 
         // Object form — what the app sends (strict lossless default).
@@ -869,7 +1029,10 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert!(v.get("results").is_some(), "no results key: {body}");
         assert!(
-            v["results"].as_array().map(|r| !r.is_empty()).unwrap_or(false),
+            v["results"]
+                .as_array()
+                .map(|r| !r.is_empty())
+                .unwrap_or(false),
             "empty results: {body}"
         );
 
@@ -891,12 +1054,11 @@ mod tests {
     #[test]
     #[ignore]
     fn search_live_torznab() {
-        let url = std::env::var("LYRA_TORZNAB_URL")
-            .expect("LYRA_TORZNAB_URL not set");
+        let url = std::env::var("LYRA_TORZNAB_URL").expect("LYRA_TORZNAB_URL not set");
         let key = std::env::var("LYRA_TORZNAB_KEY").unwrap_or_default();
         let dir = std::env::temp_dir().join(format!("lyra-search-{}", std::process::id()));
         let dc = CString::new(dir.to_str().unwrap()).unwrap();
-        let s = lyra_search_new(dc.as_ptr());
+        let s = unsafe { lyra_search_new(dc.as_ptr()) };
         assert!(!s.is_null());
 
         let ep = serde_json::json!([{"url": url, "apikey": key, "name": "jackett"}]);
@@ -912,9 +1074,9 @@ mod tests {
         let rows = v["results"].as_array().cloned().unwrap_or_default();
         println!("results: {} errors: {}", rows.len(), v["provider_errors"]);
         assert!(!rows.is_empty(), "no rows: {body}");
-        let torznab = rows.iter().find(|r| {
-            r["provider"].as_str().unwrap_or("").starts_with("torznab")
-        });
+        let torznab = rows
+            .iter()
+            .find(|r| r["provider"].as_str().unwrap_or("").starts_with("torznab"));
         let row = torznab.unwrap_or(&rows[0]).clone();
         println!("row: {}", serde_json::to_string_pretty(&row).unwrap());
 
@@ -930,7 +1092,6 @@ mod tests {
         unsafe { lyra_search_free(s) };
         let _ = std::fs::remove_dir_all(&dir);
     }
-
 }
 
 // ── Torrent search (lyra-search) ──────────────────────────────────────
@@ -945,8 +1106,15 @@ pub struct LyraSearch {
 
 /// `data_dir` backs provider caches (AT database.xml). Created if
 /// missing. Null on failure.
+///
+/// # Safety
+/// `data_dir` may be null (returns null); otherwise it must point to a valid NUL-terminated C string.
+/// A living handle must be freed exactly once with `lyra_search_free` and never used afterwards.
 #[no_mangle]
-pub extern "C" fn lyra_search_new(data_dir: *const c_char) -> *mut LyraSearch {
+pub unsafe extern "C" fn lyra_search_new(data_dir: *const c_char) -> *mut LyraSearch {
+    if data_dir.is_null() {
+        return std::ptr::null_mut();
+    }
     init_logging();
     let dir = match unsafe { CStr::from_ptr(data_dir) }.to_str() {
         Ok(p) if !p.is_empty() => PathBuf::from(p),
@@ -979,6 +1147,10 @@ pub extern "C" fn lyra_search_new(data_dir: *const c_char) -> *mut LyraSearch {
 /// [{url,apikey,name?}] — user-managed Torznab endpoints (Jackett,
 /// Prowlarr). One call applies the whole list, so deletions propagate.
 /// Returns the registered count, −1 bad json/null.
+///
+/// # Safety
+/// `s` must be a live search handle or null (null returns -1).
+/// `endpoints_json` must be null or a valid NUL-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn lyra_search_sync_torznab(
     s: *mut LyraSearch,
@@ -1017,10 +1189,14 @@ pub unsafe extern "C" fn lyra_search_sync_torznab(
     n
 }
 
+/// Shut down the search runtime and free the handle.
+///
+/// # Safety
+/// `s` must be a pointer returned by `lyra_search_new` (or null), freed at most once and never used afterwards.
 #[no_mangle]
 pub unsafe extern "C" fn lyra_search_free(s: *mut LyraSearch) {
     if !s.is_null() {
-        drop(Box::from_raw(s));
+        drop(unsafe { Box::from_raw(s) });
     }
 }
 
@@ -1028,12 +1204,19 @@ pub unsafe extern "C" fn lyra_search_free(s: *mut LyraSearch) {
 /// or a bare JSON string → text. Returns SearchResponse JSON
 /// {results:[…], provider_errors:[…]} — free with lyra_string_free.
 /// Blocks; call off the main thread.
+///
+/// # Safety
+/// `s` must be a live search handle or null (null returns null).
+/// `query_json` must be null or a valid NUL-terminated C string.
+/// Free a non-null return with `lyra_string_free`.
 #[no_mangle]
 pub unsafe extern "C" fn lyra_search(s: *mut LyraSearch, query_json: *const c_char) -> *mut c_char {
     if s.is_null() {
         return std::ptr::null_mut();
     }
-    let raw = unsafe { CStr::from_ptr(query_json) }.to_str().unwrap_or_default();
+    let raw = unsafe { CStr::from_ptr(query_json) }
+        .to_str()
+        .unwrap_or_default();
     let Some(q) = lyra_search::SearchQuery::from_json(raw) else {
         return CString::new(r#"{"error":"bad query json"}"#)
             .unwrap_or_default()
@@ -1049,6 +1232,11 @@ pub unsafe extern "C" fn lyra_search(s: *mut LyraSearch, query_json: *const c_ch
 /// `result_json`: a SearchResult object from a prior lyra_search call.
 /// Returns ResolvedTorrent JSON {result, files, addable:{kind:magnet|
 /// torrent_url|torrent_b64, …}} or {"error":…}. Blocks; call off-main.
+///
+/// # Safety
+/// `s` must be a live search handle or null (null returns null).
+/// `result_json` must be null or a valid NUL-terminated C string.
+/// Free a non-null return with `lyra_string_free`.
 #[no_mangle]
 pub unsafe extern "C" fn lyra_search_resolve(
     s: *mut LyraSearch,
@@ -1057,7 +1245,9 @@ pub unsafe extern "C" fn lyra_search_resolve(
     if s.is_null() {
         return std::ptr::null_mut();
     }
-    let raw = unsafe { CStr::from_ptr(result_json) }.to_str().unwrap_or_default();
+    let raw = unsafe { CStr::from_ptr(result_json) }
+        .to_str()
+        .unwrap_or_default();
     let r: lyra_search::SearchResult = match serde_json::from_str(raw) {
         Ok(r) => r,
         Err(_) => {
@@ -1087,7 +1277,7 @@ mod live_new_providers {
     fn search_live_new_indexes() {
         let dir = std::env::temp_dir().join(format!("lyra-search-{}", std::process::id()));
         let dc = CString::new(dir.to_str().unwrap()).unwrap();
-        let s = lyra_search_new(dc.as_ptr());
+        let s = unsafe { lyra_search_new(dc.as_ptr()) };
         assert!(!s.is_null());
         let q = CString::new(r#"{"text":"aerosmith dream on","strict":false}"#).unwrap();
         let raw = unsafe { lyra_search(s, q.as_ptr()) };
@@ -1097,11 +1287,21 @@ mod live_new_providers {
         let rows = v["results"].as_array().cloned().unwrap_or_default();
         let mut by: std::collections::BTreeMap<String, usize> = Default::default();
         for r in &rows {
-            *by.entry(r["provider"].as_str().unwrap_or("?").to_string()).or_default() += 1;
+            *by.entry(r["provider"].as_str().unwrap_or("?").to_string())
+                .or_default() += 1;
         }
         println!("providers: {:?}", by);
         for e in v["provider_errors"].as_array().cloned().unwrap_or_default() {
-            println!("err: {} -> {}", e["provider"], e["error"].as_str().unwrap_or("").chars().take(90).collect::<String>());
+            println!(
+                "err: {} -> {}",
+                e["provider"],
+                e["error"]
+                    .as_str()
+                    .unwrap_or("")
+                    .chars()
+                    .take(90)
+                    .collect::<String>()
+            );
         }
         unsafe { lyra_search_free(s) };
         let _ = std::fs::remove_dir_all(&dir);

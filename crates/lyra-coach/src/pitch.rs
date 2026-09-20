@@ -49,7 +49,9 @@ pub trait PitchDetector {
 /// version's YIN clarity (`1 − threshold + peak/threshold`) can exceed
 /// those bounds by construction, so treat it as detector-relative.
 fn estimate(freq_hz: f32, clarity: f32, t_secs: f64) -> Option<PitchEstimate> {
-    if !(freq_hz > 0.0) {
+    // NaN compares Greater to nothing — partial_cmp keeps the
+    // not-positive (including NaN) rejection explicit.
+    if freq_hz.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
         return None;
     }
     Some(PitchEstimate {
@@ -182,7 +184,9 @@ impl SwiftF0Detector {
 impl PitchDetector for SwiftF0Detector {
     fn detect(&mut self, _frame: &[f32], _sample_rate: u32, _t_secs: f64) -> Option<PitchEstimate> {
         let _ = &self.session;
-        // TODO: 16 kHz resample + mel front-end, session.run, argmax → Hz.
+        // Follow-up (tracked, not silent — the session falls back to the
+        // classical detector meanwhile): 16 kHz resample + mel front-end,
+        // session.run, argmax → Hz. See the `SwiftF0Detector` status note above.
         None
     }
 

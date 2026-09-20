@@ -17,3 +17,6 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["time"] }
 tracing.workspace = true
 urlencoding = "2"
+
+[lints]
+workspace = true

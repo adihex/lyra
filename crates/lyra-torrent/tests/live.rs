@@ -15,8 +15,8 @@
 use lyra_fs::{ByteSource, SourceMediaSource};
 use lyra_torrent::{AddOpts, EngineConfig, TorrentEngine};
 use std::net::{Ipv4Addr, SocketAddr};
-use std::sync::Arc;
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 fn wait_finished(engine: &TorrentEngine, id: usize, secs: u64) {
@@ -64,9 +64,15 @@ fn seed_leech_body() {
     // A real FLAC: 3s stereo 44.1kHz tone.
     let ok = std::process::Command::new("ffmpeg")
         .args([
-            "-v", "error", "-f", "lavfi", "-i",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
             "sine=frequency=997:duration=3:sample_rate=44100",
-            "-ac", "2", "-y",
+            "-ac",
+            "2",
+            "-y",
         ])
         .arg(&flac)
         .status()
@@ -76,7 +82,10 @@ fn seed_leech_body() {
     // Build a single-file torrent for the FLAC.
     let seeder = TorrentEngine::new_with_config(
         tmp.join("seeder-session"),
-        EngineConfig { disable_dht: true, listen_port_range: Some(16100..16102) },
+        EngineConfig {
+            disable_dht: true,
+            listen_port_range: Some(16100..16102),
+        },
     )
     .unwrap();
     let torrent_bytes = seeder.create_torrent_bytes(&flac).unwrap();
@@ -106,7 +115,10 @@ fn seed_leech_body() {
     let leecher = Arc::new(
         TorrentEngine::new_with_config(
             tmp.join("leech"),
-            EngineConfig { disable_dht: true, ..Default::default() },
+            EngineConfig {
+                disable_dht: true,
+                ..Default::default()
+            },
         )
         .unwrap(),
     );
@@ -114,10 +126,7 @@ fn seed_leech_body() {
         .add_opts(
             &magnet,
             AddOpts {
-                initial_peers: Some(vec![SocketAddr::new(
-                    Ipv4Addr::LOCALHOST.into(),
-                    port,
-                )]),
+                initial_peers: Some(vec![SocketAddr::new(Ipv4Addr::LOCALHOST.into(), port)]),
                 disable_trackers: true,
                 ..Default::default()
             },
@@ -134,25 +143,30 @@ fn seed_leech_body() {
             _ => std::thread::sleep(Duration::from_millis(250)),
         }
     };
-    let f = files.iter().find(|f| f.path.ends_with(".flac")).unwrap().clone();
+    let f = files
+        .iter()
+        .find(|f| f.path.ends_with(".flac"))
+        .unwrap()
+        .clone();
     eprintln!("leecher sees: {} ({} bytes)", f.path, f.len);
 
     // Stream-while-downloading: head read pulls the first pieces.
     let src: Arc<dyn ByteSource> = leecher.open_file(id, f.index).unwrap();
     let mut head = [0u8; 64];
     let n = src.read_at(0, &mut head).unwrap();
-    assert!(n >= 4 && &head[..4] == b"fLaC", "bad head magic: {:?}", &head[..4]);
+    assert!(
+        n >= 4 && &head[..4] == b"fLaC",
+        "bad head magic: {:?}",
+        &head[..4]
+    );
     eprintln!("head read ok — fLaC magic streamed over loopback swarm");
 
     // Header probe — the path lyra_torrent_probe uses for UI durations.
     let probe_src: Arc<dyn ByteSource> = leecher.open_file(id, f.index).unwrap();
     let probe_media = SourceMediaSource::new(lyra_fs::CachingSource::wrap(probe_src));
-    let info = lyra_formats::stream_info_media(
-        probe_media,
-        lyra_formats::format_from_ext("flac"),
-        "flac",
-    )
-    .unwrap();
+    let info =
+        lyra_formats::stream_info_media(probe_media, lyra_formats::format_from_ext("flac"), "flac")
+            .unwrap();
     assert!(
         info.duration_secs.unwrap_or(0.0) > 0.0,
         "probe over torrent stream returned no duration"
@@ -196,8 +210,7 @@ fn local_seed_leech_audible() {
 
     // Re-leech is unnecessary — the file completed during the body run.
     // Play the completed download through the real device.
-    let completed = std::env::temp_dir()
-        .join("lyra-torrent-e2e/leech/e2e-tone.flac");
+    let completed = std::env::temp_dir().join("lyra-torrent-e2e/leech/e2e-tone.flac");
     assert!(completed.exists(), "leeched flac missing: {completed:?}");
 
     let engine = lyra_engine::Engine::new().unwrap();

@@ -1,0 +1,31 @@
+name: ci
+
+# Fast PR feedback: format → clippy (deny warnings) → tests.
+# Device-dependent engine/HAL tests degrade gracefully (skip when no
+# output device), so the suite stays green on headless runners.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  lint-test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust + cmake + ninja from mise.toml. CARGO=cargo skips the mbx
+      # shim so rust-cache can cache target/ as a normal directory.
+      - uses: jdx/mise-action@v3
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace

@@ -43,7 +43,7 @@ fn chugs_on_the_grid_judge_perfect() {
         let bt = 1.0 + beat as f64 * 0.6;
         while t < bt {
             let n = ((bt - t) * SR as f64) as usize;
-            let n = n.min(HOP).max(1);
+            let n = n.clamp(1, HOP);
             let q = vec![0.0f32; n];
             for _ in s.push_samples(&q, t) {}
             t += n as f64 / SR as f64;
@@ -109,7 +109,7 @@ fn calibration_measures_a_constant_delay() {
         let bt = k as f64 * 0.6 + 0.050;
         while t < bt {
             let n = ((bt - t) * SR as f64) as usize;
-            let n = n.min(HOP).max(1);
+            let n = n.clamp(1, HOP);
             let q = vec![0.0f32; n];
             for _ in s.push_samples(&q, t) {}
             t += n as f64 / SR as f64;

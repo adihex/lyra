@@ -108,7 +108,7 @@ fn score_fretboard(midis: &[f32], strings: &[i8; 6], capo: u8) -> f32 {
         let mut best: Option<i32> = None;
         for s in strings {
             let fret = target - (*s as i32 + capo as i32);
-            if (0..=MAX_FRET).contains(&fret) && best.map_or(true, |b| fret < b) {
+            if (0..=MAX_FRET).contains(&fret) && best.is_none_or(|b| fret < b) {
                 best = Some(fret);
             }
         }

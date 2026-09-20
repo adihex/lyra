@@ -46,8 +46,10 @@ impl BeatGrid {
         }
     }
 
-    /// Number of beats in a table grid (fixed-tempo grids are unbounded).
-    pub fn len(&self) -> Option<usize> {
+    /// Number of beats in a table grid (fixed-tempo grids are unbounded,
+    /// hence `None`). Named `beat_count` rather than `len` because it is
+    /// not a plain collection length.
+    pub fn beat_count(&self) -> Option<usize> {
         match self {
             BeatGrid::FixedTempo { .. } => None,
             BeatGrid::BeatTable { beats } => Some(beats.len()),

@@ -1,0 +1,141 @@
+name: build-checks
+
+# Heavier supply-chain / footprint gates that run in parallel with `ci`
+# so the fast fmt → clippy → test path stays fast. Each job is
+# independently informative (sizes, findings, and drift tables are
+# printed to the step summary); none of them gate-keep by theater:
+# budgets below were grounded on real measurements — see comments.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  version-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: jdx/mise-action@v3
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check version drift
+        run: bash scripts/check-version-drift.sh
+
+  unused-deps:
+    # cargo-udeps needs a nightly cargo (it hooks the build plan), so
+    # this job installs the nightly toolchain itself rather than
+    # requiring every developer to run nightly locally. Alternative
+    # considered: cargo-machete (stable, faster) — rejected because it
+    # false-positives on deps used only under cfg/target-gated code,
+    # which this workspace has (platform HALs, optional db feature).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Separate cache entry: this job builds the workspace
+          # metadata under nightly, not stable.
+          key: udeps-nightly
+
+      - name: Install nightly toolchain
+        run: rustup toolchain install nightly --profile minimal
+
+      - name: Install cargo-udeps
+        run: cargo +nightly install cargo-udeps --locked
+
+      # --all-targets so dev-deps used only by tests/examples/benches
+      # are not misreported as unused. Fails on findings: an unused
+      # dep is either removable or belongs in a narrower scope, both
+      # actionable in the PR that introduces it.
+      #
+      # KNOWN DEBT (grounded 2026-09-20 via `cargo +nightly udeps
+      # --workspace --all-targets` locally; each finding re-verified by
+      # source search — zero code references, i.e. true positives):
+      #   lyra-dsp: lyra-core, serde, thiserror
+      #   lyra-formats: ape-decoder, audex, cue-rw, encoding_rs,
+      #     symphonia-adapter-libopus, symphonia-codec-wavpack
+      #   lyra-net: lyra-core, thiserror
+      #   lyra-store: tracing
+      # This job stays red until the owning crates remove (or genuinely
+      # use) those deps — that redness IS the signal, not a bug in the
+      # gate. Proven false positives, if any appear, belong in
+      # `package.metadata.cargo-udeps.ignore` in the owning crate's
+      # manifest (a crate-owner change, not here).
+      - name: Detect unused dependencies
+        run: cargo +nightly udeps --workspace --all-targets
+
+  binary-size:
+    # Shipped platform is macOS, so the size gate builds where the app
+    # ships. Budgets grounded 2026-09-20 on macos-aarch64 release build
+    # (workspace profile: opt-level="s", lto, strip): lyra 1_009_384 B,
+    # lyra-mcp 591_400 B. Budgets hold ~3-5x headroom: they catch
+    # accidental static bundling (e.g. vendored OpenSSL creeping into
+    # the CLI tree) or lost strip/LTO settings, not normal growth —
+    # tighten them toward actuals when the app's footprint stabilizes.
+    # The full .app/DMG size gate belongs in release.yml (out of scope
+    # for this file) — see the summary output for current numbers.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust + cmake + ninja from mise.toml. CARGO=cargo skips the mbx
+      # shim so rust-cache can cache target/ as a normal directory.
+      - uses: jdx/mise-action@v3
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release binaries
+        run: cargo build --release -p lyra-cli
+
+      - name: Enforce binary size budgets
+        run: |
+          size_bytes() {
+            if stat -f%z "$1" >/dev/null 2>&1; then stat -f%z "$1"; else stat -c%s "$1"; fi
+          }
+          fail=0
+          check_size() {
+            size="$(size_bytes "$2")"
+            echo "$1: $size bytes (budget $3 bytes)"
+            {
+              echo "## Binary sizes"
+              echo ""
+              echo "- \`$1\`: \`$size\` bytes (budget \`$3\` bytes)"
+            } >> "$GITHUB_STEP_SUMMARY"
+            if [ "$size" -gt "$3" ]; then
+              echo "::error::$1 is $size bytes, over budget $3 — check for accidentally bundled native deps or lost strip/LTO settings."
+              fail=1
+            fi
+          }
+          check_size "lyra" target/release/lyra 4194304
+          check_size "lyra-mcp" target/release/lyra-mcp 3145728
+          [ "$fail" -eq 0 ] || exit 1
+
+      - name: Dependency footprint budget
+        run: |
+          count="$(grep -c '^name = ' Cargo.lock)"
+          echo "locked packages: $count (budget 750)"
+          echo "- Locked packages: \`$count\` (budget \`750\`)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Dependents of lyra-cli: \`$(cargo tree -p lyra-cli --prefix none 2>/dev/null | sort -u | wc -l | tr -d ' ')\`" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$count" -gt 750 ]; then
+            echo "::error::Cargo.lock holds $count packages, over budget 750 — audit new dependencies before merging."
+            exit 1
+          fi
+
+      - name: Top crate sizes (cargo-bloat, best effort)
+        run: |
+          # The workspace release profile strips symbols, which
+          # cargo-bloat needs for per-crate attribution — so this step
+          # is strictly informational with a graceful fallback; the
+          # size-budget check above remains authoritative.
+          if ! command -v cargo-bloat >/dev/null 2>&1; then
+            cargo install cargo-bloat --locked || {
+              echo "::notice::cargo-bloat unavailable; skipping per-crate breakdown (budget check above still enforced)."
+              exit 0
+            }
+          fi
+          cargo bloat --release --bin lyra -n 25 || \
+            echo "::notice::cargo-bloat could not attribute crates (expected: release profile strips symbols); budget check above still enforced."

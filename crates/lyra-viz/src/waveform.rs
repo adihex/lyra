@@ -26,7 +26,10 @@ impl WaveformPeaks {
         for b in 0..width {
             let start = b * per_bucket;
             let end = ((b + 1) * per_bucket).min(frames);
-            let mut p = Peak { min: f32::MAX, max: f32::MIN };
+            let mut p = Peak {
+                min: f32::MAX,
+                max: f32::MIN,
+            };
             for f in start..end {
                 // mono-downmix for the envelope
                 let mut m = 0f32;
@@ -43,7 +46,11 @@ impl WaveformPeaks {
             peaks.push(p);
         }
 
-        Self { peaks, sample_rate, samples_per_bucket: per_bucket as u64 }
+        Self {
+            peaks,
+            sample_rate,
+            samples_per_bucket: per_bucket as u64,
+        }
     }
 
     /// Seekbar x → time, for click-to-seek.

@@ -15,6 +15,22 @@ use rusqlite::{params, Connection};
 use rusqlite_migration::{Migrations, M};
 use std::path::{Path, PathBuf};
 
+mod query_counts;
+pub use query_counts::QueryCounter;
+
+/// (album, artist, album_artist, artwork_hash, title) for one track row.
+type ArtQueryRow = (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+/// (state, hash, next_retry_at) ledger row for an album art fetch.
+type ArtFetchRow = (String, Option<String>, Option<i64>);
+/// (sample_rate, samples_per_bucket, min/max pairs) stored waveform peaks.
+type WavePeaks = (f32, u64, Vec<(f32, f32)>);
+
 const MIGRATIONS: &[&str] = &[
     // v1: tracks + FTS + sources + settings
     r#"
@@ -149,6 +165,8 @@ pub struct Library {
     /// (same convention as the torrents dir). None for in-memory libs:
     /// ingest becomes a no-op.
     artwork_dir: Option<PathBuf>,
+    /// Statement counter for N+1 regression tests (see `query_counts`).
+    queries: QueryCounter,
 }
 
 #[derive(Debug, Clone)]
@@ -200,6 +218,7 @@ impl Library {
         Ok(Self {
             conn,
             artwork_dir: path.parent().map(|d| d.join("artwork")),
+            queries: QueryCounter::new(),
         })
     }
 
@@ -209,6 +228,7 @@ impl Library {
         Ok(Self {
             conn,
             artwork_dir: None,
+            queries: QueryCounter::new(),
         })
     }
 
@@ -229,6 +249,7 @@ impl Library {
         mtime: i64,
         size_bytes: i64,
     ) -> Result<(), LyraError> {
+        self.note_query();
         self.conn.execute(
             "INSERT INTO tracks (path, title, artist, album, album_artist,
                  genre, year, track_no, duration_secs, format, codec,
@@ -271,6 +292,7 @@ impl Library {
 
     /// Does this file need (re)probing? True if unseen or mtime changed.
     pub fn needs_scan(&self, path: &str, mtime: i64) -> Result<bool, LyraError> {
+        self.note_query();
         let known: Option<i64> = self
             .conn
             .query_row(
@@ -286,6 +308,7 @@ impl Library {
     /// (NULL hash) — first scan after the v3 migration, or new tracks
     /// whose probe somehow skipped art.
     pub fn needs_art(&self, path: &str) -> Result<bool, LyraError> {
+        self.note_query();
         let is_null: bool = self
             .conn
             .query_row(
@@ -301,6 +324,7 @@ impl Library {
     /// `None` writes '' — "checked, no embedded art" (sticky marker so
     /// artless files aren't re-probed every scan).
     pub fn set_track_artwork(&self, path: &str, hash: Option<&str>) -> Result<(), LyraError> {
+        self.note_query();
         self.conn.execute(
             "UPDATE tracks SET artwork_hash=?1 WHERE path=?2",
             params![hash.unwrap_or(""), path],
@@ -312,11 +336,7 @@ impl Library {
 
     /// The artwork_fetch key convention — album artist when tagged, else
     /// track artist, both lowercased, \x1f-separated from lower(album).
-    pub fn album_art_key(
-        album_artist: Option<&str>,
-        artist: Option<&str>,
-        album: &str,
-    ) -> String {
+    pub fn album_art_key(album_artist: Option<&str>, artist: Option<&str>, album: &str) -> String {
         format!(
             "{}\x1f{}",
             album_artist.or(artist).unwrap_or("").to_lowercase(),
@@ -326,19 +346,8 @@ impl Library {
 
     /// What a CAA fetch needs to know about a track row:
     /// (album, artist, album_artist, artwork_hash, title).
-    pub fn track_art_query(
-        &self,
-        path: &str,
-    ) -> Result<
-        Option<(
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-        )>,
-        LyraError,
-    > {
+    pub fn track_art_query(&self, path: &str) -> Result<Option<ArtQueryRow>, LyraError> {
+        self.note_query();
         let row = self
             .conn
             .query_row(
@@ -353,10 +362,8 @@ impl Library {
     /// Fetch-ledger row for an album: (state, hash, next_retry_at).
     /// `hash` is the artwork hash the fetch produced — present only on
     /// 'ok' rows written since the column existed.
-    pub fn art_fetch_row(
-        &self,
-        album_key: &str,
-    ) -> Result<Option<(String, Option<String>, Option<i64>)>, LyraError> {
+    pub fn art_fetch_row(&self, album_key: &str) -> Result<Option<ArtFetchRow>, LyraError> {
+        self.note_query();
         let row = self
             .conn
             .query_row(
@@ -399,6 +406,7 @@ impl Library {
         next_retry_at: Option<i64>,
         hash: Option<&str>,
     ) -> Result<(), LyraError> {
+        self.note_query();
         self.conn.execute(
             "INSERT INTO artwork_fetch
                  (album_key, mbid, state, http_status, attempts, attempted_at, next_retry_at, hash)
@@ -424,6 +432,7 @@ impl Library {
         artist_key: &str,
         hash: &str,
     ) -> Result<usize, LyraError> {
+        self.note_query();
         let n = self.conn.execute(
             "UPDATE tracks SET artwork_hash=?1
              WHERE (artwork_hash IS NULL OR artwork_hash='')
@@ -486,6 +495,7 @@ impl Library {
                 }
             }
         }
+        self.note_query();
         self.conn
             .execute(
                 "INSERT OR IGNORE INTO artwork
@@ -504,6 +514,7 @@ impl Library {
         if alive.is_empty() {
             return Ok(0);
         }
+        self.note_query();
         let existing: Vec<String> = self
             .conn
             .prepare("SELECT path FROM tracks")?
@@ -515,8 +526,10 @@ impl Library {
             .filter(|p| !alive.contains(p.as_str()))
             .collect();
         let mut removed = 0;
+        self.note_query();
         let mut stmt = self.conn.prepare("DELETE FROM tracks WHERE path=?1")?;
         for p in &stale {
+            self.note_query();
             removed += stmt.execute(params![p])?;
         }
         Ok(removed)
@@ -559,6 +572,7 @@ impl Library {
         sql: &str,
         p: impl rusqlite::Params,
     ) -> Result<Vec<LibraryTrack>, LyraError> {
+        self.note_query();
         let mut stmt = self.conn.prepare(sql)?;
         let rows = stmt
             .query_map(p, |r| {
@@ -588,6 +602,7 @@ impl Library {
     }
 
     pub fn add_source(&self, uri: &str, kind: &str) -> Result<(), LyraError> {
+        self.note_query();
         self.conn.execute(
             "INSERT OR IGNORE INTO sources (uri, kind) VALUES (?1, ?2)",
             params![uri, kind],
@@ -599,6 +614,7 @@ impl Library {
     /// keeps its resume cursor here — no schema migration for scanner
     /// state, just a namespaced key.
     pub fn get_setting(&self, key: &str) -> Result<Option<String>, LyraError> {
+        self.note_query();
         let v: Option<String> = self
             .conn
             .query_row(
@@ -611,6 +627,7 @@ impl Library {
     }
 
     pub fn set_setting(&self, key: &str, value: &str) -> Result<(), LyraError> {
+        self.note_query();
         self.conn.execute(
             "INSERT INTO settings (key, value) VALUES (?1, ?2)
              ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -623,6 +640,7 @@ impl Library {
     /// completed pass — a stale end-of-list cursor would make every later
     /// scan a no-op and hide remote changes.
     pub fn clear_setting(&self, key: &str) -> Result<(), LyraError> {
+        self.note_query();
         self.conn
             .execute("DELETE FROM settings WHERE key=?1", params![key])?;
         Ok(())
@@ -635,6 +653,7 @@ impl Library {
         if alive.is_empty() {
             return Ok(0);
         }
+        self.note_query();
         let existing: Vec<String> = self
             .conn
             .prepare("SELECT path FROM tracks")?
@@ -646,14 +665,17 @@ impl Library {
             .filter(|p| p.starts_with(prefix) && !alive.contains(p.as_str()))
             .collect();
         let mut removed = 0;
+        self.note_query();
         let mut stmt = self.conn.prepare("DELETE FROM tracks WHERE path=?1")?;
         for p in &stale {
+            self.note_query();
             removed += stmt.execute(params![p])?;
         }
         Ok(removed)
     }
 
     pub fn sources(&self) -> Result<Vec<Source>, LyraError> {
+        self.note_query();
         let mut stmt = self.conn.prepare("SELECT uri, kind FROM sources")?;
         let rows = stmt
             .query_map([], |r| {
@@ -769,6 +791,7 @@ impl Library {
             return Ok(());
         }
         // Stale '' rows under this scan root get another folder shot.
+        self.note_query();
         let mut stmt = self
             .conn
             .prepare("SELECT path FROM tracks WHERE artwork_hash=''")?;
@@ -913,6 +936,7 @@ impl Library {
             blob.extend_from_slice(&lo.to_le_bytes());
             blob.extend_from_slice(&hi.to_le_bytes());
         }
+        self.note_query();
         self.conn.execute(
             "INSERT INTO waveform_peaks (path, sample_rate, samples_per_bucket, peaks)
              VALUES (?1,?2,?3,?4)
@@ -926,7 +950,8 @@ impl Library {
     }
 
     /// Fetch stored peaks → (sample_rate, samples_per_bucket, pairs).
-    pub fn peaks_for(&self, path: &str) -> Result<Option<(f32, u64, Vec<(f32, f32)>)>, LyraError> {
+    pub fn peaks_for(&self, path: &str) -> Result<Option<WavePeaks>, LyraError> {
+        self.note_query();
         let row = self
             .conn
             .query_row(
@@ -945,7 +970,7 @@ impl Library {
             return Ok(None);
         };
         let mut peaks = Vec::with_capacity(blob.len() / 8);
-        for pair in blob.chunks_exact(8) {
+        for pair in blob.as_chunks::<8>().0 {
             let lo = f32::from_le_bytes(pair[..4].try_into().unwrap());
             let hi = f32::from_le_bytes(pair[4..].try_into().unwrap());
             peaks.push((lo, hi));
@@ -959,6 +984,7 @@ impl Library {
     /// a new `pipeline_ver` replaces the row; the old .lyramap is orphaned
     /// by content hash, never mutated in place.
     pub fn upsert_map(&self, m: &TrackMapRow) -> Result<(), LyraError> {
+        self.note_query();
         self.conn.execute(
             "INSERT INTO track_maps
                  (audio_hash, map_path, pipeline_ver, status, overall_conf, updated_at)
@@ -983,6 +1009,7 @@ impl Library {
 
     /// Map row for one recording, if analyzed.
     pub fn map_for_hash(&self, hash: &str) -> Result<Option<TrackMapRow>, LyraError> {
+        self.note_query();
         let row = self
             .conn
             .query_row(
@@ -1007,6 +1034,7 @@ impl Library {
     /// All maps in a tier — drives the "ready for strum mode" queue
     /// (`status >= 'chords'`) and the regeneration backlog.
     pub fn maps_by_status(&self, status: &str) -> Result<Vec<TrackMapRow>, LyraError> {
+        self.note_query();
         let mut stmt = self.conn.prepare(
             "SELECT audio_hash, map_path, pipeline_ver, status, overall_conf, updated_at
              FROM track_maps WHERE status=?1 ORDER BY updated_at DESC",
@@ -1028,6 +1056,7 @@ impl Library {
 
     /// Join a track row to its analyzed bytes (NULL = never hashed).
     pub fn set_track_audio_hash(&self, path: &str, hash: &str) -> Result<(), LyraError> {
+        self.note_query();
         self.conn.execute(
             "UPDATE tracks SET audio_hash=?1 WHERE path=?2",
             params![hash, path],
@@ -1036,6 +1065,7 @@ impl Library {
     }
 
     pub fn track_audio_hash(&self, path: &str) -> Result<Option<String>, LyraError> {
+        self.note_query();
         let h: Option<String> = self
             .conn
             .query_row(
@@ -1140,7 +1170,16 @@ mod tests {
 
     #[test]
     fn artwork_ingest_writes_cache_and_row() {
-        let dir = std::env::temp_dir().join(format!("lyra-art-{}", std::process::id()));
+        // Unique dir per invocation (pid + nanos): parallel tests and
+        // consecutive repeat-run sweeps must never share an artwork cache.
+        let dir = std::env::temp_dir().join(format!(
+            "lyra-art-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let lib = Library::open(&dir.join("lib.db")).unwrap(); // dir derives artwork/
 

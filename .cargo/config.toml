@@ -1,0 +1,18 @@
+# Test-isolation settings. See docs/TEST_ISOLATION.md for the full policy.
+#
+# - RUST_TEST_THREADS is intentionally NOT set here: libtest reads it from
+#   the environment at runtime, and the suite must stay green at default
+#   (full) parallelism. `RUST_TEST_THREADS=1 cargo test …` is a triage
+#   tool for suspected flakes, not a default — capping threads would hide
+#   shared-state bugs instead of fixing them.
+# - Per-test isolation (unique temp dirs, one Library/session per test,
+#   no fixed ports in new tests) lives in code:
+#   crates/lyra-store/tests/common/mod.rs,
+#   crates/lyra-store/tests/isolation.rs,
+#   crates/lyra-torrent/tests/isolation.rs.
+
+[env]
+# Full backtraces on panic in every test process — flake-sweep and CI
+# logs are useless for triage without them. Output-only; affects no
+# test outcome.
+RUST_BACKTRACE = "1"

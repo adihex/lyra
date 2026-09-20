@@ -463,12 +463,12 @@ mod tests {
         let (t, p) = (30, 4);
         let mut fr = vec![vec![0.05; p]; t];
         let mut on = vec![vec![0.0; p]; t];
-        for f in 2..=12 {
-            fr[f][1] = 0.8;
+        for row in fr.iter_mut().take(13).skip(2) {
+            row[1] = 0.8;
         }
         on[2][1] = 0.9;
-        for f in 15..=25 {
-            fr[f][3] = 0.7;
+        for row in fr.iter_mut().take(26).skip(15) {
+            row[3] = 0.7;
         }
         on[15][3] = 0.85;
         // Sub-threshold blip on p0: must not become a note.
@@ -496,15 +496,15 @@ mod tests {
     fn assembly_extracts_bends() {
         let (fr, on, opts) = synth_activations();
         let mut ct = vec![vec![0.0; 4]; 30];
-        for f in 2..=12 {
-            ct[f][1] = 1.2; // +120¢ whole-note bend
+        for row in ct.iter_mut().take(13).skip(2) {
+            row[1] = 1.2; // +120¢ whole-note bend
         }
         let notes = assemble_notes(&fr, &on, Some(&ct), &opts);
         assert_eq!(notes[0].bend_cents, Some(120));
         assert!((notes[0].midi - 62.2).abs() < 1e-5);
         // Sub-70¢ wobble: vibrato, not a bend.
-        for f in 2..=12 {
-            ct[f][1] = 0.4;
+        for row in ct.iter_mut().take(13).skip(2) {
+            row[1] = 0.4;
         }
         let notes = assemble_notes(&fr, &on, Some(&ct), &opts);
         assert_eq!(notes[0].bend_cents, None);

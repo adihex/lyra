@@ -61,7 +61,10 @@ impl KnabenProvider {
     }
 
     pub fn with_base(base: impl Into<String>) -> Self {
-        Self { base: base.into(), ..Self::new() }
+        Self {
+            base: base.into(),
+            ..Self::new()
+        }
     }
 
     fn result_from(&self, h: Hit, q: &SearchQuery) -> Option<SearchResult> {
@@ -140,7 +143,11 @@ impl TorrentProvider for KnabenProvider {
         LegalTier::Gray
     }
     fn capabilities(&self) -> ProviderCaps {
-        ProviderCaps { seeds_known: true, needs_refresh: false, local_index: false }
+        ProviderCaps {
+            seeds_known: true,
+            needs_refresh: false,
+            local_index: false,
+        }
     }
 
     async fn search(&self, q: &SearchQuery) -> Result<Vec<SearchResult>, ProviderError> {
@@ -159,17 +166,24 @@ impl TorrentProvider for KnabenProvider {
             .error_for_status()?
             .json()
             .await?;
-        Ok(resp.hits.into_iter().filter_map(|h| self.result_from(h, q)).collect())
+        Ok(resp
+            .hits
+            .into_iter()
+            .filter_map(|h| self.result_from(h, q))
+            .collect())
     }
 
     async fn resolve(&self, r: &SearchResult) -> Result<ResolvedTorrent, ProviderError> {
         let magnet = r.magnet.clone().or_else(|| {
             r.infohash.as_ref().map(|ih| {
-                format!("magnet:?xt=urn:btih:{ih}&dn={}", urlencoding::encode(&r.name))
+                format!(
+                    "magnet:?xt=urn:btih:{ih}&dn={}",
+                    urlencoding::encode(&r.name)
+                )
             })
         });
-        let magnet = magnet
-            .ok_or_else(|| ProviderError::Unavailable(format!("{}: no magnet", r.id)))?;
+        let magnet =
+            magnet.ok_or_else(|| ProviderError::Unavailable(format!("{}: no magnet", r.id)))?;
         Ok(ResolvedTorrent {
             result: r.clone(),
             files: vec![],
@@ -195,17 +209,27 @@ mod tests {
     #[test]
     fn hits_parse_gate_and_classify() {
         let p = KnabenProvider::new();
-        let q = SearchQuery { strict: false, ..SearchQuery::text("aerosmith") };
+        let q = SearchQuery {
+            strict: false,
+            ..SearchQuery::text("aerosmith")
+        };
         let resp: Resp = serde_json::from_str(RESP).unwrap();
-        let out: Vec<_> =
-            resp.hits.into_iter().filter_map(|h| p.result_from(h, &q)).collect();
+        let out: Vec<_> = resp
+            .hits
+            .into_iter()
+            .filter_map(|h| p.result_from(h, &q))
+            .collect();
         // Video row + empty-title row drop; both Audio rows survive.
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].provider, "knaben");
         assert_eq!(out[0].lossless, Some(true));
         assert_eq!(out[0].seeds, Some(42));
         assert_eq!(out[0].size_bytes, Some(268435456));
-        assert!(out[0].magnet.as_deref().unwrap().starts_with("magnet:?xt=urn:btih:ABC123"));
+        assert!(out[0]
+            .magnet
+            .as_deref()
+            .unwrap()
+            .starts_with("magnet:?xt=urn:btih:ABC123"));
         assert_eq!(out[1].formats, ["mp3"]);
     }
 
@@ -214,8 +238,11 @@ mod tests {
         let p = KnabenProvider::new();
         let q = SearchQuery::text("aerosmith");
         let resp: Resp = serde_json::from_str(RESP).unwrap();
-        let out: Vec<_> =
-            resp.hits.into_iter().filter_map(|h| p.result_from(h, &q)).collect();
+        let out: Vec<_> = resp
+            .hits
+            .into_iter()
+            .filter_map(|h| p.result_from(h, &q))
+            .collect();
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].formats, ["flac"]);
     }
@@ -223,7 +250,10 @@ mod tests {
     #[tokio::test]
     async fn resolve_synthesizes_magnet_from_hash() {
         let p = KnabenProvider::new();
-        let q = SearchQuery { strict: false, ..SearchQuery::text("x") };
+        let q = SearchQuery {
+            strict: false,
+            ..SearchQuery::text("x")
+        };
         let resp: Resp = serde_json::from_str(RESP).unwrap();
         let row = resp
             .hits

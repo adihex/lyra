@@ -248,6 +248,116 @@ pub fn run(args: Vec<String>) -> i32 {
     }
 }
 
+fn exec_queue(c: &mut Client, out: &Out, json: bool, op: QueueOp) -> Result<(), ClientError> {
+    match op {
+        QueueOp::List => {
+            let r = c.call(
+                "operation.submit",
+                serde_json::json!({"operation": "queue.list", "params": {}}),
+            )?;
+            let payload = job_result(r.job.as_ref().unwrap_or(&Value::Null));
+            out.value(&payload);
+            if !json {
+                let tracks = payload.get("tracks").and_then(|t| t.as_array());
+                match tracks {
+                    Some(ts) if !ts.is_empty() => {
+                        for (i, t) in ts.iter().enumerate() {
+                            println!(
+                                "{i}\t{}\t{}\t{}",
+                                t.get("id").and_then(|v| v.as_str()).unwrap_or("?"),
+                                t.get("artist").and_then(|v| v.as_str()).unwrap_or(""),
+                                t.get("title").and_then(|v| v.as_str()).unwrap_or(""),
+                            );
+                        }
+                    }
+                    _ => println!("(empty)"),
+                }
+            }
+        }
+        QueueOp::Add {
+            track,
+            query,
+            position,
+        } => {
+            let mut p = serde_json::json!({});
+            if let Some(t) = track {
+                p["track_id"] = t.into();
+            }
+            if let Some(q) = query {
+                p["query"] = q.into();
+            }
+            if let Some(pos) = position {
+                p["position"] = pos.into();
+            }
+            let (job, _) = submit(c, "queue.enqueue", p)?;
+            out.value(&job);
+            out.line(&format!(
+                "queued ({})",
+                job.get("length").map(|v| v.to_string()).unwrap_or_default()
+            ));
+        }
+        QueueOp::Remove { index } => {
+            let (job, _) = submit(c, "queue.remove", serde_json::json!({"index": index}))?;
+            out.value(&job);
+            out.line("removed");
+        }
+        QueueOp::Move { from, to } => {
+            let (job, _) = submit(c, "queue.move", serde_json::json!({"from": from, "to": to}))?;
+            out.value(&job);
+            out.line("moved");
+        }
+        QueueOp::Clear => {
+            let (job, _) = submit(c, "queue.clear", serde_json::json!({}))?;
+            out.value(&job);
+            out.line("cleared");
+        }
+    }
+    Ok(())
+}
+
+fn exec_eq(c: &mut Client, out: &Out, op: EqOp) -> Result<(), ClientError> {
+    match op {
+        EqOp::Get => {
+            let (job, _) = submit(c, "eq.get", serde_json::json!({}))?;
+            let payload = job_result(&job);
+            out.value(&payload);
+            out.line(&payload.to_string());
+        }
+        EqOp::Set {
+            band,
+            gain,
+            bands,
+            preamp,
+        } => {
+            let params = if let (Some(b), Some(g)) = (band, gain) {
+                serde_json::json!({"band": b, "gain_db": g})
+            } else {
+                let mut p = serde_json::json!({});
+                if let Some(list) = bands {
+                    let arr: Result<Vec<f64>, _> =
+                        list.split(',').map(|s| s.trim().parse()).collect();
+                    let arr =
+                        arr.map_err(|_| ClientError::Protocol(format!("bad --bands: {list}")))?;
+                    p["bands"] = arr.into();
+                }
+                if let Some(pa) = preamp {
+                    p["preamp"] = pa.into();
+                }
+                p
+            };
+            let op = if band.is_some() {
+                "eq.band.set"
+            } else {
+                "eq.set"
+            };
+            let (job, _) = submit(c, op, params)?;
+            out.value(&job);
+            out.line("eq updated");
+        }
+    }
+    Ok(())
+}
+
 fn execute(cli: Cli) -> Result<(), ClientError> {
     let out = Out { json: cli.json };
     let socket = cli.socket.clone();
@@ -304,73 +414,7 @@ fn execute(cli: Cli) -> Result<(), ClientError> {
             out.value(&snap);
             out.line(&snapshot_line(&snap));
         }
-        Command::Queue { op } => match op {
-            QueueOp::List => {
-                let r = c.call(
-                    "operation.submit",
-                    serde_json::json!({"operation": "queue.list", "params": {}}),
-                )?;
-                let payload = job_result(r.job.as_ref().unwrap_or(&Value::Null));
-                out.value(&payload);
-                if !cli.json {
-                    let tracks = payload.get("tracks").and_then(|t| t.as_array());
-                    match tracks {
-                        Some(ts) if !ts.is_empty() => {
-                            for (i, t) in ts.iter().enumerate() {
-                                println!(
-                                    "{i}\t{}\t{}\t{}",
-                                    t.get("id").and_then(|v| v.as_str()).unwrap_or("?"),
-                                    t.get("artist").and_then(|v| v.as_str()).unwrap_or(""),
-                                    t.get("title").and_then(|v| v.as_str()).unwrap_or(""),
-                                );
-                            }
-                        }
-                        _ => println!("(empty)"),
-                    }
-                }
-            }
-            QueueOp::Add {
-                track,
-                query,
-                position,
-            } => {
-                let mut p = serde_json::json!({});
-                if let Some(t) = track {
-                    p["track_id"] = t.into();
-                }
-                if let Some(q) = query {
-                    p["query"] = q.into();
-                }
-                if let Some(pos) = position {
-                    p["position"] = pos.into();
-                }
-                let (job, _) = submit(&mut c, "queue.enqueue", p)?;
-                out.value(&job);
-                out.line(&format!(
-                    "queued ({})",
-                    job.get("length").map(|v| v.to_string()).unwrap_or_default()
-                ));
-            }
-            QueueOp::Remove { index } => {
-                let (job, _) = submit(&mut c, "queue.remove", serde_json::json!({"index": index}))?;
-                out.value(&job);
-                out.line("removed");
-            }
-            QueueOp::Move { from, to } => {
-                let (job, _) = submit(
-                    &mut c,
-                    "queue.move",
-                    serde_json::json!({"from": from, "to": to}),
-                )?;
-                out.value(&job);
-                out.line("moved");
-            }
-            QueueOp::Clear => {
-                let (job, _) = submit(&mut c, "queue.clear", serde_json::json!({}))?;
-                out.value(&job);
-                out.line("cleared");
-            }
-        },
+        Command::Queue { op } => exec_queue(&mut c, &out, cli.json, op)?,
         Command::Search { q, r#type, limit } => {
             let mut p = serde_json::json!({"q": q, "limit": limit});
             if let Some(t) = r#type {
@@ -451,45 +495,7 @@ fn execute(cli: Cli) -> Result<(), ClientError> {
                 }
             }
         }
-        Command::Eq { op } => match op {
-            EqOp::Get => {
-                let (job, _) = submit(&mut c, "eq.get", serde_json::json!({}))?;
-                let payload = job_result(&job);
-                out.value(&payload);
-                out.line(&payload.to_string());
-            }
-            EqOp::Set {
-                band,
-                gain,
-                bands,
-                preamp,
-            } => {
-                let params = if let (Some(b), Some(g)) = (band, gain) {
-                    serde_json::json!({"band": b, "gain_db": g})
-                } else {
-                    let mut p = serde_json::json!({});
-                    if let Some(list) = bands {
-                        let arr: Result<Vec<f64>, _> =
-                            list.split(',').map(|s| s.trim().parse()).collect();
-                        let arr =
-                            arr.map_err(|_| ClientError::Protocol(format!("bad --bands: {list}")))?;
-                        p["bands"] = arr.into();
-                    }
-                    if let Some(pa) = preamp {
-                        p["preamp"] = pa.into();
-                    }
-                    p
-                };
-                let op = if band.is_some() {
-                    "eq.band.set"
-                } else {
-                    "eq.set"
-                };
-                let (job, _) = submit(&mut c, op, params)?;
-                out.value(&job);
-                out.line("eq updated");
-            }
-        },
+        Command::Eq { op } => exec_eq(&mut c, &out, op)?,
         Command::Subscribe { topics } => {
             let refs: Vec<&str> = topics.iter().map(String::as_str).collect();
             let mut sub = c.subscribe(&refs)?;

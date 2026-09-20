@@ -36,7 +36,9 @@ pub struct ChordTrack {
 /// Full P0 chord pass over the 44100 stereo bus (uses the left channel).
 pub fn transcribe_chords(stereo_44100: &[f32], grid: &BeatGrid) -> ChordTrack {
     let mono: Vec<f32> = stereo_44100
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|f| 0.5 * (f[0] + f[1]))
         .collect();
     let (chroma, bass, hop_s) = chroma_track(&mono);
@@ -201,7 +203,7 @@ fn state_label(s: usize) -> (Option<u8>, ChordQuality) {
         (None, ChordQuality::Nc)
     } else {
         let root = (s / 2) as u8;
-        let q = if s % 2 == 0 {
+        let q = if s.is_multiple_of(2) {
             ChordQuality::Maj
         } else {
             ChordQuality::Min
@@ -230,9 +232,9 @@ fn to_segments(
         if runs[i].2 - runs[i].1 < MIN_SEG_FRAMES && runs.len() > 1 {
             let other = if i == 0 {
                 1
-            } else if i + 1 == runs.len() {
-                i - 1
-            } else if runs[i - 1].2 - runs[i - 1].1 >= runs[i + 1].2 - runs[i + 1].1 {
+            } else if i + 1 == runs.len()
+                || runs[i - 1].2 - runs[i - 1].1 >= runs[i + 1].2 - runs[i + 1].1
+            {
                 i - 1
             } else {
                 i + 1

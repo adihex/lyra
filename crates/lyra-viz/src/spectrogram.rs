@@ -1,6 +1,6 @@
 //! Waterfall spectrogram: bounded ring of spectrum frames, newest at front.
 
-use crate::spectrum::SpectrumAnalyzer;
+use crate::spectrum::{SpectrumAnalyzer, SpectrumConfig};
 use std::collections::VecDeque;
 
 pub struct Spectrogram {
@@ -14,9 +14,16 @@ impl Spectrogram {
     /// `width` = retained time columns. Each pushed column is one FFT frame.
     pub fn new(sample_rate: f32, fft_size: usize, bands: usize, width: usize) -> Self {
         Self {
-            analyzer: SpectrumAnalyzer::new(
-                sample_rate, fft_size, bands, 20.0, 22_000.0, -90.0, 0.9, 0.6,
-            ),
+            analyzer: SpectrumAnalyzer::new(SpectrumConfig {
+                sample_rate,
+                fft_size,
+                bands,
+                f_hi: 22_000.0,
+                db_floor: -90.0,
+                attack: 0.9,
+                decay: 0.6,
+                ..SpectrumConfig::default()
+            }),
             rows: VecDeque::with_capacity(width),
             capacity: width,
             bands,
@@ -27,7 +34,7 @@ impl Spectrogram {
     pub fn push(&mut self, interleaved: &[f32]) -> usize {
         self.analyzer.accumulate(interleaved);
         let mut added = 0;
-        while self.analyzer.next() {
+        while self.analyzer.drain_window() {
             let mut row = vec![0.0; self.bands];
             self.analyzer.normalized_into(&mut row);
             self.rows.push_front(row);

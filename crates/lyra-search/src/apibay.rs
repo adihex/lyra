@@ -55,7 +55,10 @@ impl ApibayProvider {
     }
 
     pub fn with_base(base: impl Into<String>) -> Self {
-        Self { base: base.into(), ..Self::new() }
+        Self {
+            base: base.into(),
+            ..Self::new()
+        }
     }
 
     fn row_from(&self, row: ApiRow, q: &SearchQuery) -> Option<SearchResult> {
@@ -120,7 +123,11 @@ impl TorrentProvider for ApibayProvider {
         LegalTier::Gray
     }
     fn capabilities(&self) -> ProviderCaps {
-        ProviderCaps { seeds_known: true, needs_refresh: false, local_index: false }
+        ProviderCaps {
+            seeds_known: true,
+            needs_refresh: false,
+            local_index: false,
+        }
     }
 
     async fn search(&self, q: &SearchQuery) -> Result<Vec<SearchResult>, ProviderError> {
@@ -217,12 +224,12 @@ mod tests {
     #[test]
     fn rows_parse_and_sentinel_drops() {
         let p = ApibayProvider::new();
-        let q = SearchQuery { strict: false, ..SearchQuery::text("aerosmith") };
+        let q = SearchQuery {
+            strict: false,
+            ..SearchQuery::text("aerosmith")
+        };
         let rows: Vec<ApiRow> = serde_json::from_str(ROWS).unwrap();
-        let out: Vec<_> = rows
-            .into_iter()
-            .filter_map(|r| p.row_from(r, &q))
-            .collect();
+        let out: Vec<_> = rows.into_iter().filter_map(|r| p.row_from(r, &q)).collect();
         assert_eq!(out.len(), 2); // sentinel row dropped
         let flac = &out[0];
         assert_eq!(flac.provider, "apibay");
@@ -244,10 +251,7 @@ mod tests {
         let p = ApibayProvider::new();
         let q = SearchQuery::text("aerosmith"); // strict
         let rows: Vec<ApiRow> = serde_json::from_str(ROWS).unwrap();
-        let out: Vec<_> = rows
-            .into_iter()
-            .filter_map(|r| p.row_from(r, &q))
-            .collect();
+        let out: Vec<_> = rows.into_iter().filter_map(|r| p.row_from(r, &q)).collect();
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].formats, ["flac"]);
     }

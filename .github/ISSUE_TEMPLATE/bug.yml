@@ -1,0 +1,73 @@
+name: Bug report
+description: Something in Lyra isn't working
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Lyra version
+      description: Bundle version (Lyra → About) or commit SHA for dev builds
+      placeholder: 0.2.0 (3f9a1c2)
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - area:audio (engine, DSP, output)
+        - area:ui (SwiftUI shell)
+        - area:remote (LAN pairing/control)
+        - area:ipc (socket, CLI, MCP)
+        - area:library (scan, store, search)
+        - area:build (build, packaging)
+    validations:
+      required: true
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      description: P0 crash/data-loss/blocker · P1 major, no workaround · P2 normal · P3 polish
+      options:
+        - P0
+        - P1
+        - P2
+        - P3
+      default: 2
+    validations:
+      required: false
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you saw vs what you expected
+      placeholder: Playback stops 2s into every FLAC; expected gapless playback
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Numbered steps, including file/track/source details
+      placeholder: |
+        1. make run
+        2. Import ~/Music/test.flac (44.1kHz/16-bit)
+        3. Press play — stops at 0:02
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / output
+      description: Paste `lyra` CLI output, Console.app excerpts, or `cargo test` failures
+      render: text
+    validations:
+      required: false
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: macOS version, chip, audio device, build command used
+      placeholder: macOS 26, M2, USB DAC (Exclusive), make run
+    validations:
+      required: false

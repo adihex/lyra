@@ -7,19 +7,18 @@
 //! just the sshd both targets already run.
 //!
 //! Sources:
-//!  - `LocalFile`       — plain file
-//!  - `SshExecFile`     — v0 bootstrap: `ssh <host> dd …` per block (any ssh
-//!                        config alias works: adi-linux, jiopc). Simple,
-//!                        correct, per-call latency absorbed by BlockCache.
-//!  - `SftpSource`      — random-access reads over SFTP (ssh2, session per
-//!                        source, agent/key/password auth, one reconnect).
-//!                        Wrap in `CachingSource` for playback.
-//!  - `RsyncSource`     — progressive `rsync -e ssh` staging to a spool
-//!                        dir; readable before the transfer finishes,
-//!                        child reaped on drop.
-//!  - `RemoteScanner`   — SFTP walk → audio filter → header-only probe →
-//!                        upsert into lyra-store. Batched, cancellable,
-//!                        resumable via a store cursor.
+//!  - `LocalFile` — plain file
+//!  - `SshExecFile` — v0 bootstrap: `ssh <host> dd …` per block (any ssh
+//!    config alias works: adi-linux, jiopc). Simple, correct, per-call
+//!    latency absorbed by BlockCache.
+//!  - `SftpSource` — random-access reads over SFTP (ssh2, session per
+//!    source, agent/key/password auth, one reconnect). Wrap in
+//!    `CachingSource` for playback.
+//!  - `RsyncSource` — progressive `rsync -e ssh` staging to a spool dir;
+//!    readable before the transfer finishes, child reaped on drop.
+//!  - `RemoteScanner` — SFTP walk → audio filter → header-only probe →
+//!    upsert into lyra-store. Batched, cancellable, resumable via a
+//!    store cursor.
 //!
 //! `scan()` enumerates a remote root via `ssh host find …` — fast metadata
 //! listing without walking SFTP. `pin()` = rsync subtree → local cache for
@@ -42,9 +41,9 @@ pub mod sftp;
 pub use config::{AuthCallback, AuthMethod, RemoteProfile};
 pub use rsync::RsyncSource;
 pub use scan::{
-    is_remote_audio, Cancel, ExecOpen, ExecWalk, HeaderProbe, ProbeHint, ProbedFile,
-    RemoteOpen, RemoteProbe, RemoteScanner, RemoteWalk, ScanOptions, ScanProgress,
-    ScanStats, SftpOpener, SftpWalk,
+    is_remote_audio, Cancel, ExecOpen, ExecWalk, HeaderProbe, ProbeHint, ProbedFile, RemoteOpen,
+    RemoteProbe, RemoteScanner, RemoteWalk, ScanOptions, ScanProgress, ScanStats, SftpOpener,
+    SftpWalk,
 };
 pub use sftp::{SftpBackend, SftpHandle, SftpSource, Ssh2Backend, Ssh2Handle};
 
@@ -59,6 +58,10 @@ pub trait ByteSource: Send + Sync {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize>;
     /// Total length in bytes.
     fn len(&self) -> u64;
+    /// Whether the source holds zero bytes (default: `len() == 0`).
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
     /// Human-readable origin for UI/logging.
     fn describe(&self) -> String;
 }
@@ -395,10 +398,7 @@ pub fn scan(profile: &RemoteProfile, root: &str) -> Result<Vec<RemoteEntry>, Lyr
     if let Some(k) = &profile.key_path {
         cmd.arg("-i").arg(k);
     }
-    let out = cmd
-        .arg(&find)
-        .stderr(Stdio::null())
-        .output()?;
+    let out = cmd.arg(&find).stderr(Stdio::null()).output()?;
     if !out.status.success() {
         return Err(LyraError::Remote(format!(
             "scan failed: {}:{root}",
@@ -431,7 +431,11 @@ pub fn pin(profile: &RemoteProfile, remote_dir: &str, local_dir: &Path) -> Resul
             "--info=progress2",
             "-e",
             &config::rsync_ssh(profile),
-            &format!("{}:{}", profile.ssh_target(), remote_dir.trim_end_matches('/')),
+            &format!(
+                "{}:{}",
+                profile.ssh_target(),
+                remote_dir.trim_end_matches('/')
+            ),
             &format!("{}/", local_dir.display()),
         ])
         .status()?;

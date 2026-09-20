@@ -7,7 +7,9 @@
 use lyra_torrent::{AddOpts, EngineConfig, TorrentEngine};
 
 fn main() {
-    let file = std::env::args().nth(1).expect("usage: seed_track FILE [PORT]");
+    let file = std::env::args()
+        .nth(1)
+        .expect("usage: seed_track FILE [PORT]");
     let port: u16 = std::env::args()
         .nth(2)
         .and_then(|s| s.parse().ok())
@@ -19,7 +21,10 @@ fn main() {
     let _ = std::fs::remove_dir_all(&work);
     let seeder = TorrentEngine::new_with_config(
         work.join("session"),
-        EngineConfig { disable_dht: true, listen_port_range: Some(port..port + 2) },
+        EngineConfig {
+            disable_dht: true,
+            listen_port_range: Some(port..port + 2),
+        },
     )
     .unwrap();
 

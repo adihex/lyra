@@ -1,0 +1,33 @@
+# Pre-commit hooks: the same quality gates CI runs, shifted left into git hooks.
+# Install once per checkout: `pre-commit install`.
+repos:
+  # Standard hygiene (trailing whitespace, EOF newlines, YAML/TOML validity,
+  # merge markers, accidentally-staged giant files).
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        # Mirrors the oversize gate in .github/workflows/style-checks.yml.
+        args: ['--maxkb=500']
+
+  # Rust quality gates — run through local hooks so they use the developer's
+  # own toolchain (no extra pre-commit environments to download).
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt --all
+        language: system
+        types: [rust]
+        pass_filenames: false
+      - id: cargo-clippy
+        name: cargo clippy (deny warnings)
+        entry: cargo clippy --workspace --all-targets -- -D warnings
+        language: system
+        types: [rust]
+        pass_filenames: false

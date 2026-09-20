@@ -7,15 +7,15 @@
 mod academic_torrents;
 mod apibay;
 mod archive_org;
+pub mod cover_art;
 mod engine;
 mod knaben;
+pub mod lossless;
 mod nyaa;
 mod solidtorrents;
-mod torznab;
 mod torrents_csv;
+mod torznab;
 mod x1337x;
-pub mod cover_art;
-pub mod lossless;
 
 pub use academic_torrents::AcademicTorrentsProvider;
 pub use apibay::ApibayProvider;
@@ -25,8 +25,8 @@ pub use engine::SearchEngine;
 pub use knaben::KnabenProvider;
 pub use nyaa::NyaaProvider;
 pub use solidtorrents::SolidTorrentsProvider;
-pub use torznab::TorznabProvider;
 pub use torrents_csv::TorrentsCsvProvider;
+pub use torznab::TorznabProvider;
 pub use x1337x::X1337Provider;
 
 use async_trait::async_trait;

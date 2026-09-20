@@ -259,11 +259,7 @@ impl CoverArtClient {
     /// Strict album lookup for one title variant — group fronts first,
     /// then individual release fronts (deluxe/promo editions often hold
     /// art the group lacks).
-    async fn album_front(
-        &self,
-        artist: &str,
-        album: &str,
-    ) -> Result<Option<CoverArt>, ArtFetch> {
+    async fn album_front(&self, artist: &str, album: &str) -> Result<Option<CoverArt>, ArtFetch> {
         let q = format!(
             "releasegroup:\"{}\" AND artist:\"{}\"",
             lucene_escape(album),
@@ -273,7 +269,13 @@ impl CoverArtClient {
             .mb_get("release-group", &urlencoding::encode(&q))
             .await?;
         let mut order: Vec<&MbGroup> = groups.groups.iter().collect();
-        order.sort_by_key(|g| if g.primary_type.as_deref() == Some("Album") { 0 } else { 1 });
+        order.sort_by_key(|g| {
+            if g.primary_type.as_deref() == Some("Album") {
+                0
+            } else {
+                1
+            }
+        });
         for g in order.into_iter().take(3) {
             match self.caa_front("release-group", &g.id).await? {
                 Some(art) => return Ok(Some(art)),
@@ -286,11 +288,15 @@ impl CoverArtClient {
             lucene_escape(album),
             lucene_escape(artist)
         );
-        let rels: MbReleases = self
-            .mb_get("release", &urlencoding::encode(&q))
-            .await?;
+        let rels: MbReleases = self.mb_get("release", &urlencoding::encode(&q)).await?;
         let mut order: Vec<&MbRelease> = rels.releases.iter().collect();
-        order.sort_by_key(|r| if r.status.as_deref() == Some("Official") { 0 } else { 1 });
+        order.sort_by_key(|r| {
+            if r.status.as_deref() == Some("Official") {
+                0
+            } else {
+                1
+            }
+        });
         for r in order.into_iter().take(3) {
             match self.caa_front("release", &r.id).await? {
                 Some(art) => return Ok(Some(art)),
@@ -328,9 +334,7 @@ impl CoverArtClient {
                     lucene_escape(artist)
                 )
             };
-            let got: MbRecordings = self
-                .mb_get("recording", &urlencoding::encode(&q))
-                .await?;
+            let got: MbRecordings = self.mb_get("recording", &urlencoding::encode(&q)).await?;
             if !got.recordings.is_empty() {
                 recs = got;
                 break;
@@ -339,14 +343,18 @@ impl CoverArtClient {
         // Collect (release-group id, release id) pairs across the top
         // recordings, group id first so canonical art wins.
         let mut pairs: Vec<(Option<String>, String)> = Vec::new();
-        for r in recs.recordings.iter().flat_map(|r| r.releases.iter()).take(4) {
+        for r in recs
+            .recordings
+            .iter()
+            .flat_map(|r| r.releases.iter())
+            .take(4)
+        {
             pairs.push((r.group.as_ref().map(|g| g.id.clone()), r.id.clone()));
         }
         for (gid, rid) in pairs.into_iter().take(4) {
             if let Some(gid) = gid.as_deref() {
-                match self.caa_front("release-group", gid).await? {
-                    Some(art) => return Ok(Some(art)),
-                    None => {}
+                if let Some(art) = self.caa_front("release-group", gid).await? {
+                    return Ok(Some(art));
                 }
             }
             match self.caa_front("release", &rid).await? {

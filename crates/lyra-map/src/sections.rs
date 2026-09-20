@@ -127,22 +127,22 @@ fn foote_novelty(ssm: &[Vec<f32>], k: usize) -> Vec<f32> {
     if n < 2 * k + 1 {
         return nov;
     }
-    for i in k..n - k {
-        let mut v = 0.0;
-        for x in i - k..i {
-            for y in i..i + k {
-                v += ssm[x][y];
-            }
-            for y in i - k..i {
-                v -= ssm[x][y];
-            }
-        }
-        for x in i..i + k {
-            for y in i..i + k {
-                v -= ssm[x][y];
-            }
-        }
-        nov[i] = -v / (k * k) as f32;
+    for (i, nv) in nov.iter_mut().enumerate().take(n - k).skip(k) {
+        // Past-K rows add the future window and subtract the past window;
+        // next-K rows subtract the future window (checkerboard sign).
+        let past: f32 = ssm
+            .iter()
+            .take(i)
+            .skip(i - k)
+            .map(|row| row[i..i + k].iter().sum::<f32>() - row[i - k..i].iter().sum::<f32>())
+            .sum();
+        let future: f32 = ssm
+            .iter()
+            .take(i + k)
+            .skip(i)
+            .map(|row| row[i..i + k].iter().sum::<f32>())
+            .sum();
+        *nv = -(past - future) / (k * k) as f32;
     }
     nov
 }

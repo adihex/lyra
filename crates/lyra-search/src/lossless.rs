@@ -17,7 +17,12 @@ pub struct AudioClass {
 }
 
 const fn class(codec: &'static str, lossless: bool) -> AudioClass {
-    AudioClass { codec, lossless, bit_depth: None, sample_rate: None }
+    AudioClass {
+        codec,
+        lossless,
+        bit_depth: None,
+        sample_rate: None,
+    }
 }
 
 /// Classify a filename or format label → audio codec. None = not audio
@@ -30,7 +35,11 @@ pub fn classify(label: &str) -> Option<AudioClass> {
     if l.contains('.') {
         // Filename — decide by extension only; substrings in names lie
         // ("gd77.flac16_archive.torrent" contains "flac").
-        return l.rsplit('.').next().and_then(by_ext).map(|c| with_depth(c, &l));
+        return l
+            .rsplit('.')
+            .next()
+            .and_then(by_ext)
+            .map(|c| with_depth(c, &l));
     }
     by_label(&l).map(|c| with_depth(c, &l))
 }
@@ -178,7 +187,15 @@ mod tests {
             assert_eq!(c.codec, codec, "{input}");
             assert!(!c.lossless, "{input}");
         }
-        for non in ["cover.jpg", "notes.txt", "checksums.md5", "f.fp", "x.torrent", "Metadata", "PNG"] {
+        for non in [
+            "cover.jpg",
+            "notes.txt",
+            "checksums.md5",
+            "f.fp",
+            "x.torrent",
+            "Metadata",
+            "PNG",
+        ] {
             assert!(classify(non).is_none(), "{non}");
         }
     }
@@ -208,7 +225,10 @@ mod tests {
     fn acceptable_defaults_to_family() {
         let q = SearchQuery::text("x");
         assert_eq!(acceptable(&q), FAMILY.to_vec());
-        let q2 = SearchQuery { formats: vec!["flac".into()], ..SearchQuery::text("x") };
+        let q2 = SearchQuery {
+            formats: vec!["flac".into()],
+            ..SearchQuery::text("x")
+        };
         assert_eq!(acceptable(&q2), ["flac"]);
     }
 }

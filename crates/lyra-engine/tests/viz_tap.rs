@@ -7,8 +7,8 @@ use std::f32::consts::PI;
 const RATE: f32 = 48_000.0;
 const BLOCK: usize = 2048; // stereo frames per push (~43 ms)
 
-fn stereo(frames: usize, mut f: impl FnMut(usize) -> [f32; 2]) -> Vec<f32> {
-    (0..frames).flat_map(|i| f(i)).collect()
+fn stereo(frames: usize, f: impl FnMut(usize) -> [f32; 2]) -> Vec<f32> {
+    (0..frames).flat_map(f).collect()
 }
 
 fn sine(frames: usize, freq: f32, amp: f32) -> Vec<f32> {
@@ -97,7 +97,10 @@ fn antiphase_gives_opposite_wave_rings() {
         .zip(&f.wave_r)
         .map(|(l, r)| (l + r).abs())
         .fold(0f32, f32::max);
-    assert!(cancel < 1e-5, "antiphase rings should cancel, residual {cancel}");
+    assert!(
+        cancel < 1e-5,
+        "antiphase rings should cancel, residual {cancel}"
+    );
     let diff = f
         .wave_l
         .iter()
@@ -146,7 +149,10 @@ fn wave_ring_is_fixed_capacity_newest_last() {
     let val = |i: usize| ((i % 97) as f32 - 48.0) * 0.01;
     assert!((f.wave_l[255] - val(7999)).abs() < 1e-6, "newest last");
     assert!((f.wave_l[254] - val(7995)).abs() < 1e-6, "ordering");
-    assert!((f.wave_l[0] - val(6979)).abs() < 1e-6, "oldest at front — evicted");
+    assert!(
+        (f.wave_l[0] - val(6979)).abs() < 1e-6,
+        "oldest at front — evicted"
+    );
 }
 
 #[test]
