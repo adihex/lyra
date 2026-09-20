@@ -1,0 +1,145 @@
+name: QA (CLI)
+
+# CLI/IPC-layer QA for Lyra. Informational: posts a report comment on the PR
+# but never blocks merge. Desktop (.app) flows are out of scope here --
+# GitHub-hosted runners have no display, so qa-desktop reports BLOCKED there.
+# To gate on QA, add this job to branch protection rules manually.
+
+on:
+  pull_request:
+    paths:
+      - 'crates/lyra-cli/**'
+      - 'crates/lyra-ipc/**'
+      - 'crates/lyra-core/**'
+      - 'crates/lyra-store/**'
+      - 'crates/lyra-formats/**'
+      - 'crates/lyra-engine/**'
+      - '.factory/skills/qa*/**'
+  workflow_dispatch:
+
+permissions:
+  contents: write # needed so failure_learning=open_pr can push catalog branches
+  pull-requests: write # sticky QA report comment + draft catalog PRs
+
+concurrency:
+  group: qa-cli-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  qa-cli:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq imagemagick jq
+          # Runtime gate: video evidence is text-only for CLI runs (no visual
+          # output to record), so no ffmpeg/asciinema needed for this job.
+
+      - name: Build CLI
+        run: cargo build -p lyra-cli
+
+      - name: Install droid CLI
+        run: curl -fsSL https://app.factory.ai/cli | sh
+
+      - name: Run QA (CLI scope)
+        id: qa
+        continue-on-error: true
+        timeout-minutes: 18
+        env:
+          CI: 'true'
+        run: |
+          export PATH="$HOME/.local/bin:$HOME/.factory/bin:$PATH"
+          mkdir -p qa-results
+          droid exec --auto high "You are running in a non-interactive CI environment. There is NO human available. Do NOT use AskUser, do NOT wait for confirmations, do NOT pause for input. Run the qa skill scoped to the CLI app only (read .factory/skills/qa-cli/SKILL.md). Use an isolated temp socket dir and temp fixture library; never touch the developer library. Read video_evidence and droid_control.compose from config but note CLI flows are text-only and never produce video. Write the final report to qa-results/report.md. This check is informational and must not block merge." 2>&1 | tee qa-output.txt || QA_FAILED=1
+          echo "qa_failed=${QA_FAILED:-}" >> "$GITHUB_OUTPUT"
+
+      - name: Apply skill updates from QA
+        id: apply-updates
+        if: always() && steps.qa.outcome != 'cancelled'
+        run: |
+          if [ ! -f qa-results/skill-updates.json ]; then
+            echo "No skill-updates.json, skipping"
+            exit 0
+          fi
+          node scripts/apply-qa-skill-updates.mjs qa-results/skill-updates.json
+
+      - name: Open PR with skill updates
+        if: always() && steps.apply-updates.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if git diff --quiet .factory/skills/; then exit 0; fi
+          BRANCH="qa/catalog-${{ github.run_number }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add .factory/skills/
+          git commit -m "chore(qa): update failure catalog from QA run #${{ github.run_number }}"
+          git push origin "$BRANCH"
+          gh pr create --base "${{ github.head_ref }}" --head "$BRANCH" \
+            --title "chore(qa): update failure catalog from QA run #${{ github.run_number }}" \
+            --body "Auto-generated from QA run on PR #${{ github.event.pull_request.number }}." --draft
+
+      - name: Upload QA artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-results-${{ github.run_number }}
+          path: |
+            qa-results/
+            qa-output.txt
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Post QA report as PR comment
+        if: always() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          {
+            echo '<!-- qa-report -->'
+            if [ -f qa-results/report.md ]; then
+              # Ensure the report starts with the ## QA Report heading.
+              if ! head -1 qa-results/report.md | grep -q '^## QA Report'; then
+                echo '## QA Report'
+                echo
+              fi
+              cat qa-results/report.md
+            else
+              echo '## QA Report'
+              echo
+              echo ':no_entry: QA run produced no report. Check the job log.'
+              echo
+              echo '<details><summary>Runner output</summary>'
+              echo
+              echo '```'
+              tail -c 6000 qa-output.txt 2>/dev/null || echo '(no output)'
+              echo '```'
+              echo
+              echo '</details>'
+            fi
+            echo
+            echo '---'
+            echo
+            echo "[Workflow run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID) · raw evidence in job artifacts · informational only, does not block merge"
+          } > comment-body.md
+          EXISTING=$(gh api "repos/$GITHUB_REPOSITORY/issues/${{ github.event.pull_request.number }}/comments" --paginate -q '[.[] | select(.body | startswith("<!-- qa-report -->"))][0].id // empty')
+          if [ -n "$EXISTING" ]; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$EXISTING" -F body="$(cat comment-body.md)" > /dev/null
+          else
+            gh api "repos/$GITHUB_REPOSITORY/issues/${{ github.event.pull_request.number }}/comments" -F body="$(cat comment-body.md)" > /dev/null
+          fi

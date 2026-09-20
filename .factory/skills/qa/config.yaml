@@ -1,0 +1,86 @@
+project: Lyra
+platform: github
+imagemagick: true
+video_evidence: true # record interactive desktop flows through droid-control
+droid_control:
+  plugin: droid-control@factory-plugins
+  compose: false # single runtime toggle for optional edited MP4 output
+
+environments:
+  local:
+    url: local-build
+    restrictions: []
+
+default_target: local
+
+auth:
+  method: none
+  provider: local-app-no-login
+  notes: >
+    Single-user local app, no login. LAN remote pairing is excluded from QA
+    scope. Last.fm session key lives in the macOS Keychain; Lemon Squeezy
+    license key is entered manually. Neither is needed for default QA runs.
+
+personas:
+  - name: local_user
+    description: 'Existing user with a populated music library and settings'
+    email: null
+    credentials_source: none
+    test_focus: ['playback', 'queue', 'library search', 'EQ', 'devices', 'visuals', 'menu-bar player']
+    cannot_do: []
+  - name: new_user
+    description: 'Fresh profile, empty library, default settings'
+    email: null
+    credentials_source: none
+    test_focus: ['onboarding', 'empty states', 'first scan', 'first-run experience']
+    cannot_do: []
+
+apps:
+  cli:
+    path_patterns: ['crates/lyra-cli/**', 'crates/lyra-ipc/**']
+    skill: qa-cli
+    test_tool: direct-exec
+    build_command: 'cargo build -p lyra-cli'
+  desktop:
+    path_patterns: ['app/**', 'modules/**', 'Info.plist', 'entitlements.plist', 'Makefile', 'crates/lyra-ffi/**', 'crates/lyra-engine/**', 'crates/lyra-hal/**', 'crates/lyra-core/**', 'crates/lyra-formats/**', 'crates/lyra-store/**', 'crates/lyra-fs/**', 'crates/lyra-dsp/**', 'crates/lyra-viz/**', 'crates/lyra-coach/**', 'crates/lyra-map/**', 'crates/lyra-net/**', 'crates/lyra-search/**', 'crates/lyra-torrent/**', 'crates/lyra-remote/**']
+    skill: qa-desktop
+    test_tool: desktop-control
+    build_command: 'make app'
+
+feature_flags:
+  provider: none
+
+integrations:
+  metadata_live:
+    provider: musicbrainz-lrclib-caa
+    mode: live
+    notes: 'Live API checks run against real endpoints. MusicBrainz is hard-limited to 1 rps; honor it.'
+  metadata_stubbed:
+    provider: musicbrainz-lrclib-caa
+    mode: stubbed
+    notes: 'Stubbed path: loopback/local fixtures, no network. Use when offline or when live APIs rate-limit.'
+  lastfm:
+    provider: lastfm
+    mode: live-and-stubbed
+    credentials_source: manual
+    notes: 'Session key in macOS Keychain, entered manually. Stubbed path skips scrobble verification.'
+  licensing:
+    provider: lemon-squeezy
+    mode: stubbed
+    notes: 'No live license validation in QA. Offline/verify-only paths only.'
+  torrent_search:
+    provider: archive-org-academic-torrents
+    mode: live-and-stubbed
+    notes: 'Live search checks are read-only. Never start real downloads outside temp fixtures.'
+
+cleanup:
+  auto_cleanup: true
+  strategy: cli-state-reset
+  instructions: >
+    After EVERY test that mutates state: `lyra queue clear`, restore EQ bands
+    (`lyra eq set` back to captured defaults), remove temp fixture dirs and
+    temp socket dirs, kill any test sidecars. Never leave the developer library
+    DB modified: prefer isolated temp HOME/profile dirs for scan/import tests.
+    LAN pairing is out of scope, so no device revocation is needed.
+
+failure_learning: open_pr
