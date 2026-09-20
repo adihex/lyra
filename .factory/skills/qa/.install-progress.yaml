@@ -1,0 +1,33 @@
+project: Lyra
+platform: github
+questionnaire_completed: true
+
+category_1_target:
+  default_target: local
+  restrictions: []
+
+category_2_personas:
+  - local_user
+  - new_user
+
+category_3_flows:
+  scope: all
+  excluded:
+    - lan_pairing_with_physical_device
+  pairing_test_mode: loopback_only
+
+category_4_external:
+  mode: live_and_stubbed
+
+category_5_cleanup:
+  strategy: cleanup_after_every_test
+
+category_6_imagemagick: true
+
+category_7_ci:
+  generate_qa_workflow: true
+  required: false
+  video_evidence: true
+  droid_control_compose: false
+
+category_8_failure_learning: open_pr
