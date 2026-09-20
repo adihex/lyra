@@ -14,7 +14,7 @@ thiserror.workspace = true
 tracing.workspace = true
 cpal = "0.18"           # compat-path output; audiophile IOProc driver is next
 ringbuf = "0.5"         # SPSC ring — decode thread → RT callback
-rubato = "3"            # SRC when track rate ≠ device rate (compat path)
+rubato = "5"            # SRC when track rate ≠ device rate (compat path)
 atomic_float = "1"      # volume: latest-wins scalar, zero locks
 
 [dev-dependencies]
