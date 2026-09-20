@@ -8,10 +8,20 @@ jobs:
   wiki-refresh:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install Factory Droid
-        run: curl -fsSL https://app.factory.ai/cli | sh
+        # Pinned release download + sha256 verification (no piped installer).
+        run: |
+          VER="0.223.0"
+          ARCH="x64"
+          grep -qi avx2 /proc/cpuinfo || ARCH="x64-baseline"
+          BASE="https://downloads.factory.ai/factory-cli/releases/${VER}/linux/${ARCH}"
+          curl -fsSL -o /tmp/droid "$BASE/droid"
+          curl -fsSL -o /tmp/droid.sha256 "$BASE/droid.sha256"
+          echo "$(cat /tmp/droid.sha256)  /tmp/droid" | sha256sum -c -
+          install -m 0755 /tmp/droid "$HOME/.local/bin/droid"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Generate wiki
         run: droid exec --auto high "/wiki"

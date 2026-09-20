@@ -20,11 +20,11 @@ jobs:
       actions: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 1
       - name: Run Droid Auto Review
-        uses: Factory-AI/droid-action@main
+        uses: Factory-AI/droid-action@ad22b1dd6c3cc809877cf872e4d22c0a07981f48 # v8
         with:
           factory_api_key: ${{ secrets.FACTORY_API_KEY }}
           automatic_review: true

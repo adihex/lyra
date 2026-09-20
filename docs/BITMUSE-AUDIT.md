@@ -32,8 +32,8 @@ passes on the 17 MB arm64 main binary, Sparkle appcast fetch.
    network, and AppleEvent reach. Any compromised code path (codec bug,
    malicious file, dependency vuln) runs with your full privileges.
 
-2. **Hardcoded secret.** `LastFmApiSecret=1b3163157a571fb008c008fa779db013`
-   ships in plaintext in `Info.plist`. Anyone can extract and burn the
+2. **Hardcoded secret.** `LastFmApiSecret=1b316315…779db013` (value
+   redacted) ships in plaintext in `Info.plist`. Anyone can extract and burn the
    vendor's API quota / abuse the account. Secrets belong in Keychain or
    fetched at runtime — never in the bundle.
 

@@ -25,20 +25,23 @@ jobs:
   dmg:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       # rust + cmake + ninja from mise.toml. CARGO=cargo skips the mbx
       # shim so rust-cache can cache target/ as a normal directory.
-      - uses: jdx/mise-action@v4
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       - name: Version stamp
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          if [ "${{ github.ref_type }}" = "tag" ]; then
+          if [ "$REF_TYPE" = "tag" ]; then
             V="${GITHUB_REF_NAME#v}"
           else
-            V="${{ inputs.version }}"
+            V="$INPUT_VERSION"
           fi
           echo "version=$V" >> "$GITHUB_ENV"
           plutil -replace CFBundleShortVersionString -string "$V" Info.plist
@@ -53,10 +56,10 @@ jobs:
           cp -R .build/Lyra.app .build/dmg/
           ln -s /Applications .build/dmg/Applications
           hdiutil create -volname "Lyra" -srcfolder .build/dmg \
-            -ov -format UDZO ".build/Lyra-${{ env.version }}.dmg"
-          shasum -a 256 ".build/Lyra-${{ env.version }}.dmg"
+            -ov -format UDZO ".build/Lyra-${version}.dmg"
+          shasum -a 256 ".build/Lyra-${version}.dmg"
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: Lyra-${{ env.version }}-dmg
           path: .build/Lyra-*.dmg
@@ -68,11 +71,12 @@ jobs:
           (github.event_name == 'workflow_dispatch' && inputs.create_release)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REF_TYPE: ${{ github.ref_type }}
         run: |
-          if [ "${{ github.ref_type }}" = "tag" ]; then
+          if [ "$REF_TYPE" = "tag" ]; then
             TAG="$GITHUB_REF_NAME"
           else
-            TAG="v${{ env.version }}"
+            TAG="v${version}"
           fi
           # create handles the tag not existing yet (dispatch runs);
           # upload --clobber covers re-runs where the release exists.
