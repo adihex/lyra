@@ -441,10 +441,15 @@ fn refresh_library(app: &Shared) {
 
 /// 150 ms host tick: drain IPC ops, publish state, refresh transport.
 fn tick(app: &Shared) {
-    {
+    let dirty = {
         let mut h = app.host.borrow_mut();
         h.drain_commands();
         h.publish_state_if_changed();
+        h.take_dirty()
+    };
+    // an IPC-driven scan/reload lands here, not in handle_msg
+    if dirty {
+        refresh_library(app);
     }
     refresh_transport(app, false);
     coach::poll(app);

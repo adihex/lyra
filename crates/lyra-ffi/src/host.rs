@@ -73,6 +73,10 @@ pub struct Host {
     pub engine_ok: bool,
     lib: Option<lyra_store::Library>,
     last_sig: String,
+    /// Set whenever `tracks` is reloaded — shells poll it to invalidate
+    /// their own row caches (e.g. an IPC-driven `library.scan` finishing
+    /// mid-session, not just a UI-initiated one).
+    dirty: bool,
 }
 
 impl Host {
@@ -138,6 +142,7 @@ impl Host {
             current: None,
             engine_ok,
             last_sig: String::new(),
+            dirty: true, // first load: shells should build rows once
         })
     }
 
@@ -194,10 +199,16 @@ impl Host {
         self.play_index(i);
     }
 
+    /// Consume the library-invalidated flag.
+    pub fn take_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.dirty)
+    }
+
     pub fn reload(&mut self) {
         if let Some(lib) = &self.lib {
             self.tracks = lib.all_tracks().unwrap_or_default();
         }
+        self.dirty = true;
     }
 
     /// FTS path — the app's search box semantics.

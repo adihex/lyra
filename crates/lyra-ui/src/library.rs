@@ -577,7 +577,12 @@ fn track_row(t: &Track) -> gtk4::ListBoxRow {
     row.set_widget_name(&t.id);
     row.set_tooltip_text(Some(&t.path));
     let b = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
-    let no = cell(&t.track_no.to_string(), 40);
+    let no_s = if t.track_no == 0 {
+        String::new()
+    } else {
+        t.track_no.to_string()
+    };
+    let no = cell(&no_s, 40);
     no.add_css_class("dim");
     b.append(&no);
     b.append(&cell(&t.title, 220));
