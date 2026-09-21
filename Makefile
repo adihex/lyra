@@ -1,7 +1,7 @@
 # Lyra — no-xcodeproj build. Rust core → staticlib → swiftc → .app bundle → codesign.
 # For release we'd move to XcodeGen for Sparkle's nested-signing (see BLUEPRINT § packaging).
 
-CARGO    := mise exec -- cargo
+CARGO    := $(if $(shell command -v mise 2>/dev/null),mise exec -- cargo,cargo)
 PROFILE  := debug
 SWIFTC   := xcrun swiftc
 APP      := .build/Lyra.app
