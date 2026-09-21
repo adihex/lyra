@@ -18,13 +18,16 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 static INIT: Once = Once::new();
 
-mod art;
-mod coach;
+pub mod art;
+pub mod coach;
+/// Shared host runtime — `lyrad` and the GTK `lyra-ui` shell both drive
+/// engine/store/IPC through `host` so wire behavior is identical.
+pub mod host;
 /// The live IPC bridge is `pub` (not just its extern symbols) so the
 /// `lyrad` headless host can drive the same server the app does.
 pub mod ipc;
-mod map;
-mod remote_fs;
+pub mod map;
+pub mod remote_fs;
 
 pub(crate) fn init_logging() {
     INIT.call_once(|| {

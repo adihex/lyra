@@ -10,21 +10,40 @@ LIBDIR   := app/.libs
 SWIFT_SRC:= $(wildcard app/Sources/LyraApp/*.swift app/Sources/LyraApp/*/*.swift)
 UNAME_S  := $(shell uname -s)
 
-.PHONY: all rust app sign run clean check lyrad darwin-only
+.PHONY: all rust app sign run clean check lyrad gui e2e darwin-only
 
 all: app
 
 check:
 	$(CARGO) check --workspace
 
-# The SwiftUI shell is macOS-only; on Linux the supported entry point is
-# lyrad (headless host: engine + IPC + remote) driven by the `lyra` CLI.
+# The SwiftUI shell is macOS-only; on Linux the UI is lyra-gui (GTK4 +
+# libadwaita, needs libgtk-4-dev + libadwaita-1-dev) and the supported
+# headless host is lyrad — both are driven by the `lyra` CLI over IPC.
 darwin-only:
-	@test "$(UNAME_S)" = "Darwin" || { echo "make: the SwiftUI app is macOS-only — use 'make lyrad' on Linux"; exit 1; }
+	@test "$(UNAME_S)" = "Darwin" || { echo "make: the SwiftUI app is macOS-only — use 'make gui' or 'make lyrad' on Linux"; exit 1; }
 
 # Headless host — works on Linux and macOS.
 lyrad:
 	$(CARGO) build -p lyra-ffi --bin lyrad $(if $(filter release,$(PROFILE)),--release,)
+
+# Linux-native UI (GTK4 + libadwaita). Builds on macOS too with
+# `brew install gtk4 libadwaita`, but the supported mac UI is SwiftUI.
+gui:
+	$(CARGO) build -p lyra-ui --bin lyra-gui $(if $(filter release,$(PROFILE)),--release,)
+
+# IPC-driven E2E: same asserts on both OSes — macOS runs the built .app,
+# Linux runs lyra-gui under Xvfb and lyrad headless (see scripts/e2e.sh).
+e2e:
+	$(CARGO) build --bins -p lyra-cli -p lyra-ffi $(if $(filter release,$(PROFILE)),--release,)
+	@if [ "$(UNAME_S)" = "Darwin" ]; then \
+		$(MAKE) app PROFILE=$(PROFILE); \
+		LYRA_BIN=$$PWD/target/$(PROFILE)/lyra LYRA_E2E_APP=$$PWD/$(APP) ./scripts/e2e.sh; \
+	else \
+		$(CARGO) build -p lyra-ui --bin lyra-gui $(if $(filter release,$(PROFILE)),--release,); \
+		LYRA_BIN=$$PWD/target/$(PROFILE)/lyra LYRA_E2E_HOST=$$PWD/target/$(PROFILE)/lyra-gui ./scripts/e2e.sh; \
+		LYRA_BIN=$$PWD/target/$(PROFILE)/lyra LYRA_E2E_HOST=$$PWD/target/$(PROFILE)/lyrad ./scripts/e2e.sh; \
+	fi
 
 rust:
 	$(CARGO) build -p lyra-ffi $(if $(filter release,$(PROFILE)),--release,)

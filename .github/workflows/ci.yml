@@ -25,12 +25,19 @@ jobs:
       # shim so rust-cache can cache target/ as a normal directory.
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4
 
-      # cpal's Linux backend is ALSA — needs the dev headers at build time.
-      - name: Linux system deps (ALSA for cpal)
+      # cpal's Linux backend is ALSA — needs the dev headers at build
+      # time; the workspace also builds the GTK app (lyra-ui) on Linux.
+      - name: Linux system deps (ALSA + GTK4)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq pkg-config libasound2-dev
+          sudo apt-get install -y -qq pkg-config libasound2-dev \
+            libgtk-4-dev libadwaita-1-dev
+
+      # gtk4-rs links the system GTK on every platform the workspace builds.
+      - name: macOS system deps (GTK4)
+        if: runner.os == 'macOS'
+        run: brew install gtk4 libadwaita
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
@@ -42,3 +49,63 @@ jobs:
 
       - name: Tests
         run: cargo test --workspace
+
+  # Drives a live host over the IPC socket with `scripts/e2e.sh` — the
+  # same asserts run against the GTK app (lyra-gui under Xvfb) and the
+  # headless daemon on Linux, and against the built Lyra.app on macOS.
+  e2e:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4
+
+      - name: Linux system deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq pkg-config libasound2-dev \
+            libgtk-4-dev libadwaita-1-dev xvfb
+          # null sink → cpal has an "output device", so the transport
+          # asserts run instead of degrading to the no-audio path.
+          printf 'pcm.!default { type null }\n' > "$HOME/.asoundrc"
+
+      - name: macOS system deps (GTK4)
+        if: runner.os == 'macOS'
+        run: brew install gtk4 libadwaita
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      - name: Build binaries (Linux)
+        if: runner.os == 'Linux'
+        run: cargo build --bins -p lyra-cli -p lyra-ffi -p lyra-ui
+
+      - name: Build binaries (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          cargo build --bins -p lyra-cli -p lyra-ffi
+          make app CARGO=cargo
+
+      - name: E2E — GTK app under Xvfb (Linux)
+        if: runner.os == 'Linux'
+        env:
+          LYRA_BIN: ${{ github.workspace }}/target/debug/lyra
+          LYRA_E2E_HOST: ${{ github.workspace }}/target/debug/lyra-gui
+        run: ./scripts/e2e.sh
+
+      - name: E2E — headless daemon (Linux)
+        if: runner.os == 'Linux'
+        env:
+          LYRA_BIN: ${{ github.workspace }}/target/debug/lyra
+          LYRA_E2E_HOST: ${{ github.workspace }}/target/debug/lyrad
+        run: ./scripts/e2e.sh
+
+      - name: E2E — Lyra.app (macOS)
+        if: runner.os == 'macOS'
+        env:
+          LYRA_BIN: ${{ github.workspace }}/target/debug/lyra
+          LYRA_E2E_APP: ${{ github.workspace }}/.build/Lyra.app
+        run: ./scripts/e2e.sh
