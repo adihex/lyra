@@ -29,6 +29,14 @@ darwin-only:
 lyrad:
 	$(CARGO) build -p lyra-ffi --bin lyrad $(if $(filter release,$(PROFILE)),--release,)
 
+# Design tokens → both shells. design/tokens.toml is the single source of
+# truth; this restamps the marked blocks in LyraTheme.swift + design.rs.
+tokens:
+	python3 scripts/gen_design_tokens.py
+
+tokens-check:
+	python3 scripts/gen_design_tokens.py --check
+
 # Linux-native UI (GTK4 + libadwaita). Builds on macOS too with
 # `brew install gtk4 libadwaita`, but the supported mac UI is SwiftUI.
 gui:

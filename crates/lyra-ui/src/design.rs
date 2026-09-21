@@ -47,7 +47,27 @@ pub struct Palette {
     pub dim: &'static str,
 }
 
-pub const PALETTE: Palette = Palette {
+// Palette values are generated from `design/tokens.toml` — edit there,
+// then `make tokens` to restamp this block and the Swift `LyraColors` table.
+// GENERATED PALETTES — do not edit
+#[allow(dead_code)] // every row is stamped for parity;
+pub const LAVENDER_LIGHT: Palette = Palette {
+    chassis: "#F3F0F7",
+    tray: "#E0D9E9",
+    keycap: "#FDFCFF",
+    accent: "#C5B3D8",
+    legend: "#4A3C60",
+    on_accent: "#30263F",
+    tint: "#665379",
+    on_tint: "#FFFFFF",
+    secondary_ink: "#495F62",
+    companion: "#C0D7D0",
+    border: "#B8AAC7",
+    dim: "#665379",
+};
+
+#[allow(dead_code)] // every row is stamped for parity;
+pub const LAVENDER_DARK: Palette = Palette {
     chassis: "#211F29",
     tray: "#19171F",
     keycap: "#34303E",
@@ -61,6 +81,74 @@ pub const PALETTE: Palette = Palette {
     border: "#60566E",
     dim: "#8E82A8",
 };
+
+#[allow(dead_code)] // every row is stamped for parity;
+pub const ROSE_LIGHT: Palette = Palette {
+    chassis: "#F8F1F2",
+    tray: "#EADCE1",
+    keycap: "#FFFCFD",
+    accent: "#D8B7C1",
+    legend: "#60434E",
+    on_accent: "#3D2932",
+    tint: "#805468",
+    on_tint: "#FFFFFF",
+    secondary_ink: "#56614A",
+    companion: "#CDD8BD",
+    border: "#C6AAB5",
+    dim: "#805468",
+};
+
+#[allow(dead_code)] // every row is stamped for parity;
+pub const ROSE_DARK: Palette = Palette {
+    chassis: "#281F23",
+    tray: "#20181C",
+    keycap: "#3C2F35",
+    accent: "#D3AFBD",
+    legend: "#F5E5EC",
+    on_accent: "#39232D",
+    tint: "#DDBFCC",
+    on_tint: "#39232D",
+    secondary_ink: "#C2CDAF",
+    companion: "#C6D1B7",
+    border: "#735766",
+    dim: "#A99DA8",
+};
+
+#[allow(dead_code)] // every row is stamped for parity;
+pub const MINT_LIGHT: Palette = Palette {
+    chassis: "#EFF5F2",
+    tray: "#D7E4DD",
+    keycap: "#FCFFFD",
+    accent: "#AECABD",
+    legend: "#354F43",
+    on_accent: "#24382E",
+    tint: "#496B5A",
+    on_tint: "#FFFFFF",
+    secondary_ink: "#5D5A77",
+    companion: "#CECBE0",
+    border: "#A6BDB0",
+    dim: "#496B5A",
+};
+
+#[allow(dead_code)] // every row is stamped for parity;
+pub const MINT_DARK: Palette = Palette {
+    chassis: "#1C2522",
+    tray: "#141C19",
+    keycap: "#2C3C34",
+    accent: "#A3C5B4",
+    legend: "#E1F0E8",
+    on_accent: "#1F362A",
+    tint: "#B5D5C4",
+    on_tint: "#24382E",
+    secondary_ink: "#C8BFDC",
+    companion: "#C6BED7",
+    border: "#4D6B5D",
+    dim: "#8FA39B",
+};
+
+/// Default GTK palette — `lavender.dark` per design/tokens.toml.
+pub const PALETTE: Palette = LAVENDER_DARK;
+// END GENERATED PALETTES
 
 /// Full stylesheet: token definitions first, then the rule set that maps
 /// roles onto GTK's widget tree. Rules reference only `@lyra_*` colors —

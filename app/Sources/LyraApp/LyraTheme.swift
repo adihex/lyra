@@ -39,38 +39,24 @@ enum LyraPalette: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     var title: String { rawValue.capitalized }
 
+    /// Palette rows are generated from `design/tokens.toml` — edit there,
+    /// then `make tokens` to restamp this switch and the GTK `Palette`s.
     func colors(dark: Bool) -> LyraColors {
         switch (self, dark) {
+        // GENERATED PALETTES — do not edit
         case (.lavender, false):
-            return LyraColors(chassis: 0xF3F0F7, tray: 0xE0D9E9, keycap: 0xFDFCFF,
-                              accent: 0xC5B3D8, legend: 0x4A3C60, onAccent: 0x30263F,
-                              tint: 0x665379, onTint: 0xFFFFFF, secondaryInk: 0x495F62,
-                              companion: 0xC0D7D0, border: 0xB8AAC7)
+            return LyraColors(chassis: 0xF3F0F7, tray: 0xE0D9E9, keycap: 0xFDFCFF, accent: 0xC5B3D8, legend: 0x4A3C60, onAccent: 0x30263F, tint: 0x665379, onTint: 0xFFFFFF, secondaryInk: 0x495F62, companion: 0xC0D7D0, border: 0xB8AAC7)
         case (.lavender, true):
-            return LyraColors(chassis: 0x211F29, tray: 0x19171F, keycap: 0x34303E,
-                              accent: 0xBBA8CF, legend: 0xECE5F2, onAccent: 0x2B2336,
-                              tint: 0xC5B3D8, onTint: 0x30263F, secondaryInk: 0xA9C9C3,
-                              companion: 0xAFC9C3, border: 0x60566E)
+            return LyraColors(chassis: 0x211F29, tray: 0x19171F, keycap: 0x34303E, accent: 0xBBA8CF, legend: 0xECE5F2, onAccent: 0x2B2336, tint: 0xC5B3D8, onTint: 0x30263F, secondaryInk: 0xA9C9C3, companion: 0xAFC9C3, border: 0x60566E)
         case (.rose, false):
-            return LyraColors(chassis: 0xF8F1F2, tray: 0xEADCE1, keycap: 0xFFFCFD,
-                              accent: 0xD8B7C1, legend: 0x60434E, onAccent: 0x3D2932,
-                              tint: 0x805468, onTint: 0xFFFFFF, secondaryInk: 0x56614A,
-                              companion: 0xCDD8BD, border: 0xC6AAB5)
+            return LyraColors(chassis: 0xF8F1F2, tray: 0xEADCE1, keycap: 0xFFFCFD, accent: 0xD8B7C1, legend: 0x60434E, onAccent: 0x3D2932, tint: 0x805468, onTint: 0xFFFFFF, secondaryInk: 0x56614A, companion: 0xCDD8BD, border: 0xC6AAB5)
         case (.rose, true):
-            return LyraColors(chassis: 0x281F23, tray: 0x20181C, keycap: 0x3C2F35,
-                              accent: 0xD3AFBD, legend: 0xF5E5EC, onAccent: 0x39232D,
-                              tint: 0xDDBFCC, onTint: 0x39232D, secondaryInk: 0xC2CDAF,
-                              companion: 0xC6D1B7, border: 0x735766)
+            return LyraColors(chassis: 0x281F23, tray: 0x20181C, keycap: 0x3C2F35, accent: 0xD3AFBD, legend: 0xF5E5EC, onAccent: 0x39232D, tint: 0xDDBFCC, onTint: 0x39232D, secondaryInk: 0xC2CDAF, companion: 0xC6D1B7, border: 0x735766)
         case (.mint, false):
-            return LyraColors(chassis: 0xEFF5F2, tray: 0xD7E4DD, keycap: 0xFCFFFD,
-                              accent: 0xAECABD, legend: 0x354F43, onAccent: 0x24382E,
-                              tint: 0x496B5A, onTint: 0xFFFFFF, secondaryInk: 0x5D5A77,
-                              companion: 0xCECBE0, border: 0xA6BDB0)
+            return LyraColors(chassis: 0xEFF5F2, tray: 0xD7E4DD, keycap: 0xFCFFFD, accent: 0xAECABD, legend: 0x354F43, onAccent: 0x24382E, tint: 0x496B5A, onTint: 0xFFFFFF, secondaryInk: 0x5D5A77, companion: 0xCECBE0, border: 0xA6BDB0)
         case (.mint, true):
-            return LyraColors(chassis: 0x1C2522, tray: 0x141C19, keycap: 0x2C3C34,
-                              accent: 0xA3C5B4, legend: 0xE1F0E8, onAccent: 0x1F362A,
-                              tint: 0xB5D5C4, onTint: 0x24382E, secondaryInk: 0xC8BFDC,
-                              companion: 0xC6BED7, border: 0x4D6B5D)
+            return LyraColors(chassis: 0x1C2522, tray: 0x141C19, keycap: 0x2C3C34, accent: 0xA3C5B4, legend: 0xE1F0E8, onAccent: 0x1F362A, tint: 0xB5D5C4, onTint: 0x24382E, secondaryInk: 0xC8BFDC, companion: 0xC6BED7, border: 0x4D6B5D)
+        // END GENERATED PALETTES
         }
     }
 }
