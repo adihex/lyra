@@ -15,3 +15,8 @@ coreaudio-sys = "0.2.18"
 
 [lints]
 workspace = true
+
+# lyra-core is used only under the macOS cfg (lib.rs is a stub off-Apple);
+# udeps runs on Linux and can't see through target-gated code.
+[package.metadata.cargo-udeps.ignore]
+normal = ["lyra-core"]
