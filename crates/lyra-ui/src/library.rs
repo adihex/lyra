@@ -541,7 +541,11 @@ fn refresh_rows(lib: &Rc<RefCell<Lib>>) {
     for t in &ts {
         l.rows.append(&track_row(t));
     }
-    l.count_l.set_label(&format!("{} tracks", ts.len()));
+    l.count_l.set_label(&if ts.is_empty() {
+        "nothing here yet — scan a folder and let it rip".to_string()
+    } else {
+        format!("{} tracks", ts.len())
+    });
 }
 
 const HEADER_LABELS: [&str; 6] = ["#", "Title", "Artist", "Album", "Time", "Format"];

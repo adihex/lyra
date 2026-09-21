@@ -182,57 +182,76 @@ const RULES: &str = r#"
    colors leak through on list and scrolled views. */
 window { background-color: @lyra_chassis; color: @lyra_legend; }
 headerbar { background-color: @lyra_tray; color: @lyra_legend;
+            background-image: linear-gradient(to bottom,
+                alpha(@lyra_tint, 0.10), transparent 55%);
             box-shadow: 0 1px 0 @lyra_border; }
 list, scrolledwindow, columnview, .view {
     background-color: @lyra_chassis; color: @lyra_legend; }
 separator { background-color: alpha(@lyra_border, 0.5); min-height: 1px; }
 
-/* Sidebar — tray surface, pill rows, tint-filled selection. */
+/* Sidebar — tray surface, pill rows, gradient tint-filled selection. */
 .lyra-sidebar { background-color: @lyra_tray; }
-.lyra-sidebar row { padding: 8px 12px; border-radius: 10px;
+.lyra-sidebar row { padding: 8px 14px; border-radius: 14px;
                     font-weight: 500; }
-.lyra-sidebar row:selected { background-color: @lyra_tint;
-                             color: @lyra_on_tint; }
+.lyra-sidebar row:hover { background-color: alpha(@lyra_keycap, 0.6); }
+.lyra-sidebar row:selected {
+    background-image: linear-gradient(135deg, @lyra_tint, @lyra_accent);
+    color: @lyra_on_tint;
+    box-shadow: 0 2px 8px alpha(@lyra_tint, 0.45); }
 
 /* Transport tray. */
 .lyra-now-playing { background-color: @lyra_tray;
                     border-top: 1px solid @lyra_border; padding: 10px 16px; }
 
-/* Card — the raised keycap surface used for wells, chips, dialogs. */
+/* Card — the raised keycap surface: soft radius, ambient shadow. */
 .lyra-card { background-color: @lyra_keycap;
              border: 1px solid @lyra_border;
-             border-radius: 12px; padding: 12px; }
+             border-radius: 18px; padding: 14px;
+             box-shadow: 0 2px 10px alpha(@lyra_border, 0.30); }
 
-/* Buttons — "sharp" is the neutral chrome, suggested-action the tint. */
-button.sharp { border-radius: 8px; padding: 5px 12px; }
-button.flat { border-radius: 8px; }
-button.suggested-action { background-color: @lyra_tint; color: @lyra_on_tint;
-                          border-radius: 8px; padding: 5px 14px; }
-button.suggested-action:disabled { opacity: 0.45; }
+/* Buttons — pill caps; suggested-action carries the tint→accent gradient
+   and lifts on hover. */
+button.sharp { border-radius: 999px; padding: 6px 16px; }
+button.flat { border-radius: 999px; }
+button.suggested-action {
+    background-image: linear-gradient(135deg, @lyra_tint, @lyra_accent);
+    color: @lyra_on_tint;
+    border-radius: 999px; padding: 6px 18px; border: none; }
+button.suggested-action:hover {
+    box-shadow: 0 3px 10px alpha(@lyra_tint, 0.5); }
+button.suggested-action:disabled { opacity: 0.45; background-image: none;
+    background-color: @lyra_tint; }
 
 /* Track table — `track` is on the ListBox, so rows are `list.track > row`.
-   Hover lifts to keycap; selection uses the accent wash with legend ink. */
+   Rounded rows; selection is an accent-wash pill with a playful left tab. */
 .track-header button { font-weight: 600; font-size: 11px; color: @lyra_dim;
                        background: none; border: none; padding: 6px 4px; }
 .track-header button:hover { color: @lyra_legend; }
-list.track > row { padding: 4px 8px; }
+list.track > row { padding: 5px 10px; border-radius: 10px; }
 list.track > row:hover { background-color: @lyra_keycap; }
-list.track > row:selected { background-color: alpha(@lyra_accent, 0.22); }
+list.track > row:selected {
+    background-color: alpha(@lyra_accent, 0.24);
+    border-left: 3px solid @lyra_accent; }
 list.track > row:selected .dim { color: alpha(@lyra_legend, 0.7); }
 list.track > row:selected .mint { color: @lyra_companion; }
 
-/* Sliders — seek is tint, EQ is the mint secondary. */
-scale.seek trough { min-height: 4px; }
-scale.seek highlight { background-color: @lyra_tint; }
-scale.eq trough { min-width: 4px; }
-scale.eq highlight { background-color: @lyra_secondary_ink; }
+/* Sliders — seek fades tint→mint along its length; EQ is the secondary. */
+scale.seek trough { min-height: 5px; border-radius: 999px; }
+scale.seek highlight {
+    background-image: linear-gradient(90deg, @lyra_tint, @lyra_secondary_ink);
+    border-radius: 999px; }
+scale.seek slider { border-radius: 999px; }
+scale.eq trough { min-width: 5px; border-radius: 999px; }
+scale.eq highlight { background-color: @lyra_secondary_ink;
+                     border-radius: 999px; }
 
-/* Sunken text wells take the tray surface. */
+/* Sunken text wells take the tray surface; soft pill radius, tint focus. */
 entry, spinbutton { background-color: @lyra_tray; color: @lyra_legend;
                     caret-color: @lyra_legend;
                     border: 1px solid @lyra_border;
-                    border-radius: 8px; padding: 5px 10px; }
-entry:focus, spinbutton:focus { border-color: @lyra_tint; }
+                    border-radius: 14px; padding: 6px 14px; }
+entry:focus, spinbutton:focus { border-color: @lyra_tint;
+    box-shadow: 0 0 0 2px alpha(@lyra_tint, 0.3); }
 
 /* Ink roles. */
 .dim { color: @lyra_dim; }

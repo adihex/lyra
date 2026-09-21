@@ -40,25 +40,30 @@ Rules must reference `@lyra_*` tokens only. A palette swap (rose/mint) is a
 | Token | Value | Where |
 |---|---|---|
 | Pane margins | 16 top/bottom, 20 start/end | `design::pane_root()` |
-| Card | radius 12, padding 12, 1px border | `design::card()` / `.lyra-card` |
-| Sharp button | radius 8, padding 5×12 | `design::secondary_button()` |
-| Suggested action | radius 8, padding 5×14 | `design::primary_button()` |
-| Sidebar row | radius 10, padding 8×12, weight 500 | `.lyra-sidebar row` |
-| Track row | padding 4×8 | `list.track > row` |
+| Card | radius 18, padding 14, 1px border, soft shadow | `design::card()` / `.lyra-card` |
+| Sharp button | pill (radius 999), padding 6×16 | `design::secondary_button()` |
+| Suggested action | pill, tint→accent gradient, hover lift | `design::primary_button()` |
+| Sidebar row | radius 14, padding 8×14, weight 500 | `.lyra-sidebar row` |
+| Track row | radius 10, padding 5×10 | `list.track > row` |
 | Track header cell | font 11px, weight 600, `dim` ink | `.track-header button` |
-| Seek trough | min-height 4, tint highlight | `scale.seek` |
-| EQ trough | min-width 4, mint highlight | `scale.eq` |
+| Entry / spinbutton | radius 14, padding 6×14 | `entry`, `spinbutton` |
+| Seek trough | min-height 5, pill, tint→mint gradient fill | `scale.seek` |
+| EQ trough | min-width 5, pill, mint highlight | `scale.eq` |
 
 ## States
 
-- Track row hover → `keycap`; selected → 22% `accent` wash, `legend` ink
-  (`.dim` → 70% legend, `.mint` → `companion` inside selection).
-- Sidebar selection → solid `tint` with `onTint` ink.
-- `suggested-action:disabled` → 45% opacity.
-- `entry:focus` → `tint` border.
+- Track row hover → `keycap`; selected → 24% `accent` wash with a 3px
+  accent left tab, `legend` ink (`.dim` → 70% legend, `.mint` →
+  `companion` inside selection).
+- Sidebar selection → `tint`→`accent` 135° gradient pill with `onTint`
+  ink and a soft tint shadow; hover → 60% `keycap`.
+- `suggested-action:disabled` → 45% opacity, flat `tint` (no gradient).
+- `entry:focus` → `tint` border + 2px tint ring (30% alpha).
+- Headerbar carries a faint `tint` sheen (10% → transparent).
 - Intentional differences from macOS: GTK list/table widgets instead of
-  SwiftUI `Table`; no hover-reveal affordances; disabled-state and focus
-  treatments follow GTK/adwaita norms.
+  SwiftUI `Table`; no hover-reveal affordances; the Linux shell leans
+  rounder/more playful (pill buttons, gradients, left-tab selection) —
+  whimsy lives in the GTK layer, the token contract stays identical.
 
 ## Shared primitives (reuse these, don't restyle)
 
