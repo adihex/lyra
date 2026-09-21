@@ -1,6 +1,8 @@
 //! Real-device checks — runs against the actual output hardware.
 //! `hog_ioproc_tone` plays ~1.2s of a sine through the IOProc path.
 
+#![cfg(target_os = "macos")]
+
 use lyra_hal::HalDevice;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};

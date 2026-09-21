@@ -20,6 +20,7 @@ jobs:
           curl -fsSL -o /tmp/droid "$BASE/droid"
           curl -fsSL -o /tmp/droid.sha256 "$BASE/droid.sha256"
           echo "$(cat /tmp/droid.sha256)  /tmp/droid" | sha256sum -c -
+          mkdir -p "$HOME/.local/bin"
           install -m 0755 /tmp/droid "$HOME/.local/bin/droid"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 

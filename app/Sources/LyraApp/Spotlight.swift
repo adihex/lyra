@@ -21,10 +21,9 @@ final class SpotlightIndex {
         libraryReady(tracks)
         let items = tracks.filter { $0.source == .file }.map(item(for:))
         index.deleteSearchableItems(withDomainIdentifiers: [domain]) { _ in
-            self.index.beginBatch()
+            // The default index is CSSearchableIndexShared — batching
+            // (begin/endIndexBatch) throws on it as of macOS 26.
             self.index.indexSearchableItems(items) { _ in }
-            self.index.endIndexBatch(expectedClientState: nil,
-                                     newClientState: Data()) { _ in }
         }
     }
 

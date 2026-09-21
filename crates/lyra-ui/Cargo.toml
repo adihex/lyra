@@ -1,0 +1,29 @@
+[package]
+name = "lyra-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "lyra-gui"
+path = "src/main.rs"
+
+[dependencies]
+lyra-core = { path = "../lyra-core" }
+lyra-engine = { path = "../lyra-engine" }
+lyra-ffi = { path = "../lyra-ffi" }
+lyra-store = { path = "../lyra-store" }
+lyra-map = { path = "../lyra-map" }
+lyra-ipc = { path = "../lyra-ipc" }
+gtk4 = "0.7"
+libadwaita = { version = "0.5", features = ["gtk_v4_4"] }
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+# Coach pane: mic capture for the live input lane — same cpal stack the
+# engine uses for output (keep the major version in lockstep).
+cpal = "0.18"
+
+[lints]
+workspace = true

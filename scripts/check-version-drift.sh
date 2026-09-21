@@ -26,7 +26,10 @@ cd "$(dirname "$0")/.."
 # Baseline grounded 2026-09-20: 658 locked packages, 58 names with >1
 # version, all of them transitive third-party (none lyra-*, none
 # unifiable from our manifests — verified by inspection, see below).
-BASELINE_DUP_NAMES=58
+# Raised 58 → 61 on 2026-09-21: lyra-ui's gtk4-rs/gir macro chain pulls
+# proc-macro-crate 1.x/2.x/3.x alongside toml_edit+winnow+heck+toml_datetime
+# splits — transitive constraints, not unifiable from our manifests.
+BASELINE_DUP_NAMES=61
 
 fail=0
 fail_msg() { echo "drift FAIL: $1"; fail=1; }

@@ -11,6 +11,12 @@
 //! Rate-switch sequencing per BLUEPRINT.md: set nominal rate → wait for it
 //! to apply → start IOProc. Hog first so nothing else reconfigures the
 //! device mid-switch.
+//!
+//! macOS-only: CoreAudio has no Linux counterpart. The crate compiles to an
+//! empty stub elsewhere; callers gate on `cfg(target_os = "macos")` and the
+//! engine's cpal compat path is the portable driver.
+
+#![cfg(target_os = "macos")]
 
 use coreaudio_sys::*;
 #[link(name = "CoreFoundation", kind = "framework")]

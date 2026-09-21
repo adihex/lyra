@@ -1,27 +1,66 @@
 # Lyra — no-xcodeproj build. Rust core → staticlib → swiftc → .app bundle → codesign.
 # For release we'd move to XcodeGen for Sparkle's nested-signing (see BLUEPRINT § packaging).
 
-CARGO    := mise exec -- cargo
+# mise shim only when it actually works — a box can have mise installed
+# while its cargo/mbx shim failed to provision.
+CARGO    := $(if $(shell mise exec -- cargo --version >/dev/null 2>&1 && echo ok),mise exec -- cargo,cargo)
 PROFILE  := debug
 SWIFTC   := xcrun swiftc
 APP      := .build/Lyra.app
 APPBIN   := $(APP)/Contents/MacOS/Lyra
 LIBDIR   := app/.libs
 SWIFT_SRC:= $(wildcard app/Sources/LyraApp/*.swift app/Sources/LyraApp/*/*.swift)
+UNAME_S  := $(shell uname -s)
 
-.PHONY: all rust app sign run clean check
+.PHONY: all rust app sign run clean check lyrad gui e2e darwin-only
 
 all: app
 
 check:
 	$(CARGO) check --workspace
 
+# The SwiftUI shell is macOS-only; on Linux the UI is lyra-gui (GTK4 +
+# libadwaita, needs libgtk-4-dev + libadwaita-1-dev) and the supported
+# headless host is lyrad — both are driven by the `lyra` CLI over IPC.
+darwin-only:
+	@test "$(UNAME_S)" = "Darwin" || { echo "make: the SwiftUI app is macOS-only — use 'make gui' or 'make lyrad' on Linux"; exit 1; }
+
+# Headless host — works on Linux and macOS.
+lyrad:
+	$(CARGO) build -p lyra-ffi --bin lyrad $(if $(filter release,$(PROFILE)),--release,)
+
+# Design tokens → both shells. design/tokens.toml is the single source of
+# truth; this restamps the marked blocks in LyraTheme.swift + design.rs.
+tokens:
+	python3 scripts/gen_design_tokens.py
+
+tokens-check:
+	python3 scripts/gen_design_tokens.py --check
+
+# Linux-native UI (GTK4 + libadwaita). Builds on macOS too with
+# `brew install gtk4 libadwaita`, but the supported mac UI is SwiftUI.
+gui:
+	$(CARGO) build -p lyra-ui --bin lyra-gui $(if $(filter release,$(PROFILE)),--release,)
+
+# IPC-driven E2E: same asserts on both OSes — macOS runs the built .app,
+# Linux runs lyra-gui under Xvfb and lyrad headless (see scripts/e2e.sh).
+e2e:
+	$(CARGO) build --bins -p lyra-cli -p lyra-ffi $(if $(filter release,$(PROFILE)),--release,)
+	@if [ "$(UNAME_S)" = "Darwin" ]; then \
+		$(MAKE) app PROFILE=$(PROFILE); \
+		LYRA_BIN=$$PWD/target/$(PROFILE)/lyra LYRA_E2E_APP=$$PWD/$(APP) ./scripts/e2e.sh; \
+	else \
+		$(CARGO) build -p lyra-ui --bin lyra-gui $(if $(filter release,$(PROFILE)),--release,); \
+		LYRA_BIN=$$PWD/target/$(PROFILE)/lyra LYRA_E2E_HOST=$$PWD/target/$(PROFILE)/lyra-gui ./scripts/e2e.sh; \
+		LYRA_BIN=$$PWD/target/$(PROFILE)/lyra LYRA_E2E_HOST=$$PWD/target/$(PROFILE)/lyrad ./scripts/e2e.sh; \
+	fi
+
 rust:
 	$(CARGO) build -p lyra-ffi $(if $(filter release,$(PROFILE)),--release,)
 	@mkdir -p $(LIBDIR)
 	@cp target/$(PROFILE)/liblyra_ffi.a $(LIBDIR)/
 
-app: rust $(APPBIN) $(APP)/Contents/Info.plist $(APP)/Contents/Resources/AppIcon.icns $(APP)/Contents/Resources/Assets.car sign
+app: darwin-only rust $(APPBIN) $(APP)/Contents/Info.plist $(APP)/Contents/Resources/AppIcon.icns $(APP)/Contents/Resources/Assets.car sign
 
 $(APP)/Contents/Resources/AppIcon.icns: app/Resources/AppIcon.icns
 	@mkdir -p $(APP)/Contents/Resources
@@ -73,7 +112,7 @@ $(APPBIN): $(SWIFT_SRC) $(LIBDIR)/liblyra_ffi.a
 $(APP)/Contents/Info.plist: Info.plist
 	@cp Info.plist $(APP)/Contents/
 
-sign: $(APPBIN)
+sign: darwin-only $(APPBIN)
 	codesign --force --sign - --entitlements entitlements.plist $(APP)
 
 run: app
