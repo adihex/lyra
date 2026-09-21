@@ -508,7 +508,9 @@ mod tests {
 
     #[test]
     fn end_to_end_fixture_map() {
-        let dir = std::env::temp_dir().join("lyra_map_pipe");
+        // own dir: sibling tests share fix.wav otherwise — a mid-write
+        // truncate raced a decode and produced flaky EOF failures.
+        let dir = std::env::temp_dir().join("lyra_map_pipe_e2e");
         let _ = std::fs::create_dir_all(&dir);
         let wav = dir.join("fix.wav");
         fixture_wav(&wav);
@@ -539,7 +541,7 @@ mod tests {
 
     #[test]
     fn stage_subset_produces_partial_map() {
-        let dir = std::env::temp_dir().join("lyra_map_pipe");
+        let dir = std::env::temp_dir().join("lyra_map_pipe_subset");
         let _ = std::fs::create_dir_all(&dir);
         let wav = dir.join("fix.wav");
         if !wav.is_file() {

@@ -35,10 +35,15 @@ mkdir -p "$FIXTURES" "$DATA"
 say()  { printf '\n== %s\n' "$*"; }
 fail() { printf 'E2E FAIL: %s\n' "$*" >&2; exit 1; }
 
+XVFB_PID=""
+
 cleanup() {
     if [ -n "${HOST_PID}" ]; then
         kill "${HOST_PID}" 2>/dev/null || true
         wait "${HOST_PID}" 2>/dev/null || true
+    fi
+    if [ -n "${XVFB_PID}" ]; then
+        kill "${XVFB_PID}" 2>/dev/null || true
     fi
     if [ "${LYRA_E2E_KEEP:-}" != "1" ]; then
         rm -rf "$DIR"
@@ -103,8 +108,14 @@ say "start host"
 if [ -n "$APP" ]; then
     open "$APP" >>"$LOG" 2>&1 || fail "open $APP"
 elif [ -n "$HOST_BIN" ]; then
-    if [[ "$HOST_BIN" == *lyra-gui* && "${LYRA_E2E_NO_XVFB:-}" != "1" ]] && command -v xvfb-run >/dev/null; then
-        xvfb-run -a "$HOST_BIN" --socket "$SOCK" --data-dir "$DATA" >>"$LOG" 2>&1 &
+    if [[ "$HOST_BIN" == *lyra-gui* && "${LYRA_E2E_NO_XVFB:-}" != "1" ]] && command -v Xvfb >/dev/null; then
+        # own Xvfb so we hold both PIDs — via xvfb-run the GUI gets
+        # orphaned on teardown and spins at 100% CPU on the dead display
+        DISP=:$((RANDOM % 90 + 10))
+        Xvfb "$DISP" -screen 0 1280x800x24 -ac >>"$LOG" 2>&1 &
+        XVFB_PID=$!
+        sleep 0.5
+        DISPLAY="$DISP" "$HOST_BIN" --socket "$SOCK" --data-dir "$DATA" >>"$LOG" 2>&1 &
     else
         "$HOST_BIN" --socket "$SOCK" --data-dir "$DATA" >>"$LOG" 2>&1 &
     fi
