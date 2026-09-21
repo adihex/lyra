@@ -11,7 +11,7 @@
 #   LYRA_E2E_APP    path to .build/Lyra.app          (macOS host — `open` it)
 #   LYRA_E2E_DIR    scratch dir                      (default: mktemp -d)
 #   LYRA_E2E_SOCKET explicit socket path             (default: <dir>/control.sock)
-#   LYRA_E2E_NO_XVFB=1  don't wrap lyra-gui in xvfb-run
+#   LYRA_E2E_NO_XVFB=1  run lyra-gui on the existing DISPLAY (no Xvfb)
 #   LYRA_E2E_KEEP=1 keep the scratch dir + host log on exit
 #
 # Audio posture: if the host machine has an output device (or a null ALSA
@@ -22,13 +22,23 @@ set -euo pipefail
 
 LYRA="${LYRA_BIN:-lyra}"
 DIR="${LYRA_E2E_DIR:-$(mktemp -d)}"
-FIXTURES="$DIR/fixtures"
-DATA="$DIR/data"
 SOCK="${LYRA_E2E_SOCKET:-$DIR/control.sock}"
 HOST_BIN="${LYRA_E2E_HOST:-}"
 APP="${LYRA_E2E_APP:-}"
 LOG="$DIR/host.log"
 HOST_PID=""
+
+if [ -n "$APP" ]; then
+    # Lyra.app is sandboxed: it can only read its own container (+ ~/Music
+    # and user-picked dirs) — a scan of /tmp fixtures is denied outright.
+    # Drop fixtures inside the container instead; the app owns it.
+    CONTAINER="$HOME/Library/Containers/app.lyra.player/Data/Lyra"
+    mkdir -p "$CONTAINER"
+    FIXTURES="$CONTAINER/e2e-fixtures"
+else
+    FIXTURES="$DIR/fixtures"
+fi
+DATA="$DIR/data"
 
 mkdir -p "$FIXTURES" "$DATA"
 
@@ -44,6 +54,9 @@ cleanup() {
     fi
     if [ -n "${XVFB_PID}" ]; then
         kill "${XVFB_PID}" 2>/dev/null || true
+    fi
+    if [ -n "$APP" ]; then
+        rm -rf "$FIXTURES"
     fi
     if [ "${LYRA_E2E_KEEP:-}" != "1" ]; then
         rm -rf "$DIR"
