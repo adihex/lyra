@@ -96,7 +96,7 @@ pub fn chroma_track(mono_44100: &[f32]) -> (Vec<[f32; 12]>, Vec<[f32; 12]>, f32)
         let mut b = [0f32; 12];
         for (k, v) in buf.iter().enumerate().take(FFT_N / 2) {
             let freq = k as f32 * SR / FFT_N as f32;
-            if freq < 41.0 || freq > 2093.0 {
+            if !(41.0..=2093.0).contains(&freq) {
                 continue;
             }
             let mag = v.norm_sqr();

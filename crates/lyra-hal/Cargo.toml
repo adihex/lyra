@@ -6,6 +6,11 @@ license.workspace = true
 
 [dependencies]
 lyra-core = { path = "../lyra-core" }
+
+# CoreAudio exists only on Apple targets — keep the crate in the workspace
+# everywhere, but pull the bindings only where they exist; the lib itself
+# compiles to an empty stub off macOS (see lib.rs's crate-level cfg).
+[target.'cfg(target_os = "macos")'.dependencies]
 coreaudio-sys = "0.2.18"
 
 [lints]

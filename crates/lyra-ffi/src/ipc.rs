@@ -59,7 +59,9 @@ pub struct LiveDispatcher {
 }
 
 impl LiveDispatcher {
-    pub fn new(db_path: PathBuf, shared: std::sync::Arc<Shared>) -> Self {
+    /// `Shared` stays crate-internal — hosts come up through `lyra_ipc_start`,
+    /// which builds the pair together, so `new` doesn't leak the type.
+    pub(crate) fn new(db_path: PathBuf, shared: std::sync::Arc<Shared>) -> Self {
         let store = lyra_store::Library::open(&db_path)
             .map_err(|e| tracing::warn!("ipc: store open {db_path:?}: {e}"))
             .ok();

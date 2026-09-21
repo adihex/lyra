@@ -3,6 +3,8 @@ name: ci
 # Fast PR feedback: format → clippy (deny warnings) → tests.
 # Device-dependent engine/HAL tests degrade gracefully (skip when no
 # output device), so the suite stays green on headless runners.
+# The matrix keeps the whole Rust workspace honest on both supported OSes:
+# the .app + HAL path are macOS-only, everything else must stay portable.
 
 on:
   push:
@@ -11,13 +13,24 @@ on:
 
 jobs:
   lint-test:
-    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       # rust + cmake + ninja from mise.toml. CARGO=cargo skips the mbx
       # shim so rust-cache can cache target/ as a normal directory.
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4
+
+      # cpal's Linux backend is ALSA — needs the dev headers at build time.
+      - name: Linux system deps (ALSA for cpal)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq pkg-config libasound2-dev
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 

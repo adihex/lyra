@@ -20,7 +20,9 @@ static INIT: Once = Once::new();
 
 mod art;
 mod coach;
-mod ipc;
+/// The live IPC bridge is `pub` (not just its extern symbols) so the
+/// `lyrad` headless host can drive the same server the app does.
+pub mod ipc;
 mod map;
 mod remote_fs;
 

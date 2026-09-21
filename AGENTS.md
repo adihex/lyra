@@ -1,7 +1,10 @@
 # AGENTS.md — Lyra contributor guide for humans and coding agents
 
-Lyra is a macOS hi-fi music player: a SwiftUI shell (`app/`) over a Rust core
-(`crates/`). There is no `.xcodeproj`; the Makefile is the dev loop.
+Lyra is a hi-fi music player: a SwiftUI shell (`app/`, macOS-only) over a
+portable Rust core (`crates/`, macOS + Linux). There is no `.xcodeproj`;
+the Makefile is the dev loop. On Linux the runnable host is `lyrad`
+(`cargo run -p lyra-ffi --bin lyrad`): engine + IPC socket + store +
+torrents, driven by the `lyra` CLI — the app's role without the UI.
 Read `README.md` (layout, security posture) and `BLUEPRINT.md` (per-layer
 research, packaging, open spikes) before touching architecture.
 
@@ -23,7 +26,11 @@ make app PROFILE=release CARGO=cargo   # release variant used by .github/workflo
 make run              # build then open the app
 make dev              # rebuild + kill running Lyra + relaunch (pseudo-HMR)
 make check            # mise exec -- cargo check --workspace
+make lyrad            # headless host — the supported entry point on Linux
 ```
+
+`make`/`make run`/`make dev`/`make watch` guard on `uname` — the SwiftUI
+shell is macOS-only and fails fast with a pointer to `make lyrad` elsewhere.
 
 Build details (see Makefile): `swiftc` compiles
 `app/Sources/LyraApp/**/*.swift` with `-import-objc-header modules/CLyraFFI/lyra.h`,
@@ -36,7 +43,7 @@ warns and keeps going). `make clean` removes `.build`, `app/.libs`, and runs
 ## Test
 
 ```sh
-cargo test --workspace            # full suite (~150 unit/integration tests, green on macOS)
+cargo test --workspace            # full suite, green on macOS AND Linux
 cargo test -p lyra-engine         # engine pipeline incl. real-device output tests
 cargo test -p lyra-remote         # pairing e2e over loopback (crates/lyra-remote/tests/pairing.rs)
 cargo test -p lyra-ipc            # IPC protocol + server/dispatcher tests
@@ -46,7 +53,9 @@ Device-dependent engine/HAL tests degrade gracefully (skip when no output
 device), so the suite stays green on headless runners — this is asserted in
 `.github/workflows/ci.yml`, which runs `cargo fmt --check`, then
 `cargo clippy --workspace --all-targets -- -D warnings`, then
-`cargo test --workspace` on `macos-latest`. Match that order locally:
+`cargo test --workspace` on a `macos-latest` + `ubuntu-latest` matrix
+(Linux installs `pkg-config` + `libasound2-dev` for cpal→ALSA first).
+Match that order locally:
 
 ```sh
 cargo fmt --check
@@ -66,10 +75,11 @@ cargo test --workspace
    header directly, so a Rust signature change without a header update breaks
    the `swiftc` step, not `cargo check`.
 4. Agent-native control: the `lyra` CLI / `lyra-mcp` binaries
-   (`crates/lyra-cli`) drive a live app over the `lyra-ipc` unix socket;
-   `crates/lyra-remote/examples/remote_client.rs` is the reference client for
-   the LAN pairing protocol. Prefer driving the app through these instead of
-   GUI scripting when verifying behavior.
+   (`crates/lyra-cli`) drive a live host over the `lyra-ipc` unix socket —
+   the app on macOS, `lyrad` (`crates/lyra-ffi/src/bin/lyrad.rs`) on Linux
+   or headless runs. `crates/lyra-remote/examples/remote_client.rs` is the
+   reference client for the LAN pairing protocol. Prefer driving the host
+   through these instead of GUI scripting when verifying behavior.
 5. Release: tags `v*` (or manual dispatch with a `version` input) trigger
    `.github/workflows/release.yml` — version stamp via `plutil` on
    `Info.plist`, `make app PROFILE=release CARGO=cargo`, UDZO DMG via
@@ -85,6 +95,9 @@ cargo test --workspace
 - **RT discipline** (engine/HAL/DSP): no alloc, lock, I/O, or panic in the
   audio callback — memcpy/gain only. Params cross via atomics/triple-buffer;
   EQ rebuilds happen on the worker via commands.
+- **Platform gating**: platform-only implementations live behind target-gated
+  deps + `cfg` (lyra-hal is the template — empty stub off macOS). Keep
+  `cargo check/clippy/test --workspace` green on Linux and macOS alike.
 - **Sandbox posture**: `entitlements.plist` is a deny-list — grow it only when
   a feature demands it. No AppleEvents, no secrets in the bundle, no bearer
   credentials (remote auth is SPAKE2 pairing → pinned X25519 keys).

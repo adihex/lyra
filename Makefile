@@ -8,20 +8,30 @@ APP      := .build/Lyra.app
 APPBIN   := $(APP)/Contents/MacOS/Lyra
 LIBDIR   := app/.libs
 SWIFT_SRC:= $(wildcard app/Sources/LyraApp/*.swift app/Sources/LyraApp/*/*.swift)
+UNAME_S  := $(shell uname -s)
 
-.PHONY: all rust app sign run clean check
+.PHONY: all rust app sign run clean check lyrad darwin-only
 
 all: app
 
 check:
 	$(CARGO) check --workspace
 
+# The SwiftUI shell is macOS-only; on Linux the supported entry point is
+# lyrad (headless host: engine + IPC + remote) driven by the `lyra` CLI.
+darwin-only:
+	@test "$(UNAME_S)" = "Darwin" || { echo "make: the SwiftUI app is macOS-only — use 'make lyrad' on Linux"; exit 1; }
+
+# Headless host — works on Linux and macOS.
+lyrad:
+	$(CARGO) build -p lyra-ffi --bin lyrad $(if $(filter release,$(PROFILE)),--release,)
+
 rust:
 	$(CARGO) build -p lyra-ffi $(if $(filter release,$(PROFILE)),--release,)
 	@mkdir -p $(LIBDIR)
 	@cp target/$(PROFILE)/liblyra_ffi.a $(LIBDIR)/
 
-app: rust $(APPBIN) $(APP)/Contents/Info.plist $(APP)/Contents/Resources/AppIcon.icns $(APP)/Contents/Resources/Assets.car sign
+app: darwin-only rust $(APPBIN) $(APP)/Contents/Info.plist $(APP)/Contents/Resources/AppIcon.icns $(APP)/Contents/Resources/Assets.car sign
 
 $(APP)/Contents/Resources/AppIcon.icns: app/Resources/AppIcon.icns
 	@mkdir -p $(APP)/Contents/Resources
@@ -73,7 +83,7 @@ $(APPBIN): $(SWIFT_SRC) $(LIBDIR)/liblyra_ffi.a
 $(APP)/Contents/Info.plist: Info.plist
 	@cp Info.plist $(APP)/Contents/
 
-sign: $(APPBIN)
+sign: darwin-only $(APPBIN)
 	codesign --force --sign - --entitlements entitlements.plist $(APP)
 
 run: app

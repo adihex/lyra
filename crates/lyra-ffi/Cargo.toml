@@ -5,7 +5,13 @@ edition.workspace = true
 license.workspace = true
 
 [lib]
-crate-type = ["staticlib", "cdylib"]
+# staticlib+cdylib are the Swift app's link artifacts; rlib lets Rust
+# binaries in this workspace (lyrad, tests) link the same FFI surface.
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "lyrad"
+path = "src/bin/lyrad.rs"
 
 [dependencies]
 lyra-core = { path = "../lyra-core" }
