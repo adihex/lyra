@@ -75,9 +75,10 @@ impl Client {
         }
         Err(ClientError::NotRunning(
             paths
-                .first()
+                .iter()
                 .map(|p| p.display().to_string())
-                .unwrap_or_default(),
+                .collect::<Vec<_>>()
+                .join(" or "),
         ))
     }
 
