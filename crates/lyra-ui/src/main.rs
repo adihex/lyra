@@ -17,6 +17,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 mod coach;
+mod design;
 mod discover;
 mod eq;
 mod ffi;
@@ -24,7 +25,6 @@ mod library;
 mod map;
 mod model;
 mod remote;
-mod theme;
 mod visuals;
 
 use lyra_ffi::host::{self, Host, HostArgs};
@@ -163,8 +163,12 @@ impl From<ParsedArgs> for HostArgs {
 }
 
 fn build_ui(application: &adw::Application, host: Host, play: Option<PathBuf>) {
+    // Lyra renders dark on every host — force the scheme so stock GTK
+    // widgets (headerbar, lists, entries) resolve to dark adwaita colors
+    // even where no desktop dark preference exists (e.g. bare Xvfb).
+    adw::StyleManager::default().set_color_scheme(adw::ColorScheme::ForceDark);
     let provider = gtk4::CssProvider::new();
-    provider.load_from_data(theme::CSS);
+    provider.load_from_data(&design::css());
     gtk4::style_context_add_provider_for_display(
         &gdk::Display::default().expect("display"),
         &provider,

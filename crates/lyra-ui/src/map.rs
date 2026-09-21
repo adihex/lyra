@@ -2,6 +2,7 @@
 //! `lyra_map_analyze`/`lyra_map_for_track`, rendered as the app does:
 //! tuning + grid summary, section list, and a chord-timeline strip.
 
+use crate::design;
 use crate::{ffi, Msg, Shared};
 use gtk4::prelude::*;
 use lyra_map::SongMap;
@@ -59,29 +60,21 @@ fn tuning_name(m: &SongMap) -> String {
 }
 
 pub fn build(app: &Shared) -> gtk4::Widget {
-    let root = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
-    root.set_margin_top(16);
-    root.set_margin_bottom(16);
-    root.set_margin_start(20);
-    root.set_margin_end(20);
+    let root = design::pane_root();
 
     let head = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
-    let t = gtk4::Label::new(Some("Map"));
-    t.add_css_class("title-1");
+    let t = design::section_title("Map");
     head.append(&t);
     let spacer = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
     spacer.set_hexpand(true);
     head.append(&spacer);
-    let analyze_btn = gtk4::Button::with_label("Analyze current track");
-    analyze_btn.add_css_class("suggested-action");
+    let analyze_btn = design::primary_button("Analyze current track");
     head.append(&analyze_btn);
     root.append(&head);
 
-    let note_l = gtk4::Label::new(Some(
-        "Analyze a library track for tuning, beat grid, sections and chords.",
-    ));
+    let note_l =
+        design::dim_label("Analyze a library track for tuning, beat grid, sections and chords.");
     note_l.set_xalign(0.0);
-    note_l.add_css_class("dim");
     root.append(&note_l);
 
     let summary = gtk4::Label::new(None);
@@ -97,11 +90,10 @@ pub fn build(app: &Shared) -> gtk4::Widget {
     root.append(&strip);
 
     // sections + notes readout
-    let detail = gtk4::Label::new(None);
+    let detail = design::dim_label("");
     detail.set_xalign(0.0);
     detail.set_valign(gtk4::Align::Start);
     detail.set_selectable(true);
-    detail.add_css_class("dim");
     let scroll = gtk4::ScrolledWindow::builder()
         .child(&detail)
         .vexpand(true)

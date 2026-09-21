@@ -3,6 +3,7 @@
 //! push runs from a cpal input stream (ALSA/JACK under the hood), so the
 //! live session/judge is literally the same code path.
 
+use crate::design;
 use crate::{ffi, Shared};
 use gtk4::prelude::*;
 use serde_json::{json, Value};
@@ -26,28 +27,21 @@ thread_local! {
 }
 
 pub fn build(_app: &Shared) -> gtk4::Widget {
-    let root = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
-    root.set_margin_top(16);
-    root.set_margin_bottom(16);
-    root.set_margin_start(20);
-    root.set_margin_end(20);
+    let root = design::pane_root();
 
     let head = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
-    let t = gtk4::Label::new(Some("Coach"));
-    t.add_css_class("title-1");
+    let t = design::section_title("Coach");
     head.append(&t);
     root.append(&head);
 
-    let desc = gtk4::Label::new(Some(
+    let desc = design::dim_label(
         "Strum-on-the-grid: plays a metronome grid and grades your strums through the mic.",
-    ));
+    );
     desc.set_xalign(0.0);
     desc.set_wrap(true);
-    desc.add_css_class("dim");
     root.append(&desc);
 
-    let ctl = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
-    ctl.add_css_class("lyra-card");
+    let ctl = design::card(gtk4::Orientation::Horizontal);
     ctl.append(&gtk4::Label::new(Some("BPM")));
     let bpm = gtk4::SpinButton::with_range(30.0, 400.0, 1.0);
     bpm.set_value(96.0);
@@ -55,17 +49,14 @@ pub fn build(_app: &Shared) -> gtk4::Widget {
     let feedback = gtk4::DropDown::from_strings(&["full", "coarse", "end_of_phrase", "silent"]);
     ctl.append(&gtk4::Label::new(Some("Feedback")));
     ctl.append(&feedback);
-    let start_btn = gtk4::Button::with_label("Start practice");
-    start_btn.add_css_class("suggested-action");
+    let start_btn = design::primary_button("Start practice");
     ctl.append(&start_btn);
-    let cal_btn = gtk4::Button::with_label("Calibrate input");
-    cal_btn.add_css_class("sharp");
+    let cal_btn = design::secondary_button("Calibrate input");
     ctl.append(&cal_btn);
     root.append(&ctl);
 
-    let note_l = gtk4::Label::new(None);
+    let note_l = design::dim_label("");
     note_l.set_xalign(0.0);
-    note_l.add_css_class("dim");
     root.append(&note_l);
 
     let score_l = gtk4::Label::new(None);

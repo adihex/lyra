@@ -2,6 +2,7 @@
 //! vertical gain sliders plus the live magnitude response from the
 //! engine (`lyra_engine_eq_response` — same biquads as the audio path).
 
+use crate::design;
 use crate::model::EQ_FREQS;
 use crate::{engine, ffi, Shared};
 use gtk4::glib;
@@ -13,21 +14,15 @@ use std::time::Duration;
 const DB_RANGE: f64 = 24.0; // ±12 dB like the app
 
 pub fn build(app: &Shared) -> gtk4::Widget {
-    let root = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
-    root.set_margin_top(16);
-    root.set_margin_bottom(16);
-    root.set_margin_start(20);
-    root.set_margin_end(20);
+    let root = design::pane_root();
 
     let head = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
-    let t = gtk4::Label::new(Some("Equalizer"));
-    t.add_css_class("title-1");
+    let t = design::section_title("Equalizer");
     head.append(&t);
     let spacer = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
     spacer.set_hexpand(true);
     head.append(&spacer);
-    let reset = gtk4::Button::with_label("Reset");
-    reset.add_css_class("sharp");
+    let reset = design::secondary_button("Reset");
     head.append(&reset);
     root.append(&head);
 
@@ -47,8 +42,7 @@ pub fn build(app: &Shared) -> gtk4::Widget {
     let mut scales = Vec::new();
     for (i, f) in EQ_FREQS.iter().enumerate() {
         let col = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
-        let val = gtk4::Label::new(Some("0.0"));
-        val.add_css_class("dim");
+        let val = design::dim_label("0.0");
         let s = gtk4::Scale::with_range(
             gtk4::Orientation::Vertical,
             -DB_RANGE / 2.0,
@@ -64,8 +58,7 @@ pub fn build(app: &Shared) -> gtk4::Widget {
         } else {
             format!("{}", *f as u32)
         };
-        let freq_l = gtk4::Label::new(Some(&freq_txt));
-        freq_l.add_css_class("dim");
+        let freq_l = design::dim_label(&freq_txt);
         col.append(&val);
         col.append(&s);
         col.append(&freq_l);

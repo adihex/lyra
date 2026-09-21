@@ -6,6 +6,7 @@
 //! as JSON in the data dir — there's no Keychain on Linux, so passwords
 //! stay session-only.
 
+use crate::design;
 use crate::model::{save_remotes, RemoteSource};
 use crate::{engine, ffi, Msg, Shared};
 use gtk4::prelude::*;
@@ -32,46 +33,35 @@ thread_local! {
 }
 
 pub fn build(app: &Shared) -> gtk4::Widget {
-    let root = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
-    root.set_margin_top(16);
-    root.set_margin_bottom(16);
-    root.set_margin_start(20);
-    root.set_margin_end(20);
+    let root = design::pane_root();
 
     let head = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
-    let t = gtk4::Label::new(Some("Remote"));
-    t.add_css_class("title-1");
+    let t = design::section_title("Remote");
     head.append(&t);
     root.append(&head);
 
-    let desc = gtk4::Label::new(Some(
+    let desc = design::dim_label(
         "Pair a phone to play your library on it over the LAN — SPAKE2 code, pinned keys, Noise transport.",
-    ));
+    );
     desc.set_xalign(0.0);
     desc.set_wrap(true);
-    desc.add_css_class("dim");
     root.append(&desc);
 
     // server controls
-    let srv = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
-    srv.add_css_class("lyra-card");
+    let srv = design::card(gtk4::Orientation::Horizontal);
     srv.append(&gtk4::Label::new(Some("Port")));
     let port = gtk4::SpinButton::with_range(1024.0, 65535.0, 1.0);
     port.set_value(app.prefs.borrow().remote_port as f64);
     srv.append(&port);
-    let server_btn = gtk4::Button::with_label("Start server");
-    server_btn.add_css_class("suggested-action");
+    let server_btn = design::primary_button("Start server");
     srv.append(&server_btn);
-    let status = gtk4::Label::new(None);
-    status.add_css_class("dim");
+    let status = design::dim_label("");
     srv.append(&status);
     root.append(&srv);
 
     // pairing
-    let pair = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
-    pair.add_css_class("lyra-card");
-    let pair_btn = gtk4::Button::with_label("Show pairing code");
-    pair_btn.add_css_class("sharp");
+    let pair = design::card(gtk4::Orientation::Horizontal);
+    let pair_btn = design::secondary_button("Show pairing code");
     pair.append(&pair_btn);
     let pair_info = gtk4::Label::new(None);
     pair_info.set_selectable(true);
@@ -181,8 +171,7 @@ fn refresh_devices(rp: &Rc<RefCell<RemotePane>>) {
         l.set_xalign(0.0);
         l.set_hexpand(true);
         row.append(&l);
-        let revoke = gtk4::Button::with_label("Revoke");
-        revoke.add_css_class("sharp");
+        let revoke = design::secondary_button("Revoke");
         {
             let rp = rp.clone();
             let id = id.clone();
@@ -228,8 +217,7 @@ fn rebuild_card(app: &Shared, card: &gtk4::Box) {
             label.set_hexpand(true);
             row.append(&label);
             for (name, what) in [("Test", 0u8), ("Scan", 1u8)] {
-                let b = gtk4::Button::with_label(name);
-                b.add_css_class("sharp");
+                let b = design::secondary_button(name);
                 let app = app.clone();
                 b.connect_clicked(move |_| {
                     let profile = REMOTES.with(|r| {
@@ -316,8 +304,7 @@ fn rebuild_card(app: &Shared, card: &gtk4::Box) {
     key_e.set_hexpand(true);
     row4.append(&key_e);
     row4.append(&pw_e);
-    let save = gtk4::Button::with_label("Save source");
-    save.add_css_class("suggested-action");
+    let save = design::primary_button("Save source");
     row4.append(&save);
     form.append(&row4);
     card.append(&form);

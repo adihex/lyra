@@ -3,6 +3,7 @@
 //! sort lossless-then-seeds, expand resolves files + an addable spec,
 //! Add hands the magnet to the torrent session.
 
+use crate::design;
 use crate::{ffi, Msg, Shared};
 use gtk4::prelude::*;
 use serde_json::{json, Value};
@@ -22,15 +23,10 @@ struct Disc {
 }
 
 pub fn build(app: &Shared) -> gtk4::Widget {
-    let root = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
-    root.set_margin_top(16);
-    root.set_margin_bottom(16);
-    root.set_margin_start(20);
-    root.set_margin_end(20);
+    let root = design::pane_root();
 
     let head = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
-    let t = gtk4::Label::new(Some("Discover"));
-    t.add_css_class("title-1");
+    let t = design::section_title("Discover");
     head.append(&t);
     let entry = gtk4::SearchEntry::builder()
         .placeholder_text("Search legal indexes — artist, album…")
@@ -39,16 +35,14 @@ pub fn build(app: &Shared) -> gtk4::Widget {
     head.append(&entry);
     let lossy = gtk4::CheckButton::with_label("include lossy");
     head.append(&lossy);
-    let search_btn = gtk4::Button::with_label("Search");
-    search_btn.add_css_class("suggested-action");
+    let search_btn = design::primary_button("Search");
     head.append(&search_btn);
     root.append(&head);
 
     let status_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
     let busy = gtk4::Spinner::new();
-    let status = gtk4::Label::new(None);
+    let status = design::dim_label("");
     status.set_xalign(0.0);
-    status.add_css_class("dim");
     status_row.append(&busy);
     status_row.append(&status);
     root.append(&status_row);
@@ -244,19 +238,16 @@ fn render_rows(app: &Shared, st: &Rc<RefCell<Disc>>) {
             size.map(|b| format!(" · {:.0} MiB", b as f64 / 1_048_576.0))
                 .unwrap_or_default()
         );
-        let meta_l = gtk4::Label::new(Some(&meta));
-        meta_l.add_css_class("dim");
+        let meta_l = design::dim_label(&meta);
         line.append(&meta_l);
         row_box.append(&line);
 
         // expanded detail: file preview + add button
         if s.expanded == Some(i) {
-            let det = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
-            det.add_css_class("lyra-card");
+            let det = design::card(gtk4::Orientation::Vertical);
             match s.detail.get(&i) {
                 None => {
-                    let l = gtk4::Label::new(Some("resolving files…"));
-                    l.add_css_class("dim");
+                    let l = design::dim_label("resolving files…");
                     det.append(&l);
                 }
                 Some(d) => {
@@ -264,19 +255,17 @@ fn render_rows(app: &Shared, st: &Rc<RefCell<Disc>>) {
                         for f in files.iter().take(12) {
                             let n = f.get("path").and_then(|p| p.as_str()).unwrap_or("?");
                             let sz = f.get("size").and_then(|p| p.as_u64()).unwrap_or(0);
-                            let l = gtk4::Label::new(Some(&format!(
+                            let l = design::dim_label(&format!(
                                 "{n}  ·  {:.1} MiB",
                                 sz as f64 / 1_048_576.0
-                            )));
+                            ));
                             l.set_xalign(0.0);
-                            l.add_css_class("dim");
                             det.append(&l);
                         }
                     }
                     let addable = d.get("addable").cloned().unwrap_or(Value::Null);
                     if !addable.is_null() {
-                        let add = gtk4::Button::with_label("Add to downloads");
-                        add.add_css_class("suggested-action");
+                        let add = design::primary_button("Add to downloads");
                         add.set_halign(gtk4::Align::Start);
                         let app = app.clone();
                         add.connect_clicked(move |_| {

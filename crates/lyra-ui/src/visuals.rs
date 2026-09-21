@@ -4,6 +4,7 @@
 //! information-bearing modes; decorative particle modes from the Swift
 //! port collapse to the nearest equivalent here.
 
+use crate::design;
 use crate::{engine, ffi, Shared};
 use gtk4::glib;
 use gtk4::prelude::*;
@@ -37,15 +38,10 @@ struct Viz {
 }
 
 pub fn build(app: &Shared) -> gtk4::Widget {
-    let root = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
-    root.set_margin_top(16);
-    root.set_margin_bottom(16);
-    root.set_margin_start(20);
-    root.set_margin_end(20);
+    let root = design::pane_root();
 
     let head = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
-    let t = gtk4::Label::new(Some("Visuals"));
-    t.add_css_class("title-1");
+    let t = design::section_title("Visuals");
     head.append(&t);
     let spacer = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
     spacer.set_hexpand(true);
@@ -55,11 +51,10 @@ pub fn build(app: &Shared) -> gtk4::Widget {
     head.append(&picker);
     root.append(&head);
 
-    let hint = gtk4::Label::new(Some(
+    let hint = design::dim_label(
         "bands/wave/meters come straight off the engine's viz tap — nothing is synthesized",
-    ));
+    );
     hint.set_xalign(0.0);
-    hint.add_css_class("dim");
     root.append(&hint);
 
     let area = gtk4::DrawingArea::builder()

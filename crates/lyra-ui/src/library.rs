@@ -4,7 +4,7 @@
 //! torrents chips + orphan cleanup.
 
 use crate::model::{fmt_dur, load_remotes, RemoteSource, Track};
-use crate::{ffi, remote, Msg, Shared};
+use crate::{design, ffi, remote, Msg, Shared};
 use gtk4::prelude::*;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -38,16 +38,11 @@ struct Lib {
 }
 
 pub fn build(app: &Shared) -> gtk4::Widget {
-    let root = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
-    root.set_margin_top(16);
-    root.set_margin_bottom(16);
-    root.set_margin_start(20);
-    root.set_margin_end(20);
+    let root = design::pane_root();
 
     // ── header row ─────────────────────────────────────────────────────
     let top = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
-    let title = gtk4::Label::new(Some("Library"));
-    title.add_css_class("title-1");
+    let title = design::section_title("Library");
     top.append(&title);
 
     let search = gtk4::Entry::builder()
@@ -60,37 +55,32 @@ pub fn build(app: &Shared) -> gtk4::Widget {
     spacer.set_hexpand(true);
     top.append(&spacer);
 
-    let add_torrent = gtk4::Button::with_label("Add torrent");
+    let add_torrent = design::secondary_button("Add torrent");
     add_torrent.set_tooltip_text(Some(
         "Paste a magnet URI or pick a .torrent — audio streams on demand",
     ));
-    let remote_btn = gtk4::Button::with_label("Remote");
+    let remote_btn = design::secondary_button("Remote");
     remote_btn.set_tooltip_text(Some(
         "SSH/SFTP library roots — scan and stream without copying",
     ));
-    let art_btn = gtk4::Button::with_label("Fetch artwork");
+    let art_btn = design::secondary_button("Fetch artwork");
     art_btn.set_tooltip_text(Some(
         "Cover Art Archive lookup for albums missing art (MusicBrainz-paced)",
     ));
-    let scan_btn = gtk4::Button::with_label("Scan folder…");
-    scan_btn.add_css_class("suggested-action");
+    let scan_btn = design::primary_button("Scan folder…");
     for b in [&add_torrent, &remote_btn, &art_btn, &scan_btn] {
-        b.add_css_class("sharp");
         top.append(b);
     }
     root.append(&top);
 
     // ── magnet entry ───────────────────────────────────────────────────
-    let magnet = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
-    magnet.add_css_class("lyra-card");
+    let magnet = design::card(gtk4::Orientation::Horizontal);
     let magnet_entry = gtk4::Entry::builder()
         .placeholder_text("magnet:?xt=… or /path/to/file.torrent")
         .hexpand(true)
         .build();
-    let magnet_add = gtk4::Button::with_label("Add");
-    magnet_add.add_css_class("suggested-action");
-    let magnet_browse = gtk4::Button::with_label("Browse…");
-    magnet_browse.add_css_class("sharp");
+    let magnet_add = design::primary_button("Add");
+    let magnet_browse = design::secondary_button("Browse…");
     magnet.append(&magnet_entry);
     magnet.append(&magnet_add);
     magnet.append(&magnet_browse);
@@ -102,8 +92,7 @@ pub fn build(app: &Shared) -> gtk4::Widget {
 
     // ── remote sources card (collapsed into Remote pane? no — app keeps
     //    it inside Library) ─────────────────────────────────────────────
-    let remote_card = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
-    remote_card.add_css_class("lyra-card");
+    let remote_card = design::card(gtk4::Orientation::Vertical);
     remote_card.set_visible(false);
     root.append(&remote_card);
 
@@ -112,16 +101,13 @@ pub fn build(app: &Shared) -> gtk4::Widget {
     root.append(&torrents_box);
     let orphans_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
     orphans_row.set_visible(false);
-    let orphans_l = gtk4::Label::new(None);
-    orphans_l.add_css_class("dim");
-    let purge = gtk4::Button::with_label("Clean up");
-    purge.add_css_class("sharp");
+    let orphans_l = design::dim_label("");
+    let purge = design::secondary_button("Clean up");
     orphans_row.append(&orphans_l);
     orphans_row.append(&purge);
     root.append(&orphans_row);
 
-    let scan_status = gtk4::Label::new(None);
-    scan_status.add_css_class("dim");
+    let scan_status = design::dim_label("");
     root.append(&scan_status);
 
     // ── track table: header row + listbox ──────────────────────────────
@@ -156,14 +142,12 @@ pub fn build(app: &Shared) -> gtk4::Widget {
     root.append(&scroll);
 
     let bottom = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
-    let count_l = gtk4::Label::new(Some("0 tracks"));
-    count_l.add_css_class("dim");
+    let count_l = design::dim_label("0 tracks");
     bottom.append(&count_l);
     let spacer2 = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
     spacer2.set_hexpand(true);
     bottom.append(&spacer2);
-    let play_sel = gtk4::Button::with_label("Play selected");
-    play_sel.add_css_class("sharp");
+    let play_sel = design::secondary_button("Play selected");
     bottom.append(&play_sel);
     root.append(&bottom);
 
@@ -454,8 +438,7 @@ fn refresh_torrents(app: &Shared, lib: &Rc<RefCell<Lib>>) {
         for t in list {
             let id = t.get("id").and_then(|v| v.as_i64()).unwrap_or(-1) as i32;
             let name = t.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-            let chip = gtk4::Box::new(gtk4::Orientation::Horizontal, 4);
-            chip.add_css_class("lyra-card");
+            let chip = design::card(gtk4::Orientation::Horizontal);
             let n = gtk4::Label::new(Some(name));
             n.add_css_class("mint");
             let x = gtk4::Button::with_label("✕");
