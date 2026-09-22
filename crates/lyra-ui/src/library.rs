@@ -114,18 +114,24 @@ pub fn build(app: &Shared) -> gtk4::Widget {
     // ── track table: header row + listbox ──────────────────────────────
     let header = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
     header.add_css_class("track-header");
+    // Width 0 = flexible column — text columns stretch with the window,
+    // numeric/format columns stay compact (table fills the pane width).
     let header_btns = [
         (SortKey::TrackNo, "#", 40),
-        (SortKey::Title, "Title", 220),
-        (SortKey::Artist, "Artist", 160),
-        (SortKey::Album, "Album", 160),
+        (SortKey::Title, "Title", 0),
+        (SortKey::Artist, "Artist", 0),
+        (SortKey::Album, "Album", 0),
         (SortKey::Time, "Time", 56),
         (SortKey::Format, "Format", 64),
     ];
     let mut btns = Vec::new();
     for (k, label, w) in header_btns {
         let b = gtk4::Button::with_label(label);
-        b.set_width_request(w);
+        if w == 0 {
+            b.set_hexpand(true);
+        } else {
+            b.set_width_request(w);
+        }
         header.append(&b);
         btns.push((k, b));
     }
@@ -592,7 +598,11 @@ const HEADER_LABELS: [&str; 6] = ["#", "Title", "Artist", "Album", "Time", "Form
 
 fn cell(text: &str, w: i32) -> gtk4::Label {
     let l = gtk4::Label::new(Some(text));
-    l.set_width_request(w);
+    if w == 0 {
+        l.set_hexpand(true);
+    } else {
+        l.set_width_request(w);
+    }
     l.set_xalign(0.0);
     l.set_ellipsize(gtk4::pango::EllipsizeMode::End);
     l.set_max_width_chars(1);
@@ -613,11 +623,11 @@ fn track_row(t: &Track) -> gtk4::ListBoxRow {
     no.add_css_class("dim");
     design::mono(&no);
     b.append(&no);
-    b.append(&cell(&t.title, 220));
-    let artist = cell(&t.artist, 160);
+    b.append(&cell(&t.title, 0));
+    let artist = cell(&t.artist, 0);
     artist.add_css_class("dim");
     b.append(&artist);
-    let album = cell(&t.album, 160);
+    let album = cell(&t.album, 0);
     album.add_css_class("dim");
     b.append(&album);
     let time = cell(&fmt_dur(t.duration), 56);

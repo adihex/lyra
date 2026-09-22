@@ -257,7 +257,7 @@ fn build_ui(application: &adw::Application, host: Host, play: Option<PathBuf>) {
         ("library", "Library", "folder-music-symbolic"),
         ("discover", "Discover", "system-search-symbolic"),
         ("coach", "Coach", "dialog-information-symbolic"),
-        ("map", "Map", "map-symbolic"),
+        ("map", "Map", "find-location-symbolic"),
         ("eq", "Equalizer", "input-dialpad-symbolic"),
         ("visuals", "Visuals", "starred-symbolic"),
         ("remote", "Remote", "folder-remote-symbolic"),
