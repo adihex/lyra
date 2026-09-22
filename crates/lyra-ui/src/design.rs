@@ -192,7 +192,7 @@ separator { background-color: alpha(@lyra_border, 0.5); min-height: 1px; }
 /* Sidebar — tray surface, pill rows, gradient tint-filled selection. */
 .lyra-sidebar { background-color: @lyra_tray; }
 .lyra-sidebar row { padding: 8px 14px; border-radius: 14px;
-                    font-weight: 500; }
+                    margin: 2px 8px; font-weight: 500; }
 .lyra-sidebar row:hover { background-color: alpha(@lyra_keycap, 0.6); }
 .lyra-sidebar row:selected {
     background-image: linear-gradient(135deg, @lyra_tint, @lyra_accent);
