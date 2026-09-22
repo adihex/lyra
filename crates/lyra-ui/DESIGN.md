@@ -1,9 +1,12 @@
 # lyra-gui design contract
 
-The measured visual contract for the GTK shell. Its source of truth is the
-macOS app: `app/Sources/LyraApp/LyraTheme.swift` (`LyraColors` role names +
-`lavender` dark row hex values). `src/design.rs` projects that contract onto
-GTK — do not introduce literal colors or per-pane styling that bypasses it.
+The measured visual contract for the GTK shell — one design language with
+the macOS shell (`app/Sources/LyraApp/`). The single source of truth for
+**colors, spacing, type sizes, radii, and stroke weights** is
+`design/tokens.toml`; `make tokens` (`scripts/gen_design_tokens.py`)
+stamps it into both shells — Swift `LyraColors`/`Bubble.*` and Rust
+`Palette`/geometry consts. Do not introduce literal colors or per-pane
+styling that bypasses the tokens.
 
 ## Scheme
 
@@ -20,14 +23,14 @@ emitted as a `@define-color lyra_<role>` custom property.
 | Role | Token | Lavender dark | GTK usage |
 |---|---|---|---|
 | chassis | `@lyra_chassis` | `#211F29` | window + content background, list/scrolled surfaces |
-| tray | `@lyra_tray` | `#19171F` | header bar, sidebar, transport bar, sunken text wells |
-| keycap | `@lyra_keycap` | `#34303E` | raised surfaces: `.lyra-card`, row hover |
-| accent | `@lyra_accent` | `#BBA8CF` | selection wash (alpha 0.22) on track rows |
+| tray | `@lyra_tray` | `#19171F` | header bar, sidebar, transport + status bars, sunken text wells |
+| keycap | `@lyra_keycap` | `#34303E` | raised surfaces: `.lyra-card`, keycap buttons, row hover |
+| accent | `@lyra_accent` | `#BBA8CF` | selection wash (alpha 0.24) on track rows, gradient end |
 | legend | `@lyra_legend` | `#ECE5F2` | primary text |
 | onAccent | `@lyra_on_accent` | `#2B2336` | text on accent |
 | tint | `@lyra_tint` | `#C5B3D8` | primary buttons, seek highlight, sidebar selection, focus ring |
 | onTint | `@lyra_on_tint` | `#30263F` | text on tint |
-| secondaryInk | `@lyra_secondary_ink` | `#A9C9C3` | `.mint` ink, EQ highlight |
+| secondaryInk | `@lyra_secondary_ink` | `#A9C9C3` | `.mint` ink, EQ highlight, chips |
 | companion | `@lyra_companion` | `#AFC9C3` | `.mint` ink on selected rows |
 | border | `@lyra_border` | `#60566E` | hairlines, card borders, separators |
 | dim | `@lyra_dim` | `#8E82A8` | derived de-emphasized text (not a LyraColors role) |
@@ -35,42 +38,64 @@ emitted as a `@define-color lyra_<role>` custom property.
 Rules must reference `@lyra_*` tokens only. A palette swap (rose/mint) is a
 `Palette` value change, never a rule edit.
 
-## Geometry
+## Geometry / type tokens (generated)
+
+`[space]`, `[type]`, `[radius]`, `[stroke]` in `design/tokens.toml` stamp
+to `SPACE_*`, `TY_*`, `R_*`, `STROKE_*` consts (code layout) **and** into
+`{NAME}` placeholders inside the CSS rule set — so stylesheet geometry is
+contract-driven, not hand-duplicated.
 
 | Token | Value | Where |
 |---|---|---|
-| Pane margins | 16 top/bottom, 20 start/end | `design::pane_root()` |
-| Card | radius 18, padding 14, 1px border, soft shadow | `design::card()` / `.lyra-card` |
-| Sharp button | pill (radius 999), padding 6×16 | `design::secondary_button()` |
-| Suggested action | pill, tint→accent gradient, hover lift | `design::primary_button()` |
-| Sidebar row | radius 14, padding 8×14, weight 500 | `.lyra-sidebar row` |
-| Track row | radius 10, padding 5×10 | `list.track > row` |
-| Track header cell | font 11px, weight 600, `dim` ink | `.track-header button` |
-| Entry / spinbutton | radius 14, padding 6×14 | `entry`, `spinbutton` |
-| Seek trough | min-height 5, pill, tint→mint gradient fill | `scale.seek` |
+| `SPACE_*` | 4/8/12/16/20/24/page 28 | `pane_root()` margins (20v × 28h), spacing |
+| `TY_*` | title 24 · headline 14 · caption 11 · micro 10 | `.lyra-title/headline/caption/micro` |
+| `R_CARD` | 18 | `.lyra-card` radius (+1px rim, padding 14, **no shadow**) |
+| `R_TRAY` / `R_FIELD` | 20 / 12 | tray curves; `entry`/`spinbutton` radius |
+| `R_ROW` / `R_SIDEBAR_ROW` | 10 / 14 | track rows; sidebar pill rows |
+| `STROKE_FINE` | 1 | hairlines, card/button rims |
+| `STROKE_FOCUS` | 3 | `:focus-visible` rings, selection left-tab |
+| Window | 1040×760 default, 780×560 min | matches `Bubble.Size.window*` |
+| Buttons | pill (radius 999): `sharp` keycap+rim, `suggested-action` tint→accent gradient | `design::*_button()` |
+| Transport keys | `lyra-key` 32px round keycap, `lyra-key-play` 40px tint gradient | Mac `compactKey`/`transportKey` |
+| Seek trough | min-height 5, pill, tint→mint gradient | `scale.seek` |
 | EQ trough | min-width 5, pill, mint highlight | `scale.eq` |
+| Icons | symbolic (`*-symbolic`), 16px sidebar, tinted by ink role | GTK-native, always themed |
 
 ## States
 
-- Track row hover → `keycap`; selected → 24% `accent` wash with a 3px
-  accent left tab, `legend` ink (`.dim` → 70% legend, `.mint` →
-  `companion` inside selection).
-- Sidebar selection → `tint`→`accent` 135° gradient pill with `onTint`
-  ink and a soft tint shadow; hover → 60% `keycap`.
-- `suggested-action:disabled` → 45% opacity, flat `tint` (no gradient).
-- `entry:focus` → `tint` border + 2px tint ring (30% alpha).
+- Track row hover → `keycap`; selected → 24% `accent` wash + 3px accent
+  left tab, `legend` ink (`.dim` → 70% legend, `.mint` → `companion`).
+- Sidebar selection → `tint`→`accent` 135° gradient pill, `onTint` ink
+  (icon included); hover → 60% `keycap`.
+- `:focus-visible` rings on buttons, sidebar rows, track rows, entries —
+  3px `tint` ring (30–50% alpha); keyboard focus is never invisible.
+- `suggested-action:disabled` → 45% opacity, flat `tint`.
+- `entry:focus` → `tint` border + tint ring.
 - Headerbar carries a faint `tint` sheen (10% → transparent).
-- Intentional differences from macOS: GTK list/table widgets instead of
-  SwiftUI `Table`; no hover-reveal affordances; the Linux shell leans
-  rounder/more playful (pill buttons, gradients, left-tab selection) —
-  whimsy lives in the GTK layer, the token contract stays identical.
+- Intentional differences from macOS: GTK list widgets instead of SwiftUI
+  `Table`; symbolic icons in place of SF Symbols; emoji glyphs avoided
+  (they tofu without a color-emoji font); depth is rim-contrast only —
+  **no box-shadows**, matching the shadowless Bubblegum contract.
+
+## Typography & text rules
+
+- Type ramp is contract-fixed (`TY_*`); panes use `section_title()`,
+  `dim_label()`, `.lyra-*` classes — no ad-hoc font sizes.
+- Numbers that churn or align in columns get `design::mono()` — Pango
+  `tnum`, the GTK `monospacedDigit()` equivalent (GTK CSS has no
+  font-feature control, so it's a code attribute).
+- Ellipsis `…` in placeholders and in-flight labels (`Filter…`,
+  `Scanning…`), never `...`.
+- Track cells ellipsize at end (`EllipsizeMode::End`); icon-only buttons
+  carry tooltips (GTK's accessible-name surface).
 
 ## Shared primitives (reuse these, don't restyle)
 
-`src/design.rs`: `pane_root()` (pane container), `card()` (raised surface),
-`section_title()` (`title-1`), `dim_label()` (secondary ink),
-`primary_button()` / `secondary_button()` (action roles). Panes compose
-these; add a primitive when the same pattern appears twice, not inline CSS.
+`src/design.rs`: `pane_root()` (page margins), `card()` (raised surface),
+`section_title()`, `dim_label()` (caption + dim), `mono()` (tnum),
+`empty_state()` (symbolic glyph + headline + hint, centered),
+`primary_button()` / `secondary_button()`. Panes compose these; add a
+primitive when the same pattern appears twice, not inline CSS.
 
 ## Product truth per pane
 

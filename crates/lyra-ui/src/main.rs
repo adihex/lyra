@@ -190,24 +190,45 @@ fn build_ui(application: &adw::Application, host: Host, play: Option<PathBuf>) {
     let artist_l = gtk4::Label::builder().xalign(0.0).build();
     artist_l.add_css_class("dim");
 
-    let prev_btn = gtk4::Button::with_label("⏮");
-    prev_btn.add_css_class("flat");
-    let play_btn = gtk4::Button::with_label("▶");
-    play_btn.add_css_class("flat");
-    let next_btn = gtk4::Button::with_label("⏭");
-    next_btn.add_css_class("flat");
+    // Round keycap transport — mirrors the Mac's compactKey (32) /
+    // transportKey (40) hardware sizes. Symbolic icons, not emoji —
+    // they tint with the label color and exist in every GTK icon theme.
+    let prev_btn = gtk4::Button::new();
+    prev_btn.set_child(Some(&gtk4::Image::from_icon_name(
+        "media-skip-backward-symbolic",
+    )));
+    prev_btn.add_css_class("lyra-key");
+    prev_btn.set_tooltip_text(Some("Previous track"));
+    let play_btn = gtk4::Button::new();
+    let play_icon = gtk4::Image::from_icon_name("media-playback-start-symbolic");
+    play_icon.set_pixel_size(20);
+    play_btn.set_child(Some(&play_icon));
+    play_btn.add_css_class("lyra-key-play");
+    play_btn.set_tooltip_text(Some("Play / pause"));
+    let next_btn = gtk4::Button::new();
+    next_btn.set_child(Some(&gtk4::Image::from_icon_name(
+        "media-skip-forward-symbolic",
+    )));
+    next_btn.add_css_class("lyra-key");
+    next_btn.set_tooltip_text(Some("Next track"));
 
     let pos_l = gtk4::Label::new(Some("0:00"));
     pos_l.add_css_class("dim");
+    pos_l.add_css_class("lyra-caption");
+    design::mono(&pos_l);
     let seek = gtk4::Scale::with_range(gtk4::Orientation::Horizontal, 0.0, 1.0, 0.1);
     seek.set_hexpand(true);
     seek.add_css_class("seek");
     seek.set_draw_value(false);
     let dur_l = gtk4::Label::new(Some("0:00"));
     dur_l.add_css_class("dim");
+    dur_l.add_css_class("lyra-caption");
+    design::mono(&dur_l);
 
-    let vol_icon = gtk4::Label::new(Some("🔊"));
+    let vol_icon = gtk4::Image::from_icon_name("audio-volume-high-symbolic");
+    vol_icon.add_css_class("dim");
     let vol = gtk4::Scale::with_range(gtk4::Orientation::Horizontal, 0.0, 1.42, 0.05);
+    vol.set_tooltip_text(Some("Volume"));
     vol.set_size_request(110, -1);
     vol.set_draw_value(false);
 
@@ -226,26 +247,29 @@ fn build_ui(application: &adw::Application, host: Host, play: Option<PathBuf>) {
     transport.append(&dur_l);
     transport.append(&vol_icon);
     transport.append(&vol);
-    transport.add_css_class("lyra-now-playing");
+    transport.add_css_class("lyra-transport");
 
     // ── sidebar ────────────────────────────────────────────────────────
     let sidebar = gtk4::ListBox::new();
     sidebar.add_css_class("lyra-sidebar");
     sidebar.set_selection_mode(gtk4::SelectionMode::Single);
-    const SECTIONS: [(&str, &str); 7] = [
-        ("library", "Library"),
-        ("discover", "Discover"),
-        ("coach", "Coach"),
-        ("map", "Map"),
-        ("eq", "Equalizer"),
-        ("visuals", "Visuals"),
-        ("remote", "Remote"),
+    const SECTIONS: [(&str, &str, &str); 7] = [
+        ("library", "Library", "folder-music-symbolic"),
+        ("discover", "Discover", "system-search-symbolic"),
+        ("coach", "Coach", "dialog-information-symbolic"),
+        ("map", "Map", "map-symbolic"),
+        ("eq", "Equalizer", "input-dialpad-symbolic"),
+        ("visuals", "Visuals", "starred-symbolic"),
+        ("remote", "Remote", "folder-remote-symbolic"),
     ];
-    for (name, label) in SECTIONS {
+    for (name, label, icon) in SECTIONS {
         let row = gtk4::ListBoxRow::new();
-        row.set_child(Some(
-            &gtk4::Label::builder().label(label).xalign(0.0).build(),
-        ));
+        let cell = gtk4::Box::new(gtk4::Orientation::Horizontal, 10);
+        let img = gtk4::Image::from_icon_name(icon);
+        img.set_pixel_size(16);
+        cell.append(&img);
+        cell.append(&gtk4::Label::builder().label(label).xalign(0.0).build());
+        row.set_child(Some(&cell));
         row.set_widget_name(name);
         sidebar.append(&row);
     }
@@ -268,6 +292,10 @@ fn build_ui(application: &adw::Application, host: Host, play: Option<PathBuf>) {
 
     let status = gtk4::Label::builder().xalign(0.0).build();
     status.add_css_class("dim");
+    status.add_css_class("lyra-caption");
+    let statusbar = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+    statusbar.add_css_class("lyra-statusbar");
+    statusbar.append(&status);
 
     let content = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
     let header = adw::HeaderBar::new();
@@ -275,15 +303,17 @@ fn build_ui(application: &adw::Application, host: Host, play: Option<PathBuf>) {
     header.set_title_widget(Some(&win_title));
     content.append(&header);
     content.append(&body);
-    content.append(&status);
+    content.append(&statusbar);
     content.append(&transport);
 
+    // Window bounds match the macOS shell (Bubble.Size.window* / windowMin*).
     let window = adw::ApplicationWindow::builder()
         .application(application)
-        .default_width(1100)
-        .default_height(720)
+        .default_width(1040)
+        .default_height(760)
         .content(&content)
         .build();
+    window.set_size_request(780, 560);
 
     let (tx, rx) = std::sync::mpsc::channel::<Msg>();
     let rx = RefCell::new(rx);
@@ -462,7 +492,17 @@ fn tick(app: &Shared) {
 fn refresh_transport(app: &Shared, force_art: bool) {
     let e = engine();
     let (playing, pos) = (ffi::is_playing(e), ffi::position(e));
-    app.play_btn.set_label(if playing { "⏸" } else { "▶" });
+    if let Some(img) = app
+        .play_btn
+        .child()
+        .and_then(|w| w.downcast::<gtk4::Image>().ok())
+    {
+        img.set_icon_name(Some(if playing {
+            "media-playback-pause-symbolic"
+        } else {
+            "media-playback-start-symbolic"
+        }));
+    }
 
     let cur = app
         .host

@@ -26,6 +26,7 @@ struct Lib {
     sort_asc: bool,
     all_tracks: Vec<Track>,
     rows: gtk4::ListBox,
+    table_stack: gtk4::Stack,
     count_l: gtk4::Label,
     header_btns: [(SortKey, gtk4::Button); 6],
     art_btn: gtk4::Button,
@@ -139,10 +140,34 @@ pub fn build(app: &Shared) -> gtk4::Widget {
         .child(&rows)
         .vexpand(true)
         .build();
-    root.append(&scroll);
+    // Empty states mirror the app's: glyph + headline + hint, centered —
+    // one for an empty library, one for a filter that matched nothing.
+    let table_stack = gtk4::Stack::new();
+    table_stack.set_vexpand(true);
+    table_stack.set_transition_type(gtk4::StackTransitionType::Crossfade);
+    table_stack.add_named(&scroll, Some("rows"));
+    table_stack.add_named(
+        &design::empty_state(
+            "starred-symbolic",
+            "No tunes yet",
+            "Scan a folder and let it rip.",
+        ),
+        Some("empty"),
+    );
+    table_stack.add_named(
+        &design::empty_state(
+            "system-search-symbolic",
+            "No matches",
+            "Try a different title, artist, or album.",
+        ),
+        Some("filtered"),
+    );
+    table_stack.set_visible_child_name("empty");
+    root.append(&table_stack);
 
     let bottom = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
     let count_l = design::dim_label("0 tracks");
+    design::mono(&count_l);
     bottom.append(&count_l);
     let spacer2 = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
     spacer2.set_hexpand(true);
@@ -157,6 +182,7 @@ pub fn build(app: &Shared) -> gtk4::Widget {
         sort_asc: true,
         all_tracks: Vec::new(),
         rows: rows.clone(),
+        table_stack: table_stack.clone(),
         count_l: count_l.clone(),
         header_btns: btns.clone().try_into().unwrap(),
         art_btn: art_btn.clone(),
@@ -438,9 +464,13 @@ fn refresh_torrents(app: &Shared, lib: &Rc<RefCell<Lib>>) {
         for t in list {
             let id = t.get("id").and_then(|v| v.as_i64()).unwrap_or(-1) as i32;
             let name = t.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-            let chip = design::card(gtk4::Orientation::Horizontal);
+            // Mint wash + border — the app's chip treatment.
+            let chip = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+            chip.add_css_class("lyra-chip");
             let n = gtk4::Label::new(Some(name));
             n.add_css_class("mint");
+            n.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+            n.set_max_width_chars(28);
             let x = gtk4::Button::with_label("✕");
             x.add_css_class("flat");
             let app = app.clone();
@@ -541,8 +571,16 @@ fn refresh_rows(lib: &Rc<RefCell<Lib>>) {
     for t in &ts {
         l.rows.append(&track_row(t));
     }
+    let page = if !ts.is_empty() {
+        "rows"
+    } else if l.all_tracks.is_empty() {
+        "empty"
+    } else {
+        "filtered"
+    };
+    l.table_stack.set_visible_child_name(page);
     l.count_l.set_label(&if l.all_tracks.is_empty() {
-        "nothing here yet — scan a folder and let it rip".to_string()
+        String::new()
     } else if ts.is_empty() {
         "no matches".to_string()
     } else {
@@ -573,6 +611,7 @@ fn track_row(t: &Track) -> gtk4::ListBoxRow {
     };
     let no = cell(&no_s, 40);
     no.add_css_class("dim");
+    design::mono(&no);
     b.append(&no);
     b.append(&cell(&t.title, 220));
     let artist = cell(&t.artist, 160);
@@ -583,6 +622,7 @@ fn track_row(t: &Track) -> gtk4::ListBoxRow {
     b.append(&album);
     let time = cell(&fmt_dur(t.duration), 56);
     time.add_css_class("dim");
+    design::mono(&time);
     b.append(&time);
     let codec = cell(&t.codec, 64);
     codec.add_css_class("dim");
