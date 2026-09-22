@@ -459,6 +459,7 @@ fn toggle_row(label: &str) -> (gtk4::Box, gtk4::Switch) {
     l.set_xalign(0.0);
     l.set_hexpand(true);
     let sw = gtk4::Switch::new();
+    sw.set_halign(gtk4::Align::End);
     sw.set_valign(gtk4::Align::Center);
     row.append(&l);
     row.append(&sw);
@@ -525,6 +526,9 @@ fn catalog_tab() -> gtk4::Widget {
             "Toggle",
             Box::new(|state| {
                 let sw = gtk4::Switch::new();
+                // Natural size only — a Switch honors fill alignment and
+                // stretches its trough to the cell otherwise.
+                sw.set_halign(gtk4::Align::Center);
                 sw.set_valign(gtk4::Align::Start);
                 if state == "Pressed" {
                     sw.set_active(true);

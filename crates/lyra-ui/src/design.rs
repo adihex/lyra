@@ -356,8 +356,12 @@ button:focus-visible {
 
 /* ═══ Track table — header caps in micro type; rounded hover/selected rows;
    selection is an accent wash with a left tab. */
+/* Header mirrors row geometry exactly: 10px side padding like the rows,
+   zero horizontal padding on buttons so header text starts at the column
+   edge — identical column starts and flex widths by construction. */
+.track-header { padding: 0 10px; }
 .track-header button { font-size: {TY_MICRO}px; font-weight: 600;
-    color: @lyra_dim; background: none; border: none; padding: 6px 4px; }
+    color: @lyra_dim; background: none; border: none; padding: 6px 0; }
 .track-header button:hover { color: @lyra_legend; }
 list.track > row { padding: 5px 10px; border-radius: {R_ROW}px; }
 list.track > row:hover { background-color: @lyra_keycap; }

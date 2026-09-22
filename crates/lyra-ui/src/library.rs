@@ -28,7 +28,7 @@ struct Lib {
     rows: gtk4::ListBox,
     table_stack: gtk4::Stack,
     count_l: gtk4::Label,
-    header_btns: [(SortKey, gtk4::Button); 6],
+    header_btns: [(SortKey, gtk4::Button, gtk4::Label); 6],
     art_btn: gtk4::Button,
     magnet_revealer: gtk4::Revealer,
     magnet_entry: gtk4::Entry,
@@ -114,6 +114,7 @@ pub fn build(app: &Shared) -> gtk4::Widget {
     // ── track table: header row + listbox ──────────────────────────────
     let header = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
     header.add_css_class("track-header");
+    header.set_hexpand(true);
     // Width 0 = flexible column — text columns stretch with the window,
     // numeric/format columns stay compact (table fills the pane width).
     let header_btns = [
@@ -126,7 +127,18 @@ pub fn build(app: &Shared) -> gtk4::Widget {
     ];
     let mut btns = Vec::new();
     for (k, label, w) in header_btns {
-        let b = gtk4::Button::with_label(label);
+        // Label children, not with_label: xalign(0) matches the left-aligned
+        // row cells, and max_width_chars(1)+ellipsize gives headers the same
+        // natural-width floor as cells — GTK splits only the *extra* box
+        // space equally, so uncapped label text would skew the flex widths.
+        // Never hexpand the label: the flag propagates to the button and
+        // would make the fixed-width columns expand equally too.
+        let lab = gtk4::Label::new(Some(label));
+        lab.set_xalign(0.0);
+        lab.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+        lab.set_max_width_chars(1);
+        let b = gtk4::Button::new();
+        b.set_child(Some(&lab));
         if w == 0 {
             b.set_hexpand(true);
         } else {
@@ -139,7 +151,7 @@ pub fn build(app: &Shared) -> gtk4::Widget {
             spacer.set_width_request(40);
             header.append(&spacer);
         }
-        btns.push((k, b));
+        btns.push((k, b, lab));
     }
     root.append(&header);
     root.append(&gtk4::Separator::new(gtk4::Orientation::Horizontal));
@@ -223,7 +235,7 @@ pub fn build(app: &Shared) -> gtk4::Widget {
             refresh_rows(&lib);
         });
     }
-    for (k, b) in btns.iter() {
+    for (k, b, _lab) in btns.iter() {
         let lib = lib.clone();
         let k = *k;
         b.connect_clicked(move |_| {
@@ -572,13 +584,13 @@ fn refresh_rows(lib: &Rc<RefCell<Lib>>) {
             c.reverse()
         }
     });
-    for (i, (k, b)) in l.header_btns.iter().enumerate() {
+    for (i, (k, _b, lab)) in l.header_btns.iter().enumerate() {
         let label = match (l.sort == *k, l.sort_asc) {
             (true, true) => format!("{}▲", HEADER_LABELS[i]),
             (true, false) => format!("{}▼", HEADER_LABELS[i]),
             _ => HEADER_LABELS[i].to_string(),
         };
-        b.set_label(&label);
+        lab.set_label(&label);
     }
     for t in &ts {
         l.rows.append(&track_row(t));
