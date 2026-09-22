@@ -99,6 +99,7 @@ def rust_palettes(t, default):
     pname, pscheme = default.split(".")
     out.append(
         f"/// Default GTK palette — `{default}` per design/tokens.toml.\n"
+        f"#[allow(dead_code)] // reference row; palette_for() drives runtime.\n"
         f"pub const PALETTE: Palette = {pname.upper()}_{pscheme.upper()};")
     return "\n".join(out) + "\n"
 

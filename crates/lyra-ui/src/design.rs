@@ -147,8 +147,41 @@ pub const MINT_DARK: Palette = Palette {
 };
 
 /// Default GTK palette — `lavender.dark` per design/tokens.toml.
+#[allow(dead_code)] // reference row; palette_for() drives runtime.
 pub const PALETTE: Palette = LAVENDER_DARK;
 // END GENERATED PALETTES
+
+/// Palette lookup by family + scheme — the generated rows cover all six.
+/// Unknown family falls back to lavender (the contract default).
+pub fn palette_for(family: &str, dark: bool) -> &'static Palette {
+    match (family, dark) {
+        ("rose", false) => &ROSE_LIGHT,
+        ("rose", true) => &ROSE_DARK,
+        ("mint", false) => &MINT_LIGHT,
+        ("mint", true) => &MINT_DARK,
+        (_, false) => &LAVENDER_LIGHT,
+        (_, true) => &LAVENDER_DARK,
+    }
+}
+
+/// Effective dark flag — follows the system's color-scheme preference
+/// (AdwStyleManager::is_dark resolves PreferDark/ForceDark/ForceLight).
+/// `LYRA_SCHEME=light|dark` overrides for headless/forced testing.
+pub fn effective_dark() -> bool {
+    match std::env::var("LYRA_SCHEME").ok().as_deref() {
+        Some("light") => false,
+        Some("dark") => true,
+        _ => libadwaita::StyleManager::default().is_dark(),
+    }
+}
+
+/// Re-render + reload the application stylesheet — called when the
+/// scheme or the palette pref changes.
+pub fn apply_theme(app: &crate::App) {
+    let family = app.prefs.borrow().palette.clone();
+    app.theme_provider
+        .load_from_data(&css(palette_for(&family, effective_dark())));
+}
 
 // Geometry/type/radius/stroke contract — generated from design/tokens.toml
 // ([space], [type], [radius], [stroke]); the same values feed Swift's
@@ -205,8 +238,7 @@ pub const STROKE_INSET: i32 = 3;
 /// never literal hex — so a palette swap is a `Palette` change only.
 /// `{NAME}` placeholders are filled from the generated geometry consts, so
 /// CSS geometry tracks the same contract as the code layout.
-pub fn css() -> String {
-    let p = &PALETTE;
+pub fn css(p: &Palette) -> String {
     let mut s = String::new();
     for (name, value) in [
         ("chassis", p.chassis),
@@ -224,6 +256,11 @@ pub fn css() -> String {
     ] {
         s.push_str(&format!("@define-color lyra_{name} {value};\n"));
     }
+    // Stock-widget accents (scale highlight, dropdown checks, links) take the
+    // palette — literal hex: @define-color refs do not reach adwaita's vars.
+    s.push_str(&format!("@define-color accent_color {};\n", p.tint));
+    s.push_str(&format!("@define-color accent_bg_color {};\n", p.tint));
+    s.push_str(&format!("@define-color accent_fg_color {};\n", p.on_tint));
     let mut rules = RULES.to_string();
     for (key, value) in [
         ("R_CARD", R_CARD),
@@ -355,10 +392,48 @@ entry:focus, spinbutton:focus { border-color: @lyra_tint;
     border: {STROKE_FINE}px solid alpha(@lyra_secondary_ink, 0.4);
     border-radius: 999px; padding: 3px 10px; }
 
+/* ═══ Track-art monogram — first letter of album/artist on a keycap
+   tile, standing in for missing artwork (the app's P-square). */
+.lyra-mono-art { min-width: 24px; min-height: 24px; border-radius: 8px;
+    background-color: @lyra_keycap;
+    border: {STROKE_FINE}px solid alpha(@lyra_border, 0.8);
+    color: @lyra_dim; font-size: {TY_CAPTION}px; font-weight: 600; }
+
+/* ═══ Design Lab pads — 40px circular keys; selection is the lit key. */
+button.lyra-pad { min-width: 40px; min-height: 40px; border-radius: 999px;
+    padding: 0; background-color: @lyra_keycap;
+    border: {STROKE_FINE}px solid alpha(@lyra_border, 0.8); color: @lyra_legend; }
+button.lyra-pad:hover { border-color: @lyra_tint; color: @lyra_tint; }
+button.lyra-pad.selected {
+    background-image: linear-gradient(135deg, @lyra_tint, @lyra_accent);
+    color: @lyra_on_tint; border: none; }
+
+/* ═══ Catalog state simulation — GTK can't force :hover/:active, so the
+   Design Lab stamps these classes to reproduce each state's visuals. */
+button.lyra-key.sim-hover, button.sharp.sim-hover {
+    border-color: @lyra_tint; color: @lyra_tint; }
+button.lyra-key.sim-pressed, button.sharp.sim-pressed {
+    background-color: alpha(@lyra_legend, 0.12); }
+button.suggested-action.sim-hover, button.lyra-key-play.sim-hover,
+button.lyra-pad.sim-hover {
+    box-shadow: 0 0 0 {STROKE_FOCUS}px alpha(@lyra_tint, 0.3); }
+button.suggested-action.sim-pressed, button.lyra-key-play.sim-pressed,
+button.lyra-pad.sim-pressed {
+    background-image: none; background-color: alpha(@lyra_tint, 0.8); }
+entry.sim-hover { border-color: @lyra_tint; }
+entry.sim-pressed { border-color: @lyra_tint;
+    box-shadow: 0 0 0 {STROKE_FOCUS}px alpha(@lyra_tint, 0.3); }
+
+/* ═══ Lab segmented picker — pill group matching button chrome. */
+stackswitcher button { border-radius: 999px; padding: 4px 14px; }
+
 /* ═══ Status bar — recessed tray, micro caption. */
 .lyra-statusbar { background-color: @lyra_tray;
     border-top: {STROKE_FINE}px solid @lyra_border;
     padding: 4px 16px; }
+
+/* ═══ Checked switch — keycap gradient rather than a flat accent fill. */
+switch:checked { background-image: linear-gradient(135deg, @lyra_tint, @lyra_accent); }
 
 "#;
 

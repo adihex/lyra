@@ -10,15 +10,24 @@ styling that bypasses the tokens.
 
 ## Scheme
 
-The app is dark-only on Linux for now: `AdwStyleManager` is pinned to
-`ColorScheme::ForceDark` at startup so stock GTK widgets (header bar, lists,
-entries, dialogs) resolve to dark adwaita colors even when the desktop
-reports no dark preference. All palette tokens below assume dark.
+The app follows the system: `prefs.appearance` (`system` default) maps to
+`ColorScheme::PreferDark`, so a desktop dark-or-light preference resolves
+to the matching palette row — and stock GTK widgets resolve the same
+scheme — while `dark`/`light` pin `ForceDark`/`ForceLight`. Changing the
+pref (Design Lab → appearance picker) or the system's own scheme flip
+restamps the stylesheet live via `StyleManager::dark` notify →
+`design::apply_theme`. `LYRA_SCHEME=light|dark` overrides the env for
+headless verification. All six generated palette rows (lavender/rose/mint
+× light/dark) are available at runtime: `design::palette_for(family, dark)`.
 
 ## Color tokens
 
 `Palette` in `src/design.rs` mirrors `LyraColors` role-for-role; each role is
-emitted as a `@define-color lyra_<role>` custom property.
+emitted as a `@define-color lyra_<role>` custom property. The generated
+block holds all six rows; the active row is `palette_for(prefs.palette,
+effective_dark())`. Stock-widget accent vars (`accent_color`,
+`accent_bg_color`, `accent_fg_color`) are also stamped from the row so
+switches, scale highlights, and dropdown checks follow the palette.
 
 | Role | Token | Lavender dark | GTK usage |
 |---|---|---|---|
@@ -72,6 +81,10 @@ contract-driven, not hand-duplicated.
 - `suggested-action:disabled` → 45% opacity, flat `tint`.
 - `entry:focus` → `tint` border + tint ring.
 - Headerbar carries a faint `tint` sheen (10% → transparent).
+- Design Lab pad selection → `.selected` on `button.lyra-pad` (tint→accent
+  wash); simulated catalog states use `.sim-hover` / `.sim-pressed`
+  classes since GTK can't force widget states — the Disabled column uses
+  real `set_sensitive(false)`.
 - Intentional differences from macOS: GTK list widgets instead of SwiftUI
   `Table`; symbolic icons in place of SF Symbols; emoji glyphs avoided
   (they tofu without a color-emoji font); depth is rim-contrast only —
@@ -105,3 +118,7 @@ primitive when the same pattern appears twice, not inline CSS.
 - **Remote**: real contract — pairing/device list via `lyra-remote`.
 - **Visuals**: real contract — engine viz tap (`last_seq` deltas), never
   synthesized.
+- **Design Lab**: honest by construction — a local-only mock deck + component
+  catalog (no engine, no host); it labels itself a demo. It also carries
+  the theme pickers (appearance + palette), mirroring the Mac's
+  `BubbleDesignLabView`.

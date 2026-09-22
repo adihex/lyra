@@ -18,6 +18,7 @@ use std::time::Duration;
 
 mod coach;
 mod design;
+mod design_lab;
 mod discover;
 mod eq;
 mod ffi;
@@ -69,6 +70,9 @@ pub struct App {
     // refresh entry point.
     pub library_refresh: RefCell<Option<Box<dyn Fn()>>>,
     pub status: gtk4::Label,
+    /// Application stylesheet — restamped by design::apply_theme when the
+    /// color scheme or palette pref changes.
+    pub theme_provider: gtk4::CssProvider,
 }
 
 pub type Shared = Rc<App>;
@@ -163,12 +167,26 @@ impl From<ParsedArgs> for HostArgs {
 }
 
 fn build_ui(application: &adw::Application, host: Host, play: Option<PathBuf>) {
-    // Lyra renders dark on every host — force the scheme so stock GTK
-    // widgets (headerbar, lists, entries) resolve to dark adwaita colors
-    // even where no desktop dark preference exists (e.g. bare Xvfb).
-    adw::StyleManager::default().set_color_scheme(adw::ColorScheme::ForceDark);
+    let prefs = Prefs::load(&host.data_dir);
+
+    // Scheme follows the host: PreferDark resolves to the system
+    // preference (dark when the desktop has no preference, matching the
+    // app's dark-first contract); the prefs/env override can force either.
+    let style_manager = adw::StyleManager::default();
+    let appearance = std::env::var("LYRA_SCHEME")
+        .ok()
+        .filter(|v| v == "light" || v == "dark")
+        .unwrap_or_else(|| prefs.appearance.clone());
+    style_manager.set_color_scheme(match appearance.as_str() {
+        "light" => adw::ColorScheme::ForceLight,
+        "dark" => adw::ColorScheme::ForceDark,
+        _ => adw::ColorScheme::PreferDark,
+    });
     let provider = gtk4::CssProvider::new();
-    provider.load_from_data(&design::css());
+    provider.load_from_data(&design::css(design::palette_for(
+        &prefs.palette,
+        design::effective_dark(),
+    )));
     gtk4::style_context_add_provider_for_display(
         &gdk::Display::default().expect("display"),
         &provider,
@@ -253,7 +271,7 @@ fn build_ui(application: &adw::Application, host: Host, play: Option<PathBuf>) {
     let sidebar = gtk4::ListBox::new();
     sidebar.add_css_class("lyra-sidebar");
     sidebar.set_selection_mode(gtk4::SelectionMode::Single);
-    const SECTIONS: [(&str, &str, &str); 7] = [
+    const SECTIONS: [(&str, &str, &str); 8] = [
         ("library", "Library", "folder-music-symbolic"),
         ("discover", "Discover", "system-search-symbolic"),
         ("coach", "Coach", "dialog-information-symbolic"),
@@ -261,6 +279,7 @@ fn build_ui(application: &adw::Application, host: Host, play: Option<PathBuf>) {
         ("eq", "Equalizer", "input-dialpad-symbolic"),
         ("visuals", "Visuals", "starred-symbolic"),
         ("remote", "Remote", "folder-remote-symbolic"),
+        ("lab", "Design Lab", "applications-engineering-symbolic"),
     ];
     for (name, label, icon) in SECTIONS {
         let row = gtk4::ListBoxRow::new();
@@ -318,7 +337,6 @@ fn build_ui(application: &adw::Application, host: Host, play: Option<PathBuf>) {
     let (tx, rx) = std::sync::mpsc::channel::<Msg>();
     let rx = RefCell::new(rx);
 
-    let prefs = Prefs::load(&host.data_dir);
     vol.set_value(prefs.volume);
     let data_dir = host.data_dir.clone();
 
@@ -341,6 +359,7 @@ fn build_ui(application: &adw::Application, host: Host, play: Option<PathBuf>) {
         scrubbing: Cell::new(false),
         library_refresh: RefCell::new(None),
         status: status.clone(),
+        theme_provider: provider.clone(),
     });
 
     // ── panes ──────────────────────────────────────────────────────────
@@ -351,6 +370,14 @@ fn build_ui(application: &adw::Application, host: Host, play: Option<PathBuf>) {
     stack.add_named(&eq::build(&app), Some("eq"));
     stack.add_named(&visuals::build(&app), Some("visuals"));
     stack.add_named(&remote::build(&app), Some("remote"));
+    stack.add_named(&design_lab::build(&app), Some("lab"));
+
+    // Restamp the stylesheet whenever the effective scheme changes —
+    // covers both system toggles and the lab's appearance picker.
+    style_manager.connect_dark_notify({
+        let app = app.clone();
+        move |_| design::apply_theme(&app)
+    });
 
     // ── signals ────────────────────────────────────────────────────────
     sidebar.connect_row_selected({

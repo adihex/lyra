@@ -122,7 +122,7 @@ pub fn build(app: &Shared) -> gtk4::Widget {
         (SortKey::Artist, "Artist", 0),
         (SortKey::Album, "Album", 0),
         (SortKey::Time, "Time", 56),
-        (SortKey::Format, "Format", 64),
+        (SortKey::Format, "Codec", 64),
     ];
     let mut btns = Vec::new();
     for (k, label, w) in header_btns {
@@ -133,6 +133,12 @@ pub fn build(app: &Shared) -> gtk4::Widget {
             b.set_width_request(w);
         }
         header.append(&b);
+        // Blank spacer matching the row's artwork monogram column.
+        if k == SortKey::TrackNo {
+            let spacer = gtk4::Label::new(None);
+            spacer.set_width_request(40);
+            header.append(&spacer);
+        }
         btns.push((k, b));
     }
     root.append(&header);
@@ -594,7 +600,7 @@ fn refresh_rows(lib: &Rc<RefCell<Lib>>) {
     });
 }
 
-const HEADER_LABELS: [&str; 6] = ["#", "Title", "Artist", "Album", "Time", "Format"];
+const HEADER_LABELS: [&str; 6] = ["#", "Title", "Artist", "Album", "Time", "Codec"];
 
 fn cell(text: &str, w: i32) -> gtk4::Label {
     let l = gtk4::Label::new(Some(text));
@@ -614,8 +620,9 @@ fn track_row(t: &Track) -> gtk4::ListBoxRow {
     row.set_widget_name(&t.id);
     row.set_tooltip_text(Some(&t.path));
     let b = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+    // `—` for a missing tag number, same as the macOS row.
     let no_s = if t.track_no == 0 {
-        String::new()
+        "—".to_string()
     } else {
         t.track_no.to_string()
     };
@@ -623,6 +630,25 @@ fn track_row(t: &Track) -> gtk4::ListBoxRow {
     no.add_css_class("dim");
     design::mono(&no);
     b.append(&no);
+    // Artwork monogram — first letter on a keycap tile, like the app's
+    // placeholder square when a track has no artwork.
+    let art_holder = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+    art_holder.set_width_request(40);
+    let letter = t
+        .album
+        .chars()
+        .next()
+        .or_else(|| t.artist.chars().next())
+        .or_else(|| t.title.chars().next())
+        .unwrap_or('♪')
+        .to_uppercase()
+        .to_string();
+    let mono_art = gtk4::Label::new(Some(&letter));
+    mono_art.add_css_class("lyra-mono-art");
+    mono_art.set_halign(gtk4::Align::Center);
+    mono_art.set_valign(gtk4::Align::Center);
+    art_holder.append(&mono_art);
+    b.append(&art_holder);
     b.append(&cell(&t.title, 0));
     let artist = cell(&t.artist, 0);
     artist.add_css_class("dim");
