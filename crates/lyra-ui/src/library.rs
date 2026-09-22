@@ -541,8 +541,10 @@ fn refresh_rows(lib: &Rc<RefCell<Lib>>) {
     for t in &ts {
         l.rows.append(&track_row(t));
     }
-    l.count_l.set_label(&if ts.is_empty() {
+    l.count_l.set_label(&if l.all_tracks.is_empty() {
         "nothing here yet — scan a folder and let it rip".to_string()
+    } else if ts.is_empty() {
+        "no matches".to_string()
     } else {
         format!("{} tracks", ts.len())
     });
