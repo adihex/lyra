@@ -26,8 +26,9 @@ struct Lib {
     sort_asc: bool,
     all_tracks: Vec<Track>,
     rows: gtk4::ListBox,
+    table_stack: gtk4::Stack,
     count_l: gtk4::Label,
-    header_btns: [(SortKey, gtk4::Button); 6],
+    header_btns: [(SortKey, gtk4::Button, gtk4::Label); 6],
     art_btn: gtk4::Button,
     magnet_revealer: gtk4::Revealer,
     magnet_entry: gtk4::Entry,
@@ -113,20 +114,44 @@ pub fn build(app: &Shared) -> gtk4::Widget {
     // ── track table: header row + listbox ──────────────────────────────
     let header = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
     header.add_css_class("track-header");
+    header.set_hexpand(true);
+    // Width 0 = flexible column — text columns stretch with the window,
+    // numeric/format columns stay compact (table fills the pane width).
     let header_btns = [
         (SortKey::TrackNo, "#", 40),
-        (SortKey::Title, "Title", 220),
-        (SortKey::Artist, "Artist", 160),
-        (SortKey::Album, "Album", 160),
+        (SortKey::Title, "Title", 0),
+        (SortKey::Artist, "Artist", 0),
+        (SortKey::Album, "Album", 0),
         (SortKey::Time, "Time", 56),
-        (SortKey::Format, "Format", 64),
+        (SortKey::Format, "Codec", 64),
     ];
     let mut btns = Vec::new();
     for (k, label, w) in header_btns {
-        let b = gtk4::Button::with_label(label);
-        b.set_width_request(w);
+        // Label children, not with_label: xalign(0) matches the left-aligned
+        // row cells, and max_width_chars(1)+ellipsize gives headers the same
+        // natural-width floor as cells — GTK splits only the *extra* box
+        // space equally, so uncapped label text would skew the flex widths.
+        // Never hexpand the label: the flag propagates to the button and
+        // would make the fixed-width columns expand equally too.
+        let lab = gtk4::Label::new(Some(label));
+        lab.set_xalign(0.0);
+        lab.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+        lab.set_max_width_chars(1);
+        let b = gtk4::Button::new();
+        b.set_child(Some(&lab));
+        if w == 0 {
+            b.set_hexpand(true);
+        } else {
+            b.set_width_request(w);
+        }
         header.append(&b);
-        btns.push((k, b));
+        // Blank spacer matching the row's artwork monogram column.
+        if k == SortKey::TrackNo {
+            let spacer = gtk4::Label::new(None);
+            spacer.set_width_request(40);
+            header.append(&spacer);
+        }
+        btns.push((k, b, lab));
     }
     root.append(&header);
     root.append(&gtk4::Separator::new(gtk4::Orientation::Horizontal));
@@ -139,10 +164,34 @@ pub fn build(app: &Shared) -> gtk4::Widget {
         .child(&rows)
         .vexpand(true)
         .build();
-    root.append(&scroll);
+    // Empty states mirror the app's: glyph + headline + hint, centered —
+    // one for an empty library, one for a filter that matched nothing.
+    let table_stack = gtk4::Stack::new();
+    table_stack.set_vexpand(true);
+    table_stack.set_transition_type(gtk4::StackTransitionType::Crossfade);
+    table_stack.add_named(&scroll, Some("rows"));
+    table_stack.add_named(
+        &design::empty_state(
+            "starred-symbolic",
+            "No tunes yet",
+            "Scan a folder and let it rip.",
+        ),
+        Some("empty"),
+    );
+    table_stack.add_named(
+        &design::empty_state(
+            "system-search-symbolic",
+            "No matches",
+            "Try a different title, artist, or album.",
+        ),
+        Some("filtered"),
+    );
+    table_stack.set_visible_child_name("empty");
+    root.append(&table_stack);
 
     let bottom = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
     let count_l = design::dim_label("0 tracks");
+    design::mono(&count_l);
     bottom.append(&count_l);
     let spacer2 = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
     spacer2.set_hexpand(true);
@@ -157,6 +206,7 @@ pub fn build(app: &Shared) -> gtk4::Widget {
         sort_asc: true,
         all_tracks: Vec::new(),
         rows: rows.clone(),
+        table_stack: table_stack.clone(),
         count_l: count_l.clone(),
         header_btns: btns.clone().try_into().unwrap(),
         art_btn: art_btn.clone(),
@@ -185,7 +235,7 @@ pub fn build(app: &Shared) -> gtk4::Widget {
             refresh_rows(&lib);
         });
     }
-    for (k, b) in btns.iter() {
+    for (k, b, _lab) in btns.iter() {
         let lib = lib.clone();
         let k = *k;
         b.connect_clicked(move |_| {
@@ -438,9 +488,13 @@ fn refresh_torrents(app: &Shared, lib: &Rc<RefCell<Lib>>) {
         for t in list {
             let id = t.get("id").and_then(|v| v.as_i64()).unwrap_or(-1) as i32;
             let name = t.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-            let chip = design::card(gtk4::Orientation::Horizontal);
+            // Mint wash + border — the app's chip treatment.
+            let chip = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+            chip.add_css_class("lyra-chip");
             let n = gtk4::Label::new(Some(name));
             n.add_css_class("mint");
+            n.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+            n.set_max_width_chars(28);
             let x = gtk4::Button::with_label("✕");
             x.add_css_class("flat");
             let app = app.clone();
@@ -530,25 +584,43 @@ fn refresh_rows(lib: &Rc<RefCell<Lib>>) {
             c.reverse()
         }
     });
-    for (i, (k, b)) in l.header_btns.iter().enumerate() {
+    for (i, (k, _b, lab)) in l.header_btns.iter().enumerate() {
         let label = match (l.sort == *k, l.sort_asc) {
             (true, true) => format!("{}▲", HEADER_LABELS[i]),
             (true, false) => format!("{}▼", HEADER_LABELS[i]),
             _ => HEADER_LABELS[i].to_string(),
         };
-        b.set_label(&label);
+        lab.set_label(&label);
     }
     for t in &ts {
         l.rows.append(&track_row(t));
     }
-    l.count_l.set_label(&format!("{} tracks", ts.len()));
+    let page = if !ts.is_empty() {
+        "rows"
+    } else if l.all_tracks.is_empty() {
+        "empty"
+    } else {
+        "filtered"
+    };
+    l.table_stack.set_visible_child_name(page);
+    l.count_l.set_label(&if l.all_tracks.is_empty() {
+        String::new()
+    } else if ts.is_empty() {
+        "no matches".to_string()
+    } else {
+        format!("{} tracks", ts.len())
+    });
 }
 
-const HEADER_LABELS: [&str; 6] = ["#", "Title", "Artist", "Album", "Time", "Format"];
+const HEADER_LABELS: [&str; 6] = ["#", "Title", "Artist", "Album", "Time", "Codec"];
 
 fn cell(text: &str, w: i32) -> gtk4::Label {
     let l = gtk4::Label::new(Some(text));
-    l.set_width_request(w);
+    if w == 0 {
+        l.set_hexpand(true);
+    } else {
+        l.set_width_request(w);
+    }
     l.set_xalign(0.0);
     l.set_ellipsize(gtk4::pango::EllipsizeMode::End);
     l.set_max_width_chars(1);
@@ -560,23 +632,45 @@ fn track_row(t: &Track) -> gtk4::ListBoxRow {
     row.set_widget_name(&t.id);
     row.set_tooltip_text(Some(&t.path));
     let b = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+    // `—` for a missing tag number, same as the macOS row.
     let no_s = if t.track_no == 0 {
-        String::new()
+        "—".to_string()
     } else {
         t.track_no.to_string()
     };
     let no = cell(&no_s, 40);
     no.add_css_class("dim");
+    design::mono(&no);
     b.append(&no);
-    b.append(&cell(&t.title, 220));
-    let artist = cell(&t.artist, 160);
+    // Artwork monogram — first letter on a keycap tile, like the app's
+    // placeholder square when a track has no artwork.
+    let art_holder = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+    art_holder.set_width_request(40);
+    let letter = t
+        .album
+        .chars()
+        .next()
+        .or_else(|| t.artist.chars().next())
+        .or_else(|| t.title.chars().next())
+        .unwrap_or('♪')
+        .to_uppercase()
+        .to_string();
+    let mono_art = gtk4::Label::new(Some(&letter));
+    mono_art.add_css_class("lyra-mono-art");
+    mono_art.set_halign(gtk4::Align::Center);
+    mono_art.set_valign(gtk4::Align::Center);
+    art_holder.append(&mono_art);
+    b.append(&art_holder);
+    b.append(&cell(&t.title, 0));
+    let artist = cell(&t.artist, 0);
     artist.add_css_class("dim");
     b.append(&artist);
-    let album = cell(&t.album, 160);
+    let album = cell(&t.album, 0);
     album.add_css_class("dim");
     b.append(&album);
     let time = cell(&fmt_dur(t.duration), 56);
     time.add_css_class("dim");
+    design::mono(&time);
     b.append(&time);
     let codec = cell(&t.codec, 64);
     codec.add_css_class("dim");

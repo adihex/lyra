@@ -14,6 +14,40 @@
 # GTK shell default palette row → `PALETTE` in design.rs.
 gtk_default = "lavender.dark"
 
+# Geometry/type contract shared by both shells. Values are points/pixels on
+# the 4pt grid. The generator stamps them into Swift `Bubble.Space`,
+# `Bubble.TypeSize`, `Bubble.Size`, `Bubble.Stroke` and Rust `design::GEO`/
+# `design::TY` blocks — edit here only.
+[space]
+xs = 4
+sm = 8
+md = 12
+lg = 16
+xl = 20
+xxl = 24
+page = 28
+
+[type]
+title = 24
+headline = 14
+body = 12
+caption = 11
+micro = 10
+glyph = 20
+
+[radius]
+card = 18
+tray = 20
+field = 12
+row = 10
+sidebar_row = 14
+
+[stroke]
+fine = 1
+contrast = 2
+focus = 3
+inset = 3
+
 [roles]
 # Canonical role order — generator emits keys in this sequence.
 list = [
