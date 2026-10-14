@@ -33,7 +33,7 @@ use model::Prefs;
 /// Channel messages from worker threads to the GTK main loop.
 pub enum Msg {
     ScanDone(serde_json::Value),
-    ArtDone(u32),
+    ArtDone(library::ArtworkSummary),
     SearchDone(serde_json::Value),
     Resolved(usize, serde_json::Value),
     RemoteTestDone(usize, serde_json::Value),
@@ -65,6 +65,7 @@ pub struct App {
     pub dur_l: gtk4::Label,
     pub vol: gtk4::Scale,
     pub scrubbing: Cell<bool>,
+    pub artwork_busy: Cell<bool>,
     // library pane owns its list internals; the shell only needs the
     // refresh entry point.
     pub library_refresh: RefCell<Option<Box<dyn Fn()>>>,
@@ -104,6 +105,9 @@ fn main() {
     let app = adw::Application::builder()
         .application_id("app.lyra.player")
         .build();
+    app.connect_startup(|_| {
+        gtk4::Window::set_default_icon_name("app.lyra.player");
+    });
     // activate is Fn (fires once in practice) — the Host moves out on first call.
     let host = RefCell::new(Some(host));
     app.connect_activate(move |a| {
@@ -309,6 +313,7 @@ fn build_ui(application: &adw::Application, host: Host, play: Option<PathBuf>) {
         dur_l: dur_l.clone(),
         vol: vol.clone(),
         scrubbing: Cell::new(false),
+        artwork_busy: Cell::new(false),
         library_refresh: RefCell::new(None),
         status: status.clone(),
     });
@@ -348,11 +353,10 @@ fn build_ui(application: &adw::Application, host: Host, play: Option<PathBuf>) {
                 // it panicked with "RefCell already borrowed" (play from
                 // stopped crashed the app).
                 let current = app.host.borrow().current.clone();
-                let mut h = app.host.borrow_mut();
                 match current {
                     // finished → replay; else start queue head
-                    Some(p) => h.play_path(&p),
-                    None => h.play_index(0),
+                    Some(p) => library::play_path(&app, &p),
+                    None => app.host.borrow_mut().play_index(0),
                 }
             }
         });
@@ -424,9 +428,10 @@ fn handle_msg(app: &Shared, msg: Msg) {
             app.host.borrow_mut().reload();
             refresh_library(app);
         }
-        Msg::ArtDone(n) => {
-            app.status
-                .set_label(&format!("artwork: {n} covers applied"));
+        Msg::ArtDone(summary) => {
+            app.artwork_busy.set(false);
+            app.status.set_label(&summary.message());
+            app.host.borrow_mut().reload();
             refresh_library(app);
             refresh_transport(app, true);
         }
@@ -485,7 +490,7 @@ fn refresh_transport(app: &Shared, force_art: bool) {
         .host
         .borrow()
         .current_track()
-        .map(model::Track::from_library);
+        .map(|t| model::Track::from_library(&t));
     if let Some(t) = &cur {
         app.title_l.set_label(&t.title);
         app.artist_l

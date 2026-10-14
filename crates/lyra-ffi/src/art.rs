@@ -32,6 +32,21 @@ fn now_secs() -> i64 {
 
 const DAY: i64 = 86_400;
 
+/// Ledger key for metadata-only artwork: artist + album when present,
+/// otherwise artist + recording title. Matches `lyra_art_fetch_meta` exactly;
+/// case is folded, but whitespace and empty fields are preserved.
+pub fn metadata_key(artist: &str, album: &str, title: &str) -> String {
+    if album.is_empty() {
+        format!(
+            "{}\u{1f}rec:{}",
+            artist.to_lowercase(),
+            title.to_lowercase()
+        )
+    } else {
+        Library::album_art_key(None, Some(artist), album)
+    }
+}
+
 /// Fetch missing cover art for the track at `path` — applies the result
 /// album-wide. Blocking; returns a JSON state object. Free the returned
 /// pointer with lyra_string_free.
@@ -162,8 +177,8 @@ pub unsafe extern "C" fn lyra_art_fetch(lib: *mut Library, path: *const c_char) 
 /// rows carry synthesized metadata, so the caller passes it explicitly:
 /// `{"artist": "Aerosmith", "title": "Dream On", "album": ""}`. Empty
 /// album skips the album chain; the recording fallback covers
-/// artist+title. The returned hash applies in-memory only — there is no
-/// DB row to stamp.
+/// artist+title. There is no track DB row to stamp; the hash persists in
+/// the metadata-keyed artwork_fetch ledger.
 ///
 /// # Safety
 /// `lib` must be a live library handle or null (null reports an error state).
@@ -193,22 +208,15 @@ pub unsafe extern "C" fn lyra_art_fetch_meta(
     }
     // Ledger key rides on what was actually queried — album when present,
     // else the title (album chain skipped server-side for empty album).
-    let key = if album.is_empty() {
-        format!(
-            "{}\u{1f}rec:{}",
-            artist.to_lowercase(),
-            title.to_lowercase()
-        )
-    } else {
-        Library::album_art_key(None, Some(artist), album)
-    };
+    let key = metadata_key(artist, album, title);
     match lib.art_fetch_due(&key) {
         Ok(true) => {}
         Ok(false) => {
             // The ledger is the only record for metadata-keyed art —
             // hand the stored hash back so torrent tiles re-render after
             // relaunch without another fetch.
-            let (_, hash, _) = lib.art_fetch_row(&key).ok().flatten().unwrap_or_default();
+            let (state, hash, _) = lib.art_fetch_row(&key).ok().flatten().unwrap_or_default();
+            let hash = hash.filter(|h| state == "ok" && !h.is_empty());
             return out(json!({"state": "not_due", "hash": hash}));
         }
         Err(e) => return out(json!({"state": "error", "error": e.to_string()})),

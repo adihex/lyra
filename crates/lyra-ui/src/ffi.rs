@@ -144,6 +144,16 @@ pub fn art_fetch(db: &Path, path: &str) -> Value {
         .unwrap_or(Value::Null)
 }
 
+pub fn art_fetch_meta(db: &Path, query: &Value) -> Value {
+    LibHandle::open(db)
+        .map(|l| {
+            json_call(unsafe {
+                lyra_ffi::art::lyra_art_fetch_meta(l.0, cs(&query.to_string()).as_ptr())
+            })
+        })
+        .unwrap_or(Value::Null)
+}
+
 // ── torrents ────────────────────────────────────────────────────────────
 
 pub fn torrent_add(spec: &str) -> i32 {

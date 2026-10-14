@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Lyra</title>
+  <desc id="desc">A lavender lyre with a mint center string, inset into a dark rounded square. Original Lyra desktop artwork.</desc>
+  <defs>
+    <linearGradient id="chassis" x1="0" y1="0" x2="0.8" y2="1">
+      <stop stop-color="#34303E"/>
+      <stop offset="0.55" stop-color="#211F29"/>
+      <stop offset="1" stop-color="#19171F"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="0.65" y2="1">
+      <stop stop-color="#BBA8CF" stop-opacity="0.48"/>
+      <stop offset="0.5" stop-color="#60566E" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#19171F" stop-opacity="0.8"/>
+    </linearGradient>
+    <linearGradient id="instrument" x1="0" y1="0" x2="0.7" y2="1">
+      <stop stop-color="#ECE5F2"/>
+      <stop offset="0.42" stop-color="#C5B3D8"/>
+      <stop offset="1" stop-color="#BBA8CF"/>
+    </linearGradient>
+    <linearGradient id="mint" gradientUnits="userSpaceOnUse" x1="512" y1="362" x2="512" y2="708">
+      <stop stop-color="#AFC9C3"/>
+      <stop offset="1" stop-color="#A9C9C3"/>
+    </linearGradient>
+    <radialGradient id="light" cx="0.38" cy="0" r="0.95">
+      <stop stop-color="#BBA8CF" stop-opacity="0.1"/>
+      <stop offset="1" stop-color="#BBA8CF" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <!-- Inset silhouette leaves genuinely transparent corners on both desktops. -->
+  <rect x="80" y="88" width="864" height="864" rx="196" fill="#19171F" fill-opacity="0.3"/>
+  <rect x="80" y="72" width="864" height="864" rx="196" fill="url(#chassis)"/>
+  <rect x="80" y="72" width="864" height="864" rx="196" fill="url(#light)"/>
+  <rect x="82" y="74" width="860" height="860" rx="194" fill="none" stroke="url(#rim)" stroke-width="4"/>
+  <!-- A single open bowl: swept horns, generous counters, no lettering. -->
+  <path d="M 294,280 C 338,310 352,356 352,414 L 352,562 C 352,669 409,732 512,732 C 615,732 672,669 672,562 L 672,414 C 672,356 686,310 730,280"
+        fill="none" stroke="#19171F" stroke-opacity="0.6" stroke-width="68" stroke-linecap="round" transform="translate(0 12)"/>
+  <!-- Strings sit behind the bridge and bowl, like a real instrument. -->
+  <path d="M 440,366 V 697 M 584,366 V 697" fill="none" stroke="#C5B3D8" stroke-width="22" stroke-linecap="round"/>
+  <path d="M 512,362 V 708" fill="none" stroke="url(#mint)" stroke-width="26" stroke-linecap="round"/>
+  <path d="M 294,280 C 338,310 352,356 352,414 L 352,562 C 352,669 409,732 512,732 C 615,732 672,669 672,562 L 672,414 C 672,356 686,310 730,280"
+        fill="none" stroke="url(#instrument)" stroke-width="64" stroke-linecap="round"/>
+  <path d="M 350,358 Q 512,332 674,358" fill="none" stroke="url(#instrument)" stroke-width="42" stroke-linecap="round"/>
+  <path d="M 512,738 V 784 M 445,790 H 579" fill="none" stroke="#BBA8CF" stroke-width="32" stroke-linecap="round"/>
+</svg>

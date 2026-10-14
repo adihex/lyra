@@ -6,7 +6,9 @@
 use crate::model::{fmt_dur, load_remotes, RemoteSource, Track};
 use crate::{design, ffi, remote, Msg, Shared};
 use gtk4::prelude::*;
+use serde_json::{json, Value};
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::thread;
 
@@ -204,19 +206,7 @@ pub fn build(app: &Shared) -> gtk4::Widget {
         let app = app.clone();
         rows.connect_row_activated(move |_, row| {
             let path = row.widget_name().to_string();
-            {
-                let p = path.as_str();
-                if p.starts_with("torrent://") {
-                    if let Some((id, idx)) = parse_torrent_uri(p) {
-                        ffi::play_torrent(crate::engine(), id, idx);
-                        app.host.borrow_mut().current = Some(p.to_string());
-                    }
-                } else if p.starts_with("sftp://") {
-                    remote::play_remote(&app, p);
-                } else {
-                    app.host.borrow_mut().play_path(p);
-                }
-            }
+            play_path(&app, &path);
         });
     }
     {
@@ -227,7 +217,7 @@ pub fn build(app: &Shared) -> gtk4::Widget {
             if let Some(row) = l.rows.selected_rows().first() {
                 let p = row.widget_name();
                 drop(l);
-                app.host.borrow_mut().play_path(p.as_str());
+                play_path(&app, p.as_str());
             }
         });
     }
@@ -342,33 +332,38 @@ pub fn build(app: &Shared) -> gtk4::Widget {
     }
     {
         let app = app.clone();
+        let lib = lib.clone();
         art_btn.connect_clicked(move |b| {
+            if app.artwork_busy.replace(true) {
+                return;
+            }
             b.set_sensitive(false);
             b.set_label("Fetching…");
-            let b = b.clone();
-            let db = app.host.borrow().db_path.clone();
-            let paths: Vec<String> = app
-                .host
-                .borrow()
-                .tracks
+            let host = app.host.borrow();
+            let db = host.db_path.clone();
+            // Prioritize the playing album; torrent rows are not in host.tracks.
+            let visible = lib.borrow();
+            let tracks = host
+                .current
                 .iter()
-                .filter(|t| t.artwork_hash.is_none())
-                .map(|t| t.path.clone())
-                .collect();
+                .map(String::as_str)
+                .chain(visible.all_tracks.iter().map(|t| t.path.as_str()))
+                .filter_map(|p| host.track_for_path(p).map(|t| t.into_owned()));
+            let requests = artwork_requests(tracks);
             let tx = app.tx.clone();
-            let b = b.clone();
             thread::spawn(move || {
-                let mut n = 0u32;
-                for p in paths.iter().take(400) {
-                    let r = ffi::art_fetch(&db, p);
-                    if r.get("applied").and_then(|v| v.as_bool()).unwrap_or(false)
-                        || r.get("ok").is_some()
-                    {
-                        n += 1;
+                let mut summary = ArtworkSummary::default();
+                for request in requests.into_iter().take(400) {
+                    let response = match request.query {
+                        Some(query) => ffi::art_fetch_meta(&db, &query),
+                        None => ffi::art_fetch(&db, &request.path),
+                    };
+                    if response.get("state").and_then(Value::as_str) == Some("error") {
+                        tracing::warn!(path = request.path, response = %response, "artwork fetch failed");
                     }
+                    summary.record(&response);
                 }
-                let _ = tx.send(Msg::ArtDone(n));
-                let _ = b;
+                let _ = tx.send(Msg::ArtDone(summary));
             });
         });
     }
@@ -385,18 +380,120 @@ pub fn build(app: &Shared) -> gtk4::Widget {
     root.upcast()
 }
 
+#[derive(Default)]
+pub struct ArtworkSummary {
+    fetched: u32,
+    cached: u32,
+    not_found: u32,
+    failed: u32,
+    deferred: u32,
+}
+
+impl ArtworkSummary {
+    fn record(&mut self, response: &Value) {
+        let has_hash = response
+            .get("hash")
+            .and_then(Value::as_str)
+            .is_some_and(|h| !h.is_empty());
+        match response.get("state").and_then(Value::as_str) {
+            Some("ok") if has_hash => self.fetched += 1,
+            Some("cached" | "not_due") if has_hash => self.cached += 1,
+            Some("not_found") => self.not_found += 1,
+            Some("not_due" | "no_artist" | "no_album" | "no_track") => self.deferred += 1,
+            _ => self.failed += 1,
+        }
+    }
+
+    pub fn message(&self) -> String {
+        if self.fetched + self.cached + self.not_found + self.failed + self.deferred == 0 {
+            return "artwork: no missing covers to fetch".into();
+        }
+        format!(
+            "artwork: {} fetched · {} cached · {} not found · {} errors · {} deferred",
+            self.fetched, self.cached, self.not_found, self.failed, self.deferred
+        )
+    }
+}
+
+struct ArtworkRequest {
+    path: String,
+    query: Option<Value>,
+}
+
+fn artwork_requests(
+    tracks: impl IntoIterator<Item = lyra_core::LibraryTrack>,
+) -> Vec<ArtworkRequest> {
+    let mut seen = HashMap::new();
+    let mut requests: Vec<ArtworkRequest> = Vec::new();
+    for t in tracks {
+        if t.artwork_hash.as_deref().is_some_and(|h| !h.is_empty()) {
+            continue;
+        }
+        let artist = t
+            .album_artist
+            .as_deref()
+            .filter(|a| !a.is_empty())
+            .or(t.artist.as_deref())
+            .unwrap_or("");
+        let album = t.album.as_deref().unwrap_or("");
+        let title = t.title.as_deref().unwrap_or("");
+        let key = lyra_ffi::art::metadata_key(artist, album, title);
+        let query = t
+            .path
+            .starts_with("torrent://")
+            .then(|| json!({"artist": artist, "album": album, "title": title}));
+        let request = ArtworkRequest {
+            path: t.path,
+            query,
+        };
+        if let Some(&index) = seen.get(&key) {
+            // The DB route also stamps the album's local rows; virtual rows
+            // recover that same hash from the ledger without another fetch.
+            let previous: &mut ArtworkRequest = &mut requests[index];
+            if previous.query.is_some() && request.query.is_none() {
+                *previous = request;
+            }
+        } else {
+            seen.insert(key, requests.len());
+            requests.push(request);
+        }
+    }
+    requests
+}
+
+/// All UI play actions must dispatch virtual sources before the local-file path.
+pub(crate) fn play_path(app: &Shared, path: &str) {
+    if path.starts_with("torrent://") {
+        match parse_torrent_uri(path) {
+            Some((id, idx)) if ffi::play_torrent(crate::engine(), id, idx) => {
+                app.host.borrow_mut().current = Some(path.to_string());
+            }
+            _ => app.status.set_label("Could not start torrent playback"),
+        }
+    } else if path.starts_with("sftp://") {
+        remote::play_remote(app, path);
+    } else {
+        app.host.borrow_mut().play_path(path);
+    }
+}
+
 fn parse_torrent_uri(uri: &str) -> Option<(i32, i32)> {
     let rest = uri.strip_prefix("torrent://")?;
     let (id, idx) = rest.split_once('/')?;
-    Some((id.parse().ok()?, idx.parse().ok()?))
+    let (id, idx) = (id.parse().ok()?, idx.parse().ok()?);
+    (id >= 0 && idx >= 0).then_some((id, idx))
 }
 
 /// Rebuild visible rows from the live model (host.tracks + torrent rows).
 fn rebuild(app: &Shared, lib: &Rc<RefCell<Lib>>) {
     {
         let l = lib.borrow();
-        l.art_btn.set_sensitive(true);
-        l.art_btn.set_label("Fetch artwork");
+        l.art_btn.set_sensitive(!app.artwork_busy.get());
+        l.art_btn.set_label(if app.artwork_busy.get() {
+            "Fetching…"
+        } else {
+            "Fetch artwork"
+        });
     }
     let mut tracks: Vec<Track> = app
         .host
@@ -590,4 +687,89 @@ fn track_row(t: &Track) -> gtk4::ListBoxRow {
     }
     row.set_child(Some(&b));
     row
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{artwork_requests, parse_torrent_uri, ArtworkSummary};
+    use serde_json::json;
+
+    fn art_track(path: &str, title: &str, album: &str) -> lyra_core::LibraryTrack {
+        serde_json::from_value(json!({
+            "path": path, "title": title, "artist": "Lynyrd Skynyrd",
+            "album": album, "format": "flac", "codec": "flac"
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn artwork_fetch_includes_torrents_and_deduplicates_albums() {
+        let requests = artwork_requests([
+            art_track("torrent://0/3", "Simple Man", "Pronounced"),
+            art_track("torrent://0/0", "I Ain’t The One", "Pronounced"),
+        ]);
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].query.as_ref().unwrap()["title"], "Simple Man");
+        assert_eq!(
+            requests[0].query.as_ref().unwrap()["artist"],
+            "Lynyrd Skynyrd"
+        );
+
+        let requests = artwork_requests([
+            art_track("torrent://0/3", "Simple Man", "Pronounced"),
+            art_track("/music/simple-man.flac", "Simple Man", "Pronounced"),
+        ]);
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].query.is_none());
+    }
+
+    #[test]
+    fn artwork_requests_keep_recording_fallbacks_and_skip_existing_art() {
+        let mut cached = art_track("torrent://0/3", "Simple Man", "Pronounced");
+        cached.artwork_hash = Some("cached-hash".into());
+        let requests = artwork_requests([
+            cached,
+            art_track("torrent://1/0", "Simple Man", ""),
+            art_track("torrent://1/1", "Free Bird", ""),
+        ]);
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[1].query.as_ref().unwrap()["title"], "Free Bird");
+    }
+
+    #[test]
+    fn artwork_summary_uses_real_backend_states() {
+        let mut summary = ArtworkSummary::default();
+        summary.record(&json!({"state":"ok", "hash":"new", "applied":13}));
+        summary.record(&json!({"state":"not_due", "hash":"cached"}));
+        summary.record(&json!({"state":"not_due", "hash":null}));
+        summary.record(&json!({"state":"not_found"}));
+        summary.record(&json!({"state":"error", "error":"http 503"}));
+        assert_eq!(summary.fetched, 1);
+        assert_eq!(summary.cached, 1);
+        assert_eq!(summary.deferred, 1);
+        assert_eq!(summary.not_found, 1);
+        assert_eq!(summary.failed, 1);
+        assert_eq!(
+            ArtworkSummary::default().message(),
+            "artwork: no missing covers to fetch"
+        );
+    }
+
+    #[test]
+    fn torrent_playback_uri_requires_nonnegative_ids() {
+        assert_eq!(parse_torrent_uri("torrent://0/3"), Some((0, 3)));
+        assert_eq!(parse_torrent_uri("torrent://12/0"), Some((12, 0)));
+        for uri in [
+            "torrent://-1/3",
+            "torrent://0/-1",
+            "torrent://0/3/4",
+            "torrent://x/3",
+            "torrent://0/",
+            "torrent://2147483648/0",
+            "/music/simple-man.flac",
+            "sftp://host/music/simple-man.flac",
+        ] {
+            assert_eq!(parse_torrent_uri(uri), None, "{uri}");
+        }
+    }
 }

@@ -24,6 +24,6 @@
   // (.github/workflows/ci.yml uses jdx/mise-action). mise is installed
   // via its official script, then `mise install` reads mise.toml so the
   // container tracks the same pinned tools as macOS/CI.
-  "postCreateCommand": "sudo apt-get update && sudo apt-get install -y cmake ninja-build pkg-config libssl-dev && curl -fsSL https://mise.run | sh && $HOME/.local/bin/mise install && $HOME/.local/bin/mise exec -- cargo --version && rustc --version",
+  "postCreateCommand": "sudo apt-get update && sudo apt-get install -y cmake ninja-build pkg-config libssl-dev libasound2-dev libgtk-4-dev libadwaita-1-dev xvfb xauth dbus-x11 desktop-file-utils && curl -fsSL https://mise.run | sh && $HOME/.local/bin/mise install && $HOME/.local/bin/mise exec -- cargo --version && rustc --version",
   "remoteUser": "vscode"
 }

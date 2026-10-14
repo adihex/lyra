@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Lyra
+GenericName=Music Player
+Comment=Listen closely. A hi-fi music player.
+Exec=lyra-gui
+TryExec=lyra-gui
+Icon=app.lyra.player
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+Keywords=Music;Audio;Hi-Fi;Lossless;
+StartupNotify=true
+StartupWMClass=app.lyra.player

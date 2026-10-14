@@ -11,8 +11,15 @@ APPBIN   := $(APP)/Contents/MacOS/Lyra
 LIBDIR   := app/.libs
 SWIFT_SRC:= $(wildcard app/Sources/LyraApp/*.swift app/Sources/LyraApp/*/*.swift)
 UNAME_S  := $(shell uname -s)
+PYTHON   ?= python3
+PREFIX   ?= /usr/local
+DESTDIR  ?=
+BINDIR   ?= $(PREFIX)/bin
+DATADIR  ?= $(PREFIX)/share
+GUI_BINARY ?= target/$(PROFILE)/lyra-gui
+ICON_SIZES := 16 24 32 48 64 96 128 256 512 1024
 
-.PHONY: all rust app sign run clean check lyrad gui e2e darwin-only
+.PHONY: all rust app sign run clean check lyrad gui e2e darwin-only icons icons-check install install-icons
 
 all: app
 
@@ -42,6 +49,21 @@ tokens-check:
 gui:
 	$(CARGO) build -p lyra-ui --bin lyra-gui $(if $(filter release,$(PROFILE)),--release,)
 
+# Freedesktop install. Override GUI_BINARY for an external Cargo target dir.
+# Cache updates are intentionally left to the user/package manager (DESTDIR-safe).
+install: gui install-icons
+	install -d "$(DESTDIR)$(BINDIR)" "$(DESTDIR)$(DATADIR)/applications"
+	install -m 755 "$(GUI_BINARY)" "$(DESTDIR)$(BINDIR)/lyra-gui"
+	install -m 644 design/linux/app.lyra.player.desktop "$(DESTDIR)$(DATADIR)/applications/"
+
+install-icons:
+	install -d "$(DESTDIR)$(DATADIR)/icons/hicolor/scalable/apps"
+	install -m 644 design/icons/app.lyra.player.svg "$(DESTDIR)$(DATADIR)/icons/hicolor/scalable/apps/"
+	@for s in $(ICON_SIZES); do \
+		install -d "$(DESTDIR)$(DATADIR)/icons/hicolor/$${s}x$${s}/apps"; \
+		install -m 644 "design/icons/$${s}x$${s}/app.lyra.player.png" "$(DESTDIR)$(DATADIR)/icons/hicolor/$${s}x$${s}/apps/" || exit 1; \
+	done
+
 # IPC-driven E2E: same asserts on both OSes — macOS runs the built .app,
 # Linux runs lyra-gui under Xvfb and lyrad headless (see scripts/e2e.sh).
 e2e:
@@ -66,19 +88,15 @@ $(APP)/Contents/Resources/AppIcon.icns: app/Resources/AppIcon.icns
 	@mkdir -p $(APP)/Contents/Resources
 	@cp app/Resources/AppIcon.icns $(APP)/Contents/Resources/
 
-# Regenerate the icon: swift scripts/make_icon.swift → iconset → icns.
-app/Resources/AppIcon.icns: scripts/make_icon.swift
-	swift scripts/make_icon.swift .build/icon_1024.png
-	@mkdir -p .build/lyra.iconset
-	@for s in 16 32 64 128 256 512; do \
-		sips -z $$s $$s .build/icon_1024.png --out .build/lyra.iconset/icon_$${s}x$${s}.png >/dev/null; \
-	done
-	@sips -z 32 32 .build/icon_1024.png --out .build/lyra.iconset/icon_16x16@2x.png >/dev/null
-	@sips -z 64 64 .build/icon_1024.png --out .build/lyra.iconset/icon_32x32@2x.png >/dev/null
-	@sips -z 256 256 .build/icon_1024.png --out .build/lyra.iconset/icon_128x128@2x.png >/dev/null
-	@sips -z 512 512 .build/icon_1024.png --out .build/lyra.iconset/icon_256x256@2x.png >/dev/null
-	@sips -z 1024 1024 .build/icon_1024.png --out .build/lyra.iconset/icon_512x512@2x.png >/dev/null
-	iconutil -c icns .build/lyra.iconset -o app/Resources/AppIcon.icns
+# Cross-platform SVG → PNG + ICNS; generated assets are checked in.
+icons:
+	$(PYTHON) scripts/make_icon.py
+
+icons-check:
+	$(PYTHON) scripts/make_icon.py --check
+
+app/Resources/AppIcon.icns: design/icons/app.lyra.player.svg scripts/make_icon.py scripts/icon-requirements.txt design/tokens.toml
+	$(PYTHON) scripts/make_icon.py
 
 # AccentColor.colorset → Assets.car — the canonical app-accent mechanism.
 # actool ships only with full Xcode (CLT ships a stub); DEVELOPER_DIR
