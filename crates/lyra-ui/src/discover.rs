@@ -116,6 +116,12 @@ pub fn build(app: &Shared) -> gtk4::Widget {
                 let mut s = st.borrow_mut();
                 if s.expanded == Some(idx) {
                     s.expanded = None;
+                    // Drop the mutable borrow before rendering: render_rows
+                    // borrows `st` itself, and clicks on the "Add to
+                    // downloads" button inside a row also activate the row —
+                    // rendering under this borrow panicked the app with
+                    // "RefCell already mutably borrowed".
+                    drop(s);
                     render_rows(&app, &st);
                     return;
                 }

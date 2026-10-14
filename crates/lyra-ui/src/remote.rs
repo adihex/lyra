@@ -363,9 +363,7 @@ pub fn on_scan(app: &Shared, _i: usize, v: Value) {
     app.status
         .set_label(&format!("remote scan: {added} tracks added"));
     app.host.borrow_mut().reload();
-    if let Some(f) = app.library_refresh.borrow().as_ref() {
-        f();
-    }
+    crate::refresh_library(app);
 }
 
 /// Play an `sftp://…` row — the profile for its host prefix comes from

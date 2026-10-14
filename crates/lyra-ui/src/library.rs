@@ -492,9 +492,7 @@ fn fmt_bytes(b: u64) -> String {
 }
 
 fn refresh_rows_pub(app: &Shared) {
-    if let Some(f) = app.library_refresh.borrow().as_ref() {
-        f();
-    }
+    crate::refresh_library(app);
 }
 
 fn refresh_rows(lib: &Rc<RefCell<Lib>>) {

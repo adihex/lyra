@@ -1,6 +1,9 @@
 //! SolidTorrentsProvider — solidtorrents.to's DHT-index JSON API:
 //! /api/v1/search?q=…&category=Audio&sort=seeders → results[] with
 //! title/info_hash/size/seeders (or swarm.seeders)/magnet. `Gray` tier.
+//! The host now 301s to bitsearch.eu (same API, `infohash` rename) —
+//! reqwest follows it, but a browser-shaped UA is required or the
+//! anti-bot layer answers 403 before the redirect.
 //! ISP-blocked on some networks — failures isolate into
 //! provider_errors like every other provider; fixtures cover the parse.
 
@@ -13,6 +16,10 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 const BASE: &str = "https://solidtorrents.to";
+/// Browser-shaped UA — solidtorrents.to serves a bare 403 to reqwest's
+/// default (same wall as 1337x, cf. `x1337x::UA`).
+const UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
+                  AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36";
 
 pub struct SolidTorrentsProvider {
     client: reqwest::Client,
@@ -24,6 +31,9 @@ struct Row {
     #[serde(rename = "_id", default)]
     id: Option<String>,
     title: Option<String>,
+    /// The site now 301s to bitsearch.eu, which renamed this to
+    /// `infohash` — accept both shapes.
+    #[serde(alias = "infohash", default)]
     info_hash: Option<String>,
     magnet: Option<String>,
     seeders: Option<u32>,
@@ -54,6 +64,7 @@ impl SolidTorrentsProvider {
     pub fn new() -> Self {
         Self {
             client: reqwest::Client::builder()
+                .user_agent(UA)
                 .timeout(std::time::Duration::from_secs(15))
                 .build()
                 .unwrap_or_default(),
@@ -197,6 +208,13 @@ mod tests {
         {"_id":"x2","title":"Aerosmith - Dream On (Single)","info_hash":"def4567890abc123def4567890abc123def45678","size":"11534336","swarm":{"seeders":12,"leechers":1},"category":"Audio"}
     ]}"#;
 
+    /// Live shape — the site 301s to bitsearch.eu, which renames
+    /// `info_hash` to `infohash`, drops `magnet`/`num_files`, and wraps
+    /// the array in `{"success":…,"results":[…]}`.
+    const LIVE: &str = r#"{"success":true,"query":"Lynyrd Skynyrd","results":[
+        {"id":"66415ea27a868426ce4e068a","infohash":"C0F806A32C91D1D91B8F32DEABA7EFE2599B1723","title":"Lynyrd Skynyrd - (pronounced) (1973) [FLAC] 24-192","size":512256284,"category":7,"subCategory":2,"seeders":288,"leechers":4,"downloads":90,"verified":true}
+    ]}"#;
+
     #[test]
     fn rows_parse_size_and_swarm_variants() {
         let p = SolidTorrentsProvider::new();
@@ -218,5 +236,36 @@ mod tests {
         assert_eq!(out[1].size_bytes, Some(11534336));
         assert_eq!(out[1].seeds, Some(12)); // swarm.seeders fallback
         assert!(out[1].magnet.is_some()); // synthesized from infohash
+    }
+
+    /// Regression: bitsearch's `infohash` rename must not silently drop
+    /// every row — `result_from` bails on a missing infohash.
+    #[test]
+    fn rows_parse_bitsearch_infohash_rename() {
+        let p = SolidTorrentsProvider::new();
+        let q = SearchQuery {
+            strict: false,
+            ..SearchQuery::text("lynyrd skynyrd")
+        };
+        let resp: Resp = serde_json::from_str(LIVE).unwrap();
+        let out: Vec<_> = resp
+            .results
+            .into_iter()
+            .filter_map(|r| p.result_from(r, &q))
+            .collect();
+        assert_eq!(
+            out.len(),
+            1,
+            "bitsearch rows must survive the infohash rename"
+        );
+        assert_eq!(out[0].provider, "solidtorrents");
+        assert_eq!(
+            out[0].infohash.as_deref(),
+            Some("c0f806a32c91d1d91b8f32deaba7efe2599b1723")
+        );
+        assert_eq!(out[0].seeds, Some(288));
+        assert_eq!(out[0].size_bytes, Some(512_256_284));
+        assert!(out[0].magnet.is_some()); // synthesized — row has no magnet
+        assert_eq!(out[0].lossless, Some(true)); // [FLAC] 24-192
     }
 }

@@ -341,11 +341,19 @@ fn build_ui(application: &adw::Application, host: Host, play: Option<PathBuf>) {
                 ffi::pause(e);
             } else if ffi::can_resume(e) {
                 ffi::resume(e);
-            } else if let Some(p) = app.host.borrow().current.clone() {
-                // finished → replay; else start queue head
-                app.host.borrow_mut().play_path(&p);
             } else {
-                app.host.borrow_mut().play_index(0);
+                // Clone `current` out and drop the shared borrow first:
+                // a `borrow()` in an if-let scrutinee lives for the whole
+                // if/else chain, so `borrow_mut()` in either branch below
+                // it panicked with "RefCell already borrowed" (play from
+                // stopped crashed the app).
+                let current = app.host.borrow().current.clone();
+                let mut h = app.host.borrow_mut();
+                match current {
+                    // finished → replay; else start queue head
+                    Some(p) => h.play_path(&p),
+                    None => h.play_index(0),
+                }
             }
         });
     }
@@ -402,9 +410,7 @@ fn build_ui(application: &adw::Application, host: Host, play: Option<PathBuf>) {
     if let Some(p) = play {
         app.host.borrow_mut().play_path(&p.display().to_string());
     }
-    if let Some(f) = app.library_refresh.borrow().as_ref() {
-        f();
-    }
+    refresh_library(&app);
     window.present();
 }
 
@@ -437,9 +443,20 @@ fn handle_msg(app: &Shared, msg: Msg) {
 }
 
 /// Refresh the library pane's rows — the pane installs this callback.
-fn refresh_library(app: &Shared) {
-    if let Some(f) = app.library_refresh.borrow().as_ref() {
+/// Take the hook out while it runs: `rebuild()` mutates GTK state (row
+/// removal can emit signals) and may re-enter here; holding the RefCell
+/// borrow across `f()` would panic on that re-entry, same class as the
+/// play-button crash. A hook installed during the call wins over restoring.
+pub(crate) fn refresh_library(app: &Shared) {
+    let f = app.library_refresh.borrow_mut().take();
+    if let Some(f) = &f {
         f();
+    }
+    if let Some(f) = f {
+        let mut slot = app.library_refresh.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(f);
+        }
     }
 }
 
