@@ -72,9 +72,19 @@ impl TorrentEngine {
         let session_trackers =
             TrackerListManager::new(download_dir.join(".session/trackers.txt")).trackers(&rt);
         let opts = librqbit::SessionOptions {
-            disable_dht: cfg.disable_dht,
-            disable_dht_persistence: cfg.disable_dht,
-            listen_port_range: cfg.listen_port_range,
+            // rqbit 9: DHT is a config object — None disables it (and its
+            // persistence) entirely; defaults keep it on.
+            dht: if cfg.disable_dht {
+                None
+            } else {
+                Some(librqbit::DhtSessionConfig::default())
+            },
+            // rqbit 9: port range → explicit listener; take the range
+            // start (tests use it only to keep two sessions apart).
+            listen: cfg.listen_port_range.map(|r| librqbit::ListenerOptions {
+                listen_addr: (std::net::Ipv6Addr::UNSPECIFIED, r.start).into(),
+                ..Default::default()
+            }),
             // JSON persistence → torrents survive relaunches with stable
             // ids (preferred_id), offline metadata ({hash}.torrent) and
             // piece bitmaps ({hash}.bitv) for resume. Dot-folder so the
@@ -106,7 +116,7 @@ impl TorrentEngine {
 
     /// This session's inbound peer port, if listening.
     pub fn listen_port(&self) -> Option<u16> {
-        self.session.tcp_listen_port()
+        self.session.listen_addr().map(|a| a.port())
     }
 
     /// Add a magnet URI or local .torrent path. Returns torrent id.
@@ -195,18 +205,12 @@ impl TorrentEngine {
             .metadata
             .load_full()
             .ok_or_else(|| LyraError::Remote("metadata not resolved yet".into()))?;
-        let names = meta
-            .info
-            .iter_file_details()
-            .map_err(|e| LyraError::Remote(e.to_string()))?;
+        let names = meta.info.iter_file_details();
         Ok(names
             .enumerate()
             .map(|(i, d)| TorrentFileInfo {
                 index: i,
-                path: d
-                    .filename
-                    .to_string()
-                    .unwrap_or_else(|_| "<invalid>".into()),
+                path: d.filename.to_string(),
                 len: d.len,
             })
             .collect())
@@ -235,9 +239,9 @@ impl TorrentEngine {
         let handle = self.handle(id)?;
         // rqbit's stream() spawns onto the ambient runtime — enter ours.
         let _guard = self.rt.enter();
-        let stream = handle
-            .clone()
-            .stream(file_idx)
+        let stream = self
+            .rt
+            .block_on(handle.clone().stream(file_idx))
             .map_err(|e| LyraError::Remote(format!("stream file: {e}")))?;
         let len = stream.len();
         Ok(Arc::new(TorrentFileSource {
@@ -270,6 +274,11 @@ impl TorrentEngine {
             .block_on(librqbit::create_torrent(
                 path,
                 librqbit::CreateTorrentOptions::default(),
+                &librqbit::spawn_utils::BlockingSpawner::new(
+                    std::thread::available_parallelism()
+                        .map(|n| n.get())
+                        .unwrap_or(4),
+                ),
             ))
             .map_err(|e| LyraError::Remote(format!("create torrent: {e}")))?;
         res.as_bytes()
@@ -312,13 +321,9 @@ impl TorrentEngine {
                     .map(|meta| {
                         meta.info
                             .iter_file_details()
-                            .map(|details| {
-                                details
-                                    .filter_map(|d| d.filename.to_string().ok())
-                                    .filter_map(|p| p.split('/').next().map(str::to_string))
-                                    .collect::<Vec<_>>()
-                            })
-                            .unwrap_or_default()
+                            .map(|d| d.filename.to_string())
+                            .filter_map(|p| p.split('/').next().map(str::to_string))
+                            .collect::<Vec<_>>()
                     })
                     .unwrap_or_default();
                 (h.name(), tops)

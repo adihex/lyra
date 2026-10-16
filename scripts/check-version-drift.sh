@@ -29,7 +29,10 @@ cd "$(dirname "$0")/.."
 # Raised 58 → 61 on 2026-09-21: lyra-ui's gtk4-rs/gir macro chain pulls
 # proc-macro-crate 1.x/2.x/3.x alongside toml_edit+winnow+heck+toml_datetime
 # splits — transitive constraints, not unifiable from our manifests.
-BASELINE_DUP_NAMES=61
+# Raised 61 → 62 on 2026-09-21: librqbit 9 requires reqwest 0.13 while
+# lyra-net/lyra-search/lyra-torrent pin 0.12 — unifying means a reqwest
+# major bump of first-party consumers, tracked separately.
+BASELINE_DUP_NAMES=62
 
 fail=0
 fail_msg() { echo "drift FAIL: $1"; fail=1; }
