@@ -147,14 +147,98 @@ pub const MINT_DARK: Palette = Palette {
 };
 
 /// Default GTK palette — `lavender.dark` per design/tokens.toml.
+#[allow(dead_code)] // reference row; palette_for() drives runtime.
 pub const PALETTE: Palette = LAVENDER_DARK;
 // END GENERATED PALETTES
+
+/// Palette lookup by family + scheme — the generated rows cover all six.
+/// Unknown family falls back to lavender (the contract default).
+pub fn palette_for(family: &str, dark: bool) -> &'static Palette {
+    match (family, dark) {
+        ("rose", false) => &ROSE_LIGHT,
+        ("rose", true) => &ROSE_DARK,
+        ("mint", false) => &MINT_LIGHT,
+        ("mint", true) => &MINT_DARK,
+        (_, false) => &LAVENDER_LIGHT,
+        (_, true) => &LAVENDER_DARK,
+    }
+}
+
+/// Effective dark flag — follows the system's color-scheme preference
+/// (AdwStyleManager::is_dark resolves PreferDark/ForceDark/ForceLight).
+/// `LYRA_SCHEME=light|dark` overrides for headless/forced testing.
+pub fn effective_dark() -> bool {
+    match std::env::var("LYRA_SCHEME").ok().as_deref() {
+        Some("light") => false,
+        Some("dark") => true,
+        _ => libadwaita::StyleManager::default().is_dark(),
+    }
+}
+
+/// Re-render + reload the application stylesheet — called when the
+/// scheme or the palette pref changes.
+pub fn apply_theme(app: &crate::App) {
+    let family = app.prefs.borrow().palette.clone();
+    app.theme_provider
+        .load_from_data(&css(palette_for(&family, effective_dark())));
+}
+
+// Geometry/type/radius/stroke contract — generated from design/tokens.toml
+// ([space], [type], [radius], [stroke]); the same values feed Swift's
+// Bubble.Space/TypeSize/Size/Stroke.
+// GENERATED GEOMETRY — do not edit
+#[allow(dead_code)] // full contract stamped;
+pub const SPACE_XS: i32 = 4;
+#[allow(dead_code)] // full contract stamped;
+pub const SPACE_SM: i32 = 8;
+#[allow(dead_code)] // full contract stamped;
+pub const SPACE_MD: i32 = 12;
+#[allow(dead_code)] // full contract stamped;
+pub const SPACE_LG: i32 = 16;
+#[allow(dead_code)] // full contract stamped;
+pub const SPACE_XL: i32 = 20;
+#[allow(dead_code)] // full contract stamped;
+pub const SPACE_XXL: i32 = 24;
+#[allow(dead_code)] // full contract stamped;
+pub const SPACE_PAGE: i32 = 28;
+#[allow(dead_code)] // full contract stamped;
+pub const TY_TITLE: i32 = 24;
+#[allow(dead_code)] // full contract stamped;
+pub const TY_HEADLINE: i32 = 14;
+#[allow(dead_code)] // full contract stamped;
+pub const TY_BODY: i32 = 12;
+#[allow(dead_code)] // full contract stamped;
+pub const TY_CAPTION: i32 = 11;
+#[allow(dead_code)] // full contract stamped;
+pub const TY_MICRO: i32 = 10;
+#[allow(dead_code)] // full contract stamped;
+pub const TY_GLYPH: i32 = 20;
+#[allow(dead_code)] // full contract stamped;
+pub const R_CARD: i32 = 18;
+#[allow(dead_code)] // full contract stamped;
+pub const R_TRAY: i32 = 20;
+#[allow(dead_code)] // full contract stamped;
+pub const R_FIELD: i32 = 12;
+#[allow(dead_code)] // full contract stamped;
+pub const R_ROW: i32 = 10;
+#[allow(dead_code)] // full contract stamped;
+pub const R_SIDEBAR_ROW: i32 = 14;
+#[allow(dead_code)] // full contract stamped;
+pub const STROKE_FINE: i32 = 1;
+#[allow(dead_code)] // full contract stamped;
+pub const STROKE_CONTRAST: i32 = 2;
+#[allow(dead_code)] // full contract stamped;
+pub const STROKE_FOCUS: i32 = 3;
+#[allow(dead_code)] // full contract stamped;
+pub const STROKE_INSET: i32 = 3;
+// END GENERATED GEOMETRY
 
 /// Full stylesheet: token definitions first, then the rule set that maps
 /// roles onto GTK's widget tree. Rules reference only `@lyra_*` colors —
 /// never literal hex — so a palette swap is a `Palette` change only.
-pub fn css() -> String {
-    let p = &PALETTE;
+/// `{NAME}` placeholders are filled from the generated geometry consts, so
+/// CSS geometry tracks the same contract as the code layout.
+pub fn css(p: &Palette) -> String {
     let mut s = String::new();
     for (name, value) in [
         ("chassis", p.chassis),
@@ -172,98 +256,216 @@ pub fn css() -> String {
     ] {
         s.push_str(&format!("@define-color lyra_{name} {value};\n"));
     }
-    s.push_str(RULES);
+    // Stock-widget accents (scale highlight, dropdown checks, links) take the
+    // palette — literal hex: @define-color refs do not reach adwaita's vars.
+    s.push_str(&format!("@define-color accent_color {};\n", p.tint));
+    s.push_str(&format!("@define-color accent_bg_color {};\n", p.tint));
+    s.push_str(&format!("@define-color accent_fg_color {};\n", p.on_tint));
+    let mut rules = RULES.to_string();
+    for (key, value) in [
+        ("R_CARD", R_CARD),
+        ("R_TRAY", R_TRAY),
+        ("R_FIELD", R_FIELD),
+        ("R_ROW", R_ROW),
+        ("R_SIDEBAR_ROW", R_SIDEBAR_ROW),
+        ("TY_TITLE", TY_TITLE),
+        ("TY_HEADLINE", TY_HEADLINE),
+        ("TY_CAPTION", TY_CAPTION),
+        ("TY_MICRO", TY_MICRO),
+        ("TY_GLYPH", TY_GLYPH),
+        ("STROKE_FINE", STROKE_FINE),
+        ("STROKE_FOCUS", STROKE_FOCUS),
+    ] {
+        rules = rules.replace(&format!("{{{key}}}"), &value.to_string());
+    }
+    s.push_str(&rules);
     s
 }
 
 const RULES: &str = r#"
-/* Surfaces — the window chassis, sunken tray, and raised keycap map 1:1 to
-   the app's window/sidebar/card layering. Without these, GTK's scheme
-   colors leak through on list and scrolled views. */
+/* ═══ Surfaces — chassis (window) / tray (recessed) / keycap (raised),
+   1:1 with the app's window/sidebar/card layering. Shadowless: depth
+   comes from rim contrast, per the Bubblegum contract. */
 window { background-color: @lyra_chassis; color: @lyra_legend; }
 headerbar { background-color: @lyra_tray; color: @lyra_legend;
-            box-shadow: 0 1px 0 @lyra_border; }
+            background-image: linear-gradient(to bottom,
+                alpha(@lyra_tint, 0.10), transparent 55%);
+            box-shadow: 0 {STROKE_FINE}px 0 @lyra_border; }
+headerbar .title { font-weight: 600; }
 list, scrolledwindow, columnview, .view {
     background-color: @lyra_chassis; color: @lyra_legend; }
-separator { background-color: alpha(@lyra_border, 0.5); min-height: 1px; }
+separator { background-color: alpha(@lyra_border, 0.5);
+            min-height: {STROKE_FINE}px; min-width: {STROKE_FINE}px; }
 
-/* Sidebar — tray surface, pill rows, tint-filled selection. */
-.lyra-sidebar { background-color: @lyra_tray; }
-.lyra-sidebar row { padding: 8px 12px; border-radius: 10px;
-                    font-weight: 500; }
-.lyra-sidebar row:selected { background-color: @lyra_tint;
-                             color: @lyra_on_tint; }
-
-/* Transport tray. */
-.lyra-now-playing { background-color: @lyra_tray;
-                    border-top: 1px solid @lyra_border; padding: 10px 16px; }
-
-/* Card — the raised keycap surface used for wells, chips, dialogs. */
-.lyra-card { background-color: @lyra_keycap;
-             border: 1px solid @lyra_border;
-             border-radius: 12px; padding: 12px; }
-
-/* Buttons — "sharp" is the neutral chrome, suggested-action the tint. */
-button.sharp { border-radius: 8px; padding: 5px 12px; }
-button.flat { border-radius: 8px; }
-button.suggested-action { background-color: @lyra_tint; color: @lyra_on_tint;
-                          border-radius: 8px; padding: 5px 14px; }
-button.suggested-action:disabled { opacity: 0.45; }
-
-/* Track table — `track` is on the ListBox, so rows are `list.track > row`.
-   Hover lifts to keycap; selection uses the accent wash with legend ink. */
-.track-header button { font-weight: 600; font-size: 11px; color: @lyra_dim;
-                       background: none; border: none; padding: 6px 4px; }
-.track-header button:hover { color: @lyra_legend; }
-list.track > row { padding: 4px 8px; }
-list.track > row:hover { background-color: @lyra_keycap; }
-list.track > row:selected { background-color: alpha(@lyra_accent, 0.22); }
-list.track > row:selected .dim { color: alpha(@lyra_legend, 0.7); }
-list.track > row:selected .mint { color: @lyra_companion; }
-
-/* Sliders — seek is tint, EQ is the mint secondary. */
-scale.seek trough { min-height: 4px; }
-scale.seek highlight { background-color: @lyra_tint; }
-scale.eq trough { min-width: 4px; }
-scale.eq highlight { background-color: @lyra_secondary_ink; }
-
-/* Sunken text wells take the tray surface. */
-entry, spinbutton { background-color: @lyra_tray; color: @lyra_legend;
-                    caret-color: @lyra_legend;
-                    border: 1px solid @lyra_border;
-                    border-radius: 8px; padding: 5px 10px; }
-entry:focus, spinbutton:focus { border-color: @lyra_tint; }
-
-/* Ink roles. */
+/* ═══ Type ramp — matches Bubble.TypeSize roles 1:1. */
+.lyra-title { font-size: {TY_TITLE}px; font-weight: 600; }
+.lyra-headline { font-size: {TY_HEADLINE}px; font-weight: 600; }
+.lyra-caption { font-size: {TY_CAPTION}px; }
+.lyra-micro { font-size: {TY_MICRO}px; font-weight: 500; }
 .dim { color: @lyra_dim; }
 .mint { color: @lyra_secondary_ink; }
+
+/* ═══ Sidebar — tray surface, icon+label pill rows, tint-filled pill on
+   selection (keycap metaphor: the pressed key is the lit one). */
+.lyra-sidebar { background-color: @lyra_tray; }
+.lyra-sidebar row { padding: 8px 14px; border-radius: {R_SIDEBAR_ROW}px;
+                    margin: 2px 8px; }
+.lyra-sidebar row image { color: @lyra_dim; }
+.lyra-sidebar row:hover { background-color: alpha(@lyra_keycap, 0.6); }
+.lyra-sidebar row:selected {
+    background-image: linear-gradient(135deg, @lyra_tint, @lyra_accent);
+    color: @lyra_on_tint; }
+.lyra-sidebar row:selected image { color: @lyra_on_tint; }
+.lyra-sidebar row:focus-visible {
+    box-shadow: 0 0 0 {STROKE_FOCUS}px alpha(@lyra_tint, 0.5); }
+
+/* ═══ Transport tray + keycap transport. */
+.lyra-transport { background-color: @lyra_tray;
+                  border-top: {STROKE_FINE}px solid @lyra_border;
+                  padding: 10px 16px; }
+button.lyra-key { min-width: 32px; min-height: 32px; border-radius: 999px;
+    padding: 0; background-color: @lyra_keycap;
+    border: {STROKE_FINE}px solid alpha(@lyra_border, 0.8); color: @lyra_legend; }
+button.lyra-key:hover { border-color: @lyra_tint; color: @lyra_tint; }
+button.lyra-key-play { min-width: 40px; min-height: 40px; border-radius: 999px;
+    padding: 0; border: none; color: @lyra_on_tint;
+    background-image: linear-gradient(135deg, @lyra_tint, @lyra_accent); }
+button.lyra-key-play:hover { box-shadow: 0 0 0 {STROKE_FOCUS}px alpha(@lyra_tint, 0.3); }
+
+/* ═══ Card — the raised keycap surface: radius + rim, no shadow. */
+.lyra-card { background-color: @lyra_keycap;
+             border: {STROKE_FINE}px solid @lyra_border;
+             border-radius: {R_CARD}px; padding: 14px; }
+
+/* ═══ Buttons — pill caps; suggested-action is the lit key. */
+button.sharp { border-radius: 999px; padding: 6px 16px;
+    background-color: @lyra_keycap;
+    border: {STROKE_FINE}px solid alpha(@lyra_border, 0.8); }
+button.sharp:hover { border-color: @lyra_tint; }
+button.flat { border-radius: 999px; }
+button.suggested-action {
+    background-image: linear-gradient(135deg, @lyra_tint, @lyra_accent);
+    color: @lyra_on_tint;
+    border-radius: 999px; padding: 6px 18px; border: none; }
+button.suggested-action:hover {
+    box-shadow: 0 0 0 {STROKE_FOCUS}px alpha(@lyra_tint, 0.3); }
+button.suggested-action:disabled { opacity: 0.45; background-image: none;
+    background-color: @lyra_tint; }
+button:focus-visible {
+    box-shadow: 0 0 0 {STROKE_FOCUS}px alpha(@lyra_tint, 0.5); }
+
+/* ═══ Track table — header caps in micro type; rounded hover/selected rows;
+   selection is an accent wash with a left tab. */
+/* Header mirrors row geometry exactly: 10px side padding like the rows,
+   zero horizontal padding on buttons so header text starts at the column
+   edge — identical column starts and flex widths by construction. */
+.track-header { padding: 0 10px; }
+.track-header button { font-size: {TY_MICRO}px; font-weight: 600;
+    color: @lyra_dim; background: none; border: none; padding: 6px 0; }
+.track-header button:hover { color: @lyra_legend; }
+list.track > row { padding: 5px 10px; border-radius: {R_ROW}px; }
+list.track > row:hover { background-color: @lyra_keycap; }
+list.track > row:selected {
+    background-color: alpha(@lyra_accent, 0.24);
+    border-left: {STROKE_FOCUS}px solid @lyra_accent; }
+list.track > row:selected .dim { color: alpha(@lyra_legend, 0.7); }
+list.track > row:selected .mint { color: @lyra_companion; }
+list.track > row:focus-visible {
+    box-shadow: inset 0 0 0 {STROKE_FOCUS}px alpha(@lyra_tint, 0.5); }
+
+/* ═══ Sliders — seek fades tint→mint; EQ is the secondary accent. */
+scale.seek trough { min-height: 5px; border-radius: 999px; }
+scale.seek highlight {
+    background-image: linear-gradient(90deg, @lyra_tint, @lyra_secondary_ink);
+    border-radius: 999px; }
+scale.seek slider { border-radius: 999px; }
+scale.eq trough { min-width: 5px; border-radius: 999px; }
+scale.eq highlight { background-color: @lyra_secondary_ink;
+                     border-radius: 999px; }
+
+/* ═══ Sunken text wells — tray surface, field radius, tint focus ring. */
+entry, spinbutton { background-color: @lyra_tray; color: @lyra_legend;
+    caret-color: @lyra_legend;
+    border: {STROKE_FINE}px solid @lyra_border;
+    border-radius: {R_FIELD}px; padding: 6px 14px; }
+entry:focus, spinbutton:focus { border-color: @lyra_tint;
+    box-shadow: 0 0 0 {STROKE_FOCUS}px alpha(@lyra_tint, 0.3); }
+
+/* ═══ Chips — mint wash + rim, the app's badge treatment. */
+.lyra-chip { background-color: alpha(@lyra_secondary_ink, 0.14);
+    border: {STROKE_FINE}px solid alpha(@lyra_secondary_ink, 0.4);
+    border-radius: 999px; padding: 3px 10px; }
+
+/* ═══ Track-art monogram — first letter of album/artist on a keycap
+   tile, standing in for missing artwork (the app's P-square). */
+.lyra-mono-art { min-width: 24px; min-height: 24px; border-radius: 8px;
+    background-color: @lyra_keycap;
+    border: {STROKE_FINE}px solid alpha(@lyra_border, 0.8);
+    color: @lyra_dim; font-size: {TY_CAPTION}px; font-weight: 600; }
+
+/* ═══ Design Lab pads — 40px circular keys; selection is the lit key. */
+button.lyra-pad { min-width: 40px; min-height: 40px; border-radius: 999px;
+    padding: 0; background-color: @lyra_keycap;
+    border: {STROKE_FINE}px solid alpha(@lyra_border, 0.8); color: @lyra_legend; }
+button.lyra-pad:hover { border-color: @lyra_tint; color: @lyra_tint; }
+button.lyra-pad.selected {
+    background-image: linear-gradient(135deg, @lyra_tint, @lyra_accent);
+    color: @lyra_on_tint; border: none; }
+
+/* ═══ Catalog state simulation — GTK can't force :hover/:active, so the
+   Design Lab stamps these classes to reproduce each state's visuals. */
+button.lyra-key.sim-hover, button.sharp.sim-hover {
+    border-color: @lyra_tint; color: @lyra_tint; }
+button.lyra-key.sim-pressed, button.sharp.sim-pressed {
+    background-color: alpha(@lyra_legend, 0.12); }
+button.suggested-action.sim-hover, button.lyra-key-play.sim-hover,
+button.lyra-pad.sim-hover {
+    box-shadow: 0 0 0 {STROKE_FOCUS}px alpha(@lyra_tint, 0.3); }
+button.suggested-action.sim-pressed, button.lyra-key-play.sim-pressed,
+button.lyra-pad.sim-pressed {
+    background-image: none; background-color: alpha(@lyra_tint, 0.8); }
+entry.sim-hover { border-color: @lyra_tint; }
+entry.sim-pressed { border-color: @lyra_tint;
+    box-shadow: 0 0 0 {STROKE_FOCUS}px alpha(@lyra_tint, 0.3); }
+
+/* ═══ Lab segmented picker — pill group matching button chrome. */
+stackswitcher button { border-radius: 999px; padding: 4px 14px; }
+
+/* ═══ Status bar — recessed tray, micro caption. */
+.lyra-statusbar { background-color: @lyra_tray;
+    border-top: {STROKE_FINE}px solid @lyra_border;
+    padding: 4px 16px; }
+
+/* ═══ Checked switch — keycap gradient rather than a flat accent fill. */
+switch:checked { background-image: linear-gradient(135deg, @lyra_tint, @lyra_accent); }
+
 "#;
 
 // ── Shared primitives ──────────────────────────────────────────────────────
 // The widget vocabulary panes build from. Each maps to a role in DESIGN.md.
 
-/// Vertical pane container with the standard content margins
-/// (16 top/bottom, 20 left/right, 12 spacing).
+/// Vertical pane container — page margins on the shared grid
+/// (SPACE_XL vertical, SPACE_PAGE horizontal, SPACE_MD spacing).
 pub fn pane_root() -> gtk4::Box {
-    let b = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
-    b.set_margin_top(16);
-    b.set_margin_bottom(16);
-    b.set_margin_start(20);
-    b.set_margin_end(20);
+    let b = gtk4::Box::new(gtk4::Orientation::Vertical, SPACE_MD);
+    b.set_margin_top(SPACE_XL);
+    b.set_margin_bottom(SPACE_XL);
+    b.set_margin_start(SPACE_PAGE);
+    b.set_margin_end(SPACE_PAGE);
     b
 }
 
 /// Raised keycap surface — card styling on a box of either orientation.
 pub fn card(orientation: gtk4::Orientation) -> gtk4::Box {
-    let b = gtk4::Box::new(orientation, 8);
+    let b = gtk4::Box::new(orientation, SPACE_SM);
     b.add_css_class("lyra-card");
     b
 }
 
-/// Pane heading — the `title-1` role.
+/// Pane heading — the `title` role of the shared ramp.
 pub fn section_title(text: &str) -> gtk4::Label {
     let l = gtk4::Label::new(Some(text));
-    l.add_css_class("title-1");
+    l.add_css_class("lyra-title");
     l.set_xalign(0.0);
     l
 }
@@ -272,7 +474,37 @@ pub fn section_title(text: &str) -> gtk4::Label {
 pub fn dim_label(text: &str) -> gtk4::Label {
     let l = gtk4::Label::new(Some(text));
     l.add_css_class("dim");
+    l.add_css_class("lyra-caption");
     l
+}
+
+/// Tabular digits — Pango `tnum` on a label, the GTK equivalent of
+/// SwiftUI's `.monospacedDigit()`. GTK CSS carries no font-feature
+/// control, so this is a code-level attribute.
+pub fn mono(label: &gtk4::Label) {
+    let attrs = gtk4::pango::AttrList::new();
+    attrs.insert(gtk4::pango::AttrFontFeatures::new("tnum"));
+    label.set_attributes(Some(&attrs));
+}
+
+/// Centered empty-state block — large symbolic glyph + headline + dim
+/// hint, matching the macOS shell's "No tunes yet" treatment.
+pub fn empty_state(icon: &str, headline: &str, hint: &str) -> gtk4::Box {
+    let b = gtk4::Box::new(gtk4::Orientation::Vertical, SPACE_SM);
+    b.set_valign(gtk4::Align::Center);
+    b.set_vexpand(true);
+    let g = gtk4::Image::from_icon_name(icon);
+    g.set_pixel_size(44);
+    g.add_css_class("dim");
+    b.append(&g);
+    let h = gtk4::Label::new(Some(headline));
+    h.add_css_class("lyra-headline");
+    b.append(&h);
+    let d = dim_label(hint);
+    d.set_wrap(true);
+    d.set_justify(gtk4::Justification::Center);
+    b.append(&d);
+    b
 }
 
 /// The pane's primary action — tint-filled suggested-action button.

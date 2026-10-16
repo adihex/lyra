@@ -121,6 +121,20 @@ pub struct Prefs {
     pub exclusive_output: bool,
     pub remote_port: u16,
     pub viz_mode: i32,
+    /// Palette family — "lavender" | "rose" | "mint" (Design Lab picker).
+    #[serde(default = "default_palette")]
+    pub palette: String,
+    /// Appearance — "system" | "dark" | "light" (Design Lab picker).
+    /// "system" resolves via AdwStyleManager's PreferDark.
+    #[serde(default = "default_appearance")]
+    pub appearance: String,
+}
+
+fn default_palette() -> String {
+    "lavender".into()
+}
+fn default_appearance() -> String {
+    "system".into()
 }
 
 impl Default for Prefs {
@@ -130,6 +144,8 @@ impl Default for Prefs {
             exclusive_output: false,
             remote_port: 9600,
             viz_mode: 0,
+            palette: default_palette(),
+            appearance: default_appearance(),
         }
     }
 }

@@ -1908,10 +1908,16 @@ struct ContentView: View {
                             // track renders too thin to read in dark mode
                             Rectangle().fill(Ui.border)
                                 .frame(width: 4, height: 110)
+                            // rotationEffect is visual-only — the layout
+                            // frame must give the slider its UNROTATED
+                            // size (110 of travel) before rotating, then
+                            // pin the rotated bounds, or the thumb only
+                            // has 20pt of travel and stays near center.
                             Slider(value: Binding(
                                 get: { vm.eq[i] },
                                 set: { vm.eq[i] = $0; vm.applyEQ(i) }
                             ), in: -12...12)
+                            .frame(width: 110, height: 20)
                             .rotationEffect(.degrees(-90))
                             .frame(width: 20, height: 110)
                         }
